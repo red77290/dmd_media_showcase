@@ -1,0 +1,73 @@
+name: CI & Snapshot Pre-Release
+
+on:
+  push:
+    branches: ["main", "master", "feat/**"]
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Pytest Matrix (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system FFmpeg & OpenCV runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg libglib2.0-0 libsm6 libxext6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip build
+          python -m pip install ".[dev]"
+
+      - name: Run full API & worker pool test suite
+        run: |
+          pytest
+
+  snapshot:
+    name: Build & Publish v1.0.0-SNAPSHOT Pre-Release
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Publish or Update v1.0.0-SNAPSHOT Pre-Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-SNAPSHOT
+          name: "dmd-media-showcase v1.0.0-SNAPSHOT (Rolling CI Build)"
+          body: |
+            Automated rolling snapshot pre-release built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
+            Includes the stateless FastAPI server, bounded worker pool (`MAX_CONCURRENT_JOBS`), and 4 multilingual showcase providers (`games`, `movies`, `series`, `anime`).
+          prerelease: true
+          files: dist/*
