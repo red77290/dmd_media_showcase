@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 from app.config import settings
 from app.models import (
@@ -39,7 +39,7 @@ from app.scheduler.asset_builder import (
     build_video_assets_worker_task,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("dmd_showcase.pool")
 
 
 @dataclass
@@ -50,6 +50,7 @@ class BatchSlot:
     item_dirs: Dict[str, Path]
     created_at: float = field(default_factory=time.monotonic)
     ready_at: Optional[float] = None
+    last_served_at: Optional[float] = None
     served_count: int = 0
     include_video: bool = True
 
@@ -71,6 +72,8 @@ class SessionState:
     request: SessionRegisterRequest
     current_batch: BatchSlot
     next_batch: Optional[BatchSlot] = None
+    retired_batch: Optional[BatchSlot] = None
+    next_batch_creating: bool = False
     priority_on_demand_items: List[MediaShowcaseItem] = field(default_factory=list)
     seen_ids: Set[str] = field(default_factory=set)
     last_accessed: float = field(default_factory=time.monotonic)
@@ -133,7 +136,7 @@ class SessionBatchManager:
             loop.create_task(self._worker_loop(idx)) for idx in range(max_w)
         ]
         logger.info(
-            "SessionBatchManager started with %d bounded worker(s) (cache_dir=%s)",
+            "[POOL] SessionBatchManager started with %d bounded worker(s) (cache_dir=%s)",
             max_w,
             settings.cache_dir,
         )
@@ -175,9 +178,20 @@ class SessionBatchManager:
         return f"ses_{domain}_{uuid.uuid4().hex[:10]}"
 
     def _build_asset_urls(
-        self, item_key: str, files_map: Dict[str, str], width: int, height: int, max_dur_s: float
+        self, item_key: str, files_map: Dict[str, object], width: int, height: int, max_dur_s: float
     ) -> MediaAssetsUrls:
-        stem = f"video_{width}x{height}"
+        pan_gifs = [
+            f"/api/v1/assets/{item_key}/{fname}"
+            for fname in (files_map.get("panorama_gifs") or [])  # type: ignore[union-attr]
+        ]
+        pan_streams = [
+            f"/api/v1/assets/{item_key}/{fname}"
+            for fname in (files_map.get("panorama_streams_rgb565") or [])  # type: ignore[union-attr]
+        ]
+        snaps_rgb = [
+            f"/api/v1/assets/{item_key}/{fname}"
+            for fname in (files_map.get("snapshots_pan_rgb565") or [])  # type: ignore[union-attr]
+        ]
         return MediaAssetsUrls(
             poster_png=f"/api/v1/assets/{item_key}/{files_map['poster_png']}",
             poster_rgb565=f"/api/v1/assets/{item_key}/{files_map['poster_rgb565']}",
@@ -185,8 +199,11 @@ class SessionBatchManager:
             marquee_rgb565=f"/api/v1/assets/{item_key}/{files_map['marquee_rgb565']}",
             snapshot_pan_png=f"/api/v1/assets/{item_key}/{files_map['snapshot_pan_png']}",
             snapshot_pan_rgb565=f"/api/v1/assets/{item_key}/{files_map['snapshot_pan_rgb565']}",
-            video_gif=f"/api/v1/assets/{item_key}/{stem}.gif?max_duration_s={max_dur_s}",
-            video_stream_rgb565=f"/api/v1/assets/{item_key}/{stem}.rgb565.stream?max_duration_s={max_dur_s}",
+            panorama_gifs=pan_gifs,
+            panorama_streams_rgb565=pan_streams,
+            snapshots_pan_rgb565=snaps_rgb,
+            video_gif="",
+            video_stream_rgb565="",
         )
 
     async def _create_batch_slot(
@@ -200,6 +217,17 @@ class SessionBatchManager:
         provider = self.providers[domain]
         candidates = await provider.fetch_random_candidates(req, exclude_ids=exclude_ids)
         batch_id = f"b_{uuid.uuid4().hex[:8]}"
+
+        logger.info(
+            "[SESSION] Building batch '%s' for session '%s' (domain=%s, priority=%s, count=%d, image_count=%d): %s",
+            batch_id,
+            session_id,
+            domain,
+            priority.name,
+            len(candidates),
+            req.image_count,
+            [c.title for c in candidates],
+        )
 
         items: List[MediaShowcaseItem] = []
         cand_map: Dict[str, RawMediaCandidate] = {}
@@ -219,8 +247,11 @@ class SessionBatchManager:
                 cand.poster_url,
                 cand.marquee_url,
                 cand.backdrop_url,
+                cand.image_urls,
+                req.image_count if req.include_snapshot else 0,
                 req.width,
                 req.height,
+                req.video_fps,
                 req.color_boost,
             )
             self.asset_index[item_key] = item_dir
@@ -241,8 +272,11 @@ class SessionBatchManager:
                 rating=cand.rating,
                 synopsis=cand.synopsis if req.include_synopsis else "",
                 lang=req.lang,
+                source_used=cand.source_used,
+                image_count=len(urls.panorama_streams_rgb565),
+                has_video=False,
                 video_ready=not req.include_video,
-                video_duration_s=req.video_max_duration_s if not req.include_video else 0.0,
+                video_duration_s=0.0,
                 video_fps=req.video_fps,
                 assets=urls,
             )
@@ -257,6 +291,7 @@ class SessionBatchManager:
         )
         if not req.include_video:
             slot.ready_at = time.monotonic()
+            logger.info("[SESSION] Static batch '%s' is immediately READY (%d items)", batch_id, len(items))
         else:
             for item in items:
                 self._enqueue_video_job(
@@ -268,6 +303,14 @@ class SessionBatchManager:
                     item_dir=dir_map[item.id],
                     req=req,
                 )
+            logger.info(
+                "[QUEUE] Enqueued %d video job(s) for batch '%s' (session=%s, queue_depth=%d, active_workers=%d)",
+                len(items),
+                batch_id,
+                session_id,
+                self.queue_depth,
+                self.active_workers,
+            )
 
         return slot
 
@@ -294,6 +337,32 @@ class SessionBatchManager:
         )
         self._queue.put_nowait(job)
 
+    async def _schedule_next_batch_if_needed(self, state: SessionState) -> None:
+        if state.next_batch is not None or state.next_batch_creating:
+            return
+        state.next_batch_creating = True
+        try:
+            next_slot = await self._create_batch_slot(
+                state.session_id,
+                state.domain,
+                state.request,
+                exclude_ids=state.seen_ids,
+                priority=JobPriority.LOW_PREFETCH,
+            )
+            for cand in next_slot.candidates.values():
+                state.seen_ids.add(cand.id)
+            state.next_batch = next_slot
+            logger.info(
+                "[SESSION] Pre-warming NextBatch '%s' one step ahead for session '%s' (seen_ids=%d)",
+                next_slot.batch_id,
+                state.session_id,
+                len(state.seen_ids),
+            )
+        except Exception as exc:
+            logger.error("[SESSION] Failed to schedule NextBatch for %s: %s", state.session_id, exc)
+        finally:
+            state.next_batch_creating = False
+
     async def _worker_loop(self, worker_id: int) -> None:
         loop = asyncio.get_running_loop()
         while self._running:
@@ -302,7 +371,6 @@ class SessionBatchManager:
             except asyncio.CancelledError:
                 break
 
-            # Skip if session was already purged or replaced
             session = self.sessions.get(job.session_id)
             if session is None and job.priority != int(JobPriority.HIGH_ON_DEMAND):
                 self._queue.task_done()
@@ -310,6 +378,14 @@ class SessionBatchManager:
 
             self._active_workers += 1
             t0 = time.monotonic()
+            logger.info(
+                "[WORKER #%d] Starting video job '%s' ('%s') | video_url=%s | youtube_url=%s",
+                worker_id,
+                job.item.id,
+                job.candidate.title,
+                job.candidate.video_url or "None",
+                job.candidate.youtube_url or "None",
+            )
             try:
                 master_dur = max(job.req.video_max_duration_s, settings.server_master_clip_max_s)
                 res = await loop.run_in_executor(
@@ -320,6 +396,7 @@ class SessionBatchManager:
                     job.candidate.badge,
                     job.candidate.theme_palette,
                     job.candidate.video_url,
+                    job.candidate.youtube_url,
                     job.req.width,
                     job.req.height,
                     job.req.video_fps,
@@ -328,31 +405,71 @@ class SessionBatchManager:
                     job.req.color_boost,
                     settings.worker_nice_increment,
                 )
+                has_vid = bool(res.get("has_video", False))
+                job.item.has_video = has_vid
                 job.item.video_ready = True
-                job.item.video_duration_s = min(
-                    float(res.get("duration_s", job.req.video_max_duration_s)),
-                    job.req.video_max_duration_s,
-                )
-                job.item.video_fps = int(res.get("fps", job.req.video_fps))
-                job.item.quality_score = int(res.get("quality_score", 85))
-
-                if session:
-                    for b in (session.current_batch, session.next_batch):
-                        if b and b.batch_id == job.batch_id and b.is_ready and b.ready_at is None:
-                            b.ready_at = time.monotonic()
+                if has_vid:
+                    job.item.video_duration_s = min(
+                        float(res.get("duration_s", job.req.video_max_duration_s)),
+                        job.req.video_max_duration_s,
+                    )
+                    job.item.video_fps = int(res.get("fps", job.req.video_fps))
+                    job.item.quality_score = int(res.get("quality_score", 85))
+                    gif_f = str(res.get("gif_file", ""))
+                    stream_f = str(res.get("stream_file", ""))
+                    job.item.assets.video_gif = (
+                        f"/api/v1/assets/{job.item.id}/{gif_f}?max_duration_s={job.req.video_max_duration_s}"
+                    )
+                    job.item.assets.video_stream_rgb565 = (
+                        f"/api/v1/assets/{job.item.id}/{stream_f}?max_duration_s={job.req.video_max_duration_s}"
+                    )
+                else:
+                    job.item.video_duration_s = 0.0
+                    job.item.assets.video_gif = ""
+                    job.item.assets.video_stream_rgb565 = ""
 
                 elapsed = time.monotonic() - t0
                 self._completed_jobs += 1
                 self._total_job_duration_s += elapsed
-                logger.info(
-                    "[Worker #%d] Video ready for %s (%s) in %.2fs",
-                    worker_id,
-                    job.item.id,
-                    job.item.title,
-                    elapsed,
-                )
+
+                if session:
+                    for b_label, b in (("CurrentBatch", session.current_batch), ("NextBatch", session.next_batch)):
+                        if b and b.batch_id == job.batch_id:
+                            logger.info(
+                                "[WORKER #%d] Finished '%s' (has_video=%s) in %.2fs -> %s '%s' progress: %d/%d ready",
+                                worker_id,
+                                job.item.title,
+                                has_vid,
+                                elapsed,
+                                b_label,
+                                b.batch_id,
+                                b.ready_count,
+                                len(b.items),
+                            )
+                            if b.is_ready and b.ready_at is None:
+                                b.ready_at = time.monotonic()
+                                logger.info(
+                                    "[SESSION] %s '%s' for session '%s' is NOW 100%% READY (%d/%d items)!",
+                                    b_label,
+                                    b.batch_id,
+                                    session.session_id,
+                                    b.ready_count,
+                                    len(b.items),
+                                )
+                                if b is session.current_batch and session.next_batch is None:
+                                    loop.create_task(self._schedule_next_batch_if_needed(session))
+                else:
+                    logger.info(
+                        "[WORKER #%d] Finished on-demand job '%s' (has_video=%s) in %.2fs",
+                        worker_id,
+                        job.item.title,
+                        has_vid,
+                        elapsed,
+                    )
             except Exception as exc:
-                logger.error("[Worker #%d] Failed video job %s: %s", worker_id, job.item.id, exc)
+                job.item.has_video = False
+                job.item.video_ready = True
+                logger.error("[WORKER #%d] Failed video job %s: %s", worker_id, job.item.id, exc)
             finally:
                 self._active_workers = max(0, self._active_workers - 1)
                 self._queue.task_done()
@@ -364,17 +481,22 @@ class SessionBatchManager:
         shutil.rmtree(batch_dir, ignore_errors=True)
 
     async def register_session(
-        self, domain: DomainType, req: SessionRegisterRequest
+        self,
+        domain: DomainType,
+        req: SessionRegisterRequest,
+        forced_session_id: Optional[str] = None,
     ) -> SessionRegisterResponse:
         self.start()
         self.cleanup_expired_sessions()
 
-        session_id = self._make_session_id(domain, req)
+        session_id = forced_session_id or self._make_session_id(domain, req)
         old = self.sessions.pop(session_id, None)
         if old:
             self._purge_batch_files(session_id, old.current_batch)
             if old.next_batch:
                 self._purge_batch_files(session_id, old.next_batch)
+            if old.retired_batch:
+                self._purge_batch_files(session_id, old.retired_batch)
 
         seen: Set[str] = set()
         batch = await self._create_batch_slot(session_id, domain, req, exclude_ids=seen)
@@ -389,6 +511,20 @@ class SessionBatchManager:
             seen_ids=seen,
         )
         self.sessions[session_id] = state
+
+        # If static-only (no video jobs), pre-warm NextBatch immediately
+        if batch.is_ready:
+            await self._schedule_next_batch_if_needed(state)
+
+        logger.info(
+            "[SESSION] Registered session '%s' (domain=%s, status=%s, items=%d, primary_source=%s, image_count=%d)",
+            session_id,
+            domain,
+            "ready" if batch.is_ready else "warming",
+            len(batch.items),
+            req.primary_source,
+            req.image_count,
+        )
 
         return SessionRegisterResponse(
             session_id=session_id,
@@ -405,6 +541,18 @@ class SessionBatchManager:
     ) -> Optional[BatchStatusResponse]:
         self.start()
         state = self.sessions.get(session_id)
+
+        # Auto-recover unknown session_id matching `ses_{domain}_...` (e.g. after Docker container restart)
+        if state is None and session_id.startswith(f"ses_{domain}_"):
+            logger.info(
+                "[SESSION] Auto-recovering unknown session_id '%s' for domain '%s' (container restart recovery)",
+                session_id,
+                domain,
+            )
+            default_req = SessionRegisterRequest(client_id=session_id)
+            await self.register_session(domain, default_req, forced_session_id=session_id)
+            state = self.sessions.get(session_id)
+
         if not state or state.domain != domain:
             return None
 
@@ -412,30 +560,34 @@ class SessionBatchManager:
         state.last_accessed = now
         cur = state.current_batch
 
-        # Check if we should rotate to NextBatch (when CurrentBatch TTL elapsed and NextBatch is ready)
+        # Rotate immediately to NextBatch on any subsequent turn poll once NextBatch is ready
         if (
             cur.is_ready
             and cur.served_count >= 1
-            and cur.ready_at is not None
-            and (now - cur.ready_at) >= settings.batch_ttl_seconds
+            and cur.last_served_at is not None
+            and (now - cur.last_served_at) >= 2.0
             and state.next_batch is not None
             and state.next_batch.is_ready
         ):
-            old_batch = state.current_batch
+            if state.retired_batch:
+                self._purge_batch_files(session_id, state.retired_batch)
+            state.retired_batch = state.current_batch
             state.current_batch = state.next_batch
             state.next_batch = None
             cur = state.current_batch
-            self._purge_batch_files(session_id, old_batch)
+            logger.info(
+                "[SESSION] Rotated session '%s' to fresh NextBatch '%s' -> items=%s",
+                session_id,
+                cur.batch_id,
+                [it.title for it in cur.items],
+            )
 
         if cur.is_ready:
             cur.served_count += 1
-            # Schedule NextBatch one step ahead if not already scheduled
-            if state.next_batch is None:
-                state.next_batch = await self._create_batch_slot(
-                    session_id, domain, state.request, exclude_ids=state.seen_ids
-                )
-                for cand in state.next_batch.candidates.values():
-                    state.seen_ids.add(cand.id)
+            cur.last_served_at = now
+            # Ensure NextBatch is scheduled one step ahead
+            if state.next_batch is None and not state.next_batch_creating:
+                await self._schedule_next_batch_if_needed(state)
 
         # Inject any ready high-priority on-demand items at the front
         ready_on_demand = [it for it in state.priority_on_demand_items if it.video_ready]
@@ -446,6 +598,16 @@ class SessionBatchManager:
             items_out = ready_on_demand + cur.items[: max(0, len(cur.items) - len(ready_on_demand))]
         else:
             items_out = cur.items
+
+        logger.info(
+            "[SESSION] Batch poll for '%s' (batch=%s): status=%s (%d/%d ready) | items=%s",
+            session_id,
+            cur.batch_id,
+            "ready" if cur.is_ready else "warming",
+            cur.ready_count,
+            len(cur.items),
+            [it.title for it in items_out],
+        )
 
         return BatchStatusResponse(
             session_id=session_id,
@@ -474,6 +636,11 @@ class SessionBatchManager:
             lang=on_demand_req.lang,
             width=on_demand_req.width,
             height=on_demand_req.height,
+            image_count=on_demand_req.image_count,
+            primary_source=on_demand_req.primary_source,
+            scraper_user=on_demand_req.scraper_user,
+            scraper_pass=on_demand_req.scraper_pass,
+            scraper_api_key=on_demand_req.scraper_api_key,
             video_max_duration_s=on_demand_req.video_max_duration_s,
             video_fps=on_demand_req.video_fps,
         )
@@ -493,8 +660,11 @@ class SessionBatchManager:
             cand.poster_url,
             cand.marquee_url,
             cand.backdrop_url,
+            cand.image_urls,
+            synth_req.image_count,
             synth_req.width,
             synth_req.height,
+            synth_req.video_fps,
             True,
         )
         self.asset_index[item_key] = item_dir
@@ -512,6 +682,9 @@ class SessionBatchManager:
             rating=cand.rating,
             synopsis=cand.synopsis,
             lang=on_demand_req.lang,
+            source_used=cand.source_used,
+            image_count=len(urls.panorama_streams_rgb565),
+            has_video=False,
             video_ready=False,
             video_duration_s=on_demand_req.video_max_duration_s,
             video_fps=on_demand_req.video_fps,
@@ -554,6 +727,8 @@ class SessionBatchManager:
                 self._purge_batch_files(sid, st.current_batch)
                 if st.next_batch:
                     self._purge_batch_files(sid, st.next_batch)
+                if st.retired_batch:
+                    self._purge_batch_files(sid, st.retired_batch)
                 shutil.rmtree(settings.cache_dir / sid, ignore_errors=True)
         return len(expired)
 

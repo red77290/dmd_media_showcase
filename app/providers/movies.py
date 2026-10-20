@@ -1,5 +1,5 @@
 """
-Multilingual Movies Provider (TMDB API v3 + Curated Multilingual Cinema Catalog).
+Multilingual Movies Provider (TMDB API v3 with YouTube Trailers + Wikipedia REST API Fallback + Curated Catalog).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from app.models import DomainType, SessionRegisterRequest
 from app.providers.base import BaseMediaProvider, RawMediaCandidate, clean_synopsis_text
 from app.providers.curated_catalogs import CURATED_MOVIES, pick_localized_text
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("dmd_showcase.scraper.movies")
 
 TMDB_LANG_MAP = {
     "fr": "fr-FR",
@@ -45,10 +45,16 @@ TMDB_GENRE_IDS = {
 class MoviesProvider(BaseMediaProvider):
     domain: DomainType = "movies"
 
+    def _resolve_tmdb_key(self, req: Optional[SessionRegisterRequest]) -> str:
+        if req and req.scraper_api_key and req.scraper_api_key.strip():
+            return req.scraper_api_key.strip()
+        return settings.tmdb_api_key
+
     async def _fetch_from_tmdb(
         self, req: SessionRegisterRequest, exclude: Set[str]
     ) -> List[RawMediaCandidate]:
-        if not settings.tmdb_api_key:
+        api_key = self._resolve_tmdb_key(req)
+        if not api_key or (req.primary_source or "").lower() == "wikipedia":
             return []
 
         short_lang = (req.lang or "fr").split("-")[0].lower()
@@ -60,7 +66,7 @@ class MoviesProvider(BaseMediaProvider):
             if g.lower() in TMDB_GENRE_IDS
         ]
         params: Dict[str, str] = {
-            "api_key": settings.tmdb_api_key,
+            "api_key": api_key,
             "language": tmdb_lang,
             "sort_by": "popularity.desc",
             "vote_count.gte": "200",
@@ -72,14 +78,15 @@ class MoviesProvider(BaseMediaProvider):
 
         candidates: List[RawMediaCandidate] = []
         try:
-            async with httpx.AsyncClient(timeout=4.5) as client:
+            async with httpx.AsyncClient(timeout=4.5, follow_redirects=True) as client:
                 resp = await client.get("https://api.themoviedb.org/3/discover/movie", params=params)
                 if resp.status_code != 200:
                     return []
                 results = resp.json().get("results") or []
                 random.shuffle(results)
                 for item in results:
-                    item_id = f"movie_tmdb_{item.get('id')}"
+                    tmdb_id = item.get("id")
+                    item_id = f"movie_tmdb_{tmdb_id}"
                     if item_id in exclude:
                         continue
                     release_date = item.get("release_date") or "1990"
@@ -87,6 +94,9 @@ class MoviesProvider(BaseMediaProvider):
                     poster_path = item.get("poster_path")
                     backdrop_path = item.get("backdrop_path")
                     vote = float(item.get("vote_average") or 7.5)
+
+                    poster_url = f"https://image.tmdb.org/t/p/w342{poster_path}" if poster_path else None
+                    backdrop_url = f"https://image.tmdb.org/t/p/w500{backdrop_path}" if backdrop_path else None
 
                     cand = RawMediaCandidate(
                         id=item_id,
@@ -99,15 +109,69 @@ class MoviesProvider(BaseMediaProvider):
                         rating=f"★ {vote:.1f}",
                         synopsis=clean_synopsis_text(item.get("overview")),
                         lang=req.lang,
-                        poster_url=f"https://image.tmdb.org/t/p/w185{poster_path}" if poster_path else None,
-                        backdrop_url=f"https://image.tmdb.org/t/p/w300{backdrop_path}" if backdrop_path else None,
+                        poster_url=poster_url,
+                        backdrop_url=backdrop_url,
+                        source_used="tmdb",
                     )
+                    cand.add_unique_image(backdrop_url)
+                    cand.add_unique_image(poster_url)
+
+                    # Query TMDB /videos for official YouTube trailer
+                    try:
+                        v_resp = await client.get(
+                            f"https://api.themoviedb.org/3/movie/{tmdb_id}/videos",
+                            params={"api_key": api_key, "language": tmdb_lang},
+                        )
+                        if v_resp.status_code == 200:
+                            vids = v_resp.json().get("results") or []
+                            for v in vids:
+                                if v.get("site") == "YouTube" and v.get("key"):
+                                    cand.youtube_url = f"https://www.youtube.com/watch?v={v['key']}"
+                                    break
+                    except Exception:
+                        pass
+
                     candidates.append(cand)
                     if len(candidates) >= req.count:
                         break
         except Exception as exc:
-            logger.warning("TMDB movie discover fallback to curated catalog: %s", exc)
+            logger.info("[SCRAPER:movies] TMDB discover fallback to curated catalog: %s", exc)
         return candidates
+
+    async def _enrich_with_wikipedia(
+        self, candidate: RawMediaCandidate, wiki_slug: str
+    ) -> RawMediaCandidate:
+        if not wiki_slug:
+            return candidate
+        try:
+            async with httpx.AsyncClient(
+                timeout=3.5,
+                follow_redirects=True,
+                headers={"User-Agent": "dmd-media-showcase/1.0"},
+            ) as client:
+                resp = await client.get(
+                    f"https://en.wikipedia.org/api/rest_v1/page/summary/{wiki_slug}"
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    thumb = (data.get("thumbnail") or {}).get("source")
+                    orig = (data.get("originalimage") or {}).get("source")
+                    if thumb and not candidate.poster_url:
+                        candidate.poster_url = thumb
+                    if orig:
+                        candidate.add_unique_image(orig)
+                    elif thumb:
+                        candidate.add_unique_image(thumb)
+                    candidate.source_used = "wikipedia"
+                    logger.info(
+                        "[SCRAPER:movies] Wikipedia enriched '%s' -> poster=%s, images=%d",
+                        candidate.title,
+                        bool(candidate.poster_url),
+                        len(candidate.image_urls),
+                    )
+        except Exception as exc:
+            logger.info("[SCRAPER:movies] Wikipedia enrichment skipped for '%s': %s", wiki_slug, exc)
+        return candidate
 
     def _entry_to_candidate(self, entry: dict, lang: str) -> RawMediaCandidate:
         return RawMediaCandidate(
@@ -129,7 +193,7 @@ class MoviesProvider(BaseMediaProvider):
         req: SessionRegisterRequest,
         exclude_ids: Optional[Set[str]] = None,
     ) -> List[RawMediaCandidate]:
-        exclude = exclude_ids or set()
+        exclude = set(exclude_ids or set())
         tmdb_items = await self._fetch_from_tmdb(req, exclude)
         if len(tmdb_items) >= req.count:
             return tmdb_items[: req.count]
@@ -137,18 +201,21 @@ class MoviesProvider(BaseMediaProvider):
         req_genres = {g.lower().strip() for g in req.genres if g.strip() and g.lower() != "all"}
         req_decades = {d.lower().strip() for d in req.decades if d.strip() and d.lower() != "all"}
 
-        pool = [
+        matching_all = [
             m
             for m in CURATED_MOVIES
             if (not req_genres or bool(req_genres.intersection(m["genres"])))
             and (not req_decades or m["decade"].lower() in req_decades)
             and m.get("rating_num", 8.0) >= req.min_rating
-            and m["id"] not in exclude
         ]
-        if not pool:
-            pool = list(CURATED_MOVIES)
+        if not matching_all:
+            matching_all = list(CURATED_MOVIES)
 
-        shuffled = list(pool)
+        unseen = [m for m in matching_all if m["id"] not in exclude]
+        if len(unseen) < req.count:
+            unseen = list(matching_all)
+
+        shuffled = list(unseen)
         random.shuffle(shuffled)
         results = list(tmdb_items)
         idx = 0
@@ -157,9 +224,16 @@ class MoviesProvider(BaseMediaProvider):
             cand = self._entry_to_candidate(entry, req.lang)
             if idx >= len(shuffled):
                 cand.id = f"{cand.id}_{idx}"
+            cand = await self._enrich_with_wikipedia(cand, entry.get("wiki_slug", ""))
             results.append(cand)
             idx += 1
 
+        logger.info(
+            "[SCRAPER:movies] Selected %d movies (source=%s): %s",
+            len(results),
+            req.primary_source,
+            [c.title for c in results],
+        )
         return results
 
     async def search_on_demand(
@@ -171,11 +245,18 @@ class MoviesProvider(BaseMediaProvider):
         for entry in CURATED_MOVIES:
             for t in entry["title"].values():
                 if q_low in t.lower():
-                    return self._entry_to_candidate(entry, lang)
-        return self._entry_to_candidate(CURATED_MOVIES[0], lang)
+                    cand = self._entry_to_candidate(entry, lang)
+                    return await self._enrich_with_wikipedia(cand, entry.get("wiki_slug", ""))
+        cand = self._entry_to_candidate(CURATED_MOVIES[0], lang)
+        return await self._enrich_with_wikipedia(cand, CURATED_MOVIES[0].get("wiki_slug", ""))
 
     def available_filters(self, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:
         return {
+            "sources": [
+                {"id": "auto", "label": "Auto (TMDB -> Wikipedia)"},
+                {"id": "tmdb", "label": "TMDB API v3 (Requires Free Key)"},
+                {"id": "wikipedia", "label": "Wikipedia / Wikimedia (Keyless)"},
+            ],
             "genres": [
                 {"id": "scifi", "label": "Sci-Fi"},
                 {"id": "action", "label": "Action"},

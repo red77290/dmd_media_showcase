@@ -15,8 +15,9 @@ SupportedLang = Literal["fr", "en", "es", "de", "it", "pt", "ja"]
 class JobPriority(IntEnum):
     """Priority levels in the bounded FIFO worker queue."""
 
-    HIGH_ON_DEMAND = 1  # Reserved for on-demand / voice assistant requests (Google Home, etc.)
-    NORMAL_BATCH = 10   # Standard DMD rotation batch preparation
+    HIGH_ON_DEMAND = 1   # Reserved for on-demand / voice assistant requests (Google Home, etc.)
+    NORMAL_BATCH = 10    # Standard DMD CurrentBatch preparation
+    LOW_PREFETCH = 20    # Background NextBatch pre-warming ("one step ahead")
 
 
 class SessionRegisterRequest(BaseModel):
@@ -27,13 +28,13 @@ class SessionRegisterRequest(BaseModel):
 
     client_id: Optional[str] = Field(
         default=None,
-        description="Optional stable identifier for the DMD engine instance (e.g. 'rpi-living:retro_games_1').",
+        description="Optional stable identifier for the DMD engine instance (e.g. 'rpi_games').",
     )
     count: int = Field(
         default=3,
         ge=1,
         le=25,
-        description="Exact number of random items (and videos) to preload per rotation turn.",
+        description="Exact number of random items to preload per rotation turn.",
     )
     lang: str = Field(
         default="fr",
@@ -42,11 +43,38 @@ class SessionRegisterRequest(BaseModel):
     width: int = Field(default=128, ge=32, le=512, description="Target LED matrix width in pixels.")
     height: int = Field(default=32, ge=16, le=256, description="Target LED matrix height in pixels.")
 
-    # Component toggles chosen by the DMD user
+    # Component toggles & image count chosen by the DMD user
     include_poster: bool = True
     include_synopsis: bool = True
     include_snapshot: bool = True
     include_video: bool = True
+    image_count: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="Number of top-to-bottom scrolling panorama images to generate per item (0..5).",
+    )
+
+    # Scraper source selection & optional credentials forwarded from the DMD engine config
+    primary_source: str = Field(
+        default="auto",
+        description=(
+            "Preferred primary scraper source ('auto', 'screenscraper', 'arcadeitalia', 'libretro', "
+            "'tmdb', 'tvdb', 'tvmaze', 'animethemes', 'jikan', 'wikipedia'). Other sources are used as fallback."
+        ),
+    )
+    scraper_user: str = Field(
+        default="",
+        description="Optional scraper username (e.g. ScreenScraper account) configured on the DMD engine.",
+    )
+    scraper_pass: str = Field(
+        default="",
+        description="Optional scraper password configured on the DMD engine.",
+    )
+    scraper_api_key: str = Field(
+        default="",
+        description="Optional API key (TMDB, TheTVDB, or ScreenScraper devid:devpassword) configured on the DMD engine.",
+    )
 
     # Video & Colorimetry parameters
     video_max_duration_s: float = Field(
@@ -56,7 +84,9 @@ class SessionRegisterRequest(BaseModel):
         description="Maximum video duration in seconds requested by the DMD.",
     )
     video_fps: int = Field(default=15, ge=6, le=30, description="Target video frame rate.")
-    video_mode: Literal["auto_action", "center_crop", "pixel_art", "anime", "cinema"] = "auto_action"
+    video_mode: Literal[
+        "auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"
+    ] = "auto_action"
     color_boost: bool = True
 
     # Domain-specific filters
@@ -85,8 +115,11 @@ class MediaAssetsUrls(BaseModel):
     marquee_rgb565: str
     snapshot_pan_png: str
     snapshot_pan_rgb565: str
-    video_gif: str
-    video_stream_rgb565: str
+    panorama_gifs: List[str] = Field(default_factory=list)
+    panorama_streams_rgb565: List[str] = Field(default_factory=list)
+    snapshots_pan_rgb565: List[str] = Field(default_factory=list)
+    video_gif: str = ""
+    video_stream_rgb565: str = ""
 
 
 class MediaShowcaseItem(BaseModel):
@@ -102,6 +135,9 @@ class MediaShowcaseItem(BaseModel):
     rating: str
     synopsis: str
     lang: str = "fr"
+    source_used: str = "catalog"
+    image_count: int = 0
+    has_video: bool = False
     video_ready: bool = False
     video_duration_s: float = 0.0
     video_fps: int = 15
@@ -149,8 +185,13 @@ class OnDemandRequest(BaseModel):
     lang: str = "fr"
     width: int = 128
     height: int = 32
+    image_count: int = 2
     video_max_duration_s: float = 8.0
     video_fps: int = 15
+    primary_source: str = "auto"
+    scraper_user: str = ""
+    scraper_pass: str = ""
+    scraper_api_key: str = ""
     target_session_id: Optional[str] = Field(
         default=None,
         description="If provided, injects the prepared item at the front of this DMD session's priority queue.",
