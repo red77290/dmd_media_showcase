@@ -1,5 +1,5 @@
 """
-Multilingual Anime Provider (TMDB/TheTVDB localized metadata + AnimeThemes.moe / Jikan v4 Openings & PVs).
+Multilingual Anime Provider (AnimeThemes.moe direct OP/ED streams + Jikan v4 / MyAnimeList + TMDB).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from app.models import DomainType, SessionRegisterRequest
 from app.providers.base import BaseMediaProvider, RawMediaCandidate, clean_synopsis_text
 from app.providers.curated_catalogs import CURATED_ANIME, pick_localized_text
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("dmd_showcase.scraper.anime")
 
 
 class AnimeProvider(BaseMediaProvider):
@@ -25,14 +25,15 @@ class AnimeProvider(BaseMediaProvider):
             return None
         target_prefix = "OP" if video_type == "opening" else ("ED" if video_type == "ending" else "")
         try:
-            async with httpx.AsyncClient(timeout=3.5) as client:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
                 resp = await client.get(
                     f"https://api.animethemes.moe/anime/{slug}",
-                    params={"include": "animethemes.animethemeentries.videos"},
+                    params={"include": "animethemes.animethemeentries.videos,images"},
                 )
                 if resp.status_code != 200:
                     return None
-                themes = resp.json().get("anime", {}).get("animethemes") or []
+                anime_obj = resp.json().get("anime") or {}
+                themes = anime_obj.get("animethemes") or []
                 for theme in themes:
                     ttype = theme.get("type", "")
                     if target_prefix and not ttype.startswith(target_prefix):
@@ -43,8 +44,58 @@ class AnimeProvider(BaseMediaProvider):
                             if link:
                                 return link
         except Exception as exc:
-            logger.debug("AnimeThemes lookup skipped for %s: %s", slug, exc)
+            logger.info("[SCRAPER:anime] AnimeThemes lookup skipped for '%s': %s", slug, exc)
         return None
+
+    async def _enrich_with_jikan(self, candidate: RawMediaCandidate, mal_id: int) -> None:
+        if not mal_id:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=3.5, follow_redirects=True) as client:
+                resp = await client.get(f"https://api.jikan.moe/v4/anime/{mal_id}")
+                if resp.status_code == 200:
+                    data = resp.json().get("data") or {}
+                    images = (data.get("images") or {}).get("jpg") or {}
+                    large_img = images.get("large_image_url") or images.get("image_url")
+                    if large_img:
+                        if not candidate.poster_url:
+                            candidate.poster_url = large_img
+                        candidate.add_unique_image(large_img)
+                    trailer = data.get("trailer") or {}
+                    yt_id = trailer.get("youtube_id")
+                    if yt_id and not candidate.youtube_url:
+                        candidate.youtube_url = f"https://www.youtube.com/watch?v={yt_id}"
+        except Exception as exc:
+            logger.info("[SCRAPER:anime] Jikan v4 lookup skipped for mal_id=%s: %s", mal_id, exc)
+
+    async def _enrich_candidate(
+        self, cand: RawMediaCandidate, entry: dict, req: SessionRegisterRequest
+    ) -> RawMediaCandidate:
+        slug = entry.get("animethemes_slug", "")
+        mal_id = int(entry.get("mal_id", 0) or 0)
+        primary = (req.primary_source or "auto").lower().strip()
+
+        if primary == "jikan":
+            await self._enrich_with_jikan(cand, mal_id)
+            vid = await self._fetch_animethemes_video(slug, req.video_type)
+            if vid and not cand.video_url:
+                cand.video_url = vid
+        else:
+            vid = await self._fetch_animethemes_video(slug, req.video_type)
+            if vid:
+                cand.video_url = vid
+                cand.source_used = "animethemes"
+            await self._enrich_with_jikan(cand, mal_id)
+
+        logger.info(
+            "[SCRAPER:anime] Enriched '%s' -> poster=%s, images=%d, direct_video=%s, youtube=%s",
+            cand.title,
+            bool(cand.poster_url),
+            len(cand.image_urls),
+            bool(cand.video_url),
+            bool(cand.youtube_url),
+        )
+        return cand
 
     def _entry_to_candidate(self, entry: dict, lang: str) -> RawMediaCandidate:
         return RawMediaCandidate(
@@ -70,21 +121,24 @@ class AnimeProvider(BaseMediaProvider):
         req: SessionRegisterRequest,
         exclude_ids: Optional[Set[str]] = None,
     ) -> List[RawMediaCandidate]:
-        exclude = exclude_ids or set()
+        exclude = set(exclude_ids or set())
         req_genres = {g.lower().strip() for g in req.genres if g.strip() and g.lower() != "all"}
         req_decades = {d.lower().strip() for d in req.decades if d.strip() and d.lower() != "all"}
 
-        pool = [
+        matching_all = [
             a
             for a in CURATED_ANIME
             if (not req_genres or bool(req_genres.intersection(a["genres"])))
             and (not req_decades or a["decade"].lower() in req_decades)
-            and a["id"] not in exclude
         ]
-        if not pool:
-            pool = list(CURATED_ANIME)
+        if not matching_all:
+            matching_all = list(CURATED_ANIME)
 
-        shuffled = list(pool)
+        unseen = [a for a in matching_all if a["id"] not in exclude]
+        if len(unseen) < req.count:
+            unseen = list(matching_all)
+
+        shuffled = list(unseen)
         random.shuffle(shuffled)
         results: List[RawMediaCandidate] = []
         idx = 0
@@ -93,9 +147,16 @@ class AnimeProvider(BaseMediaProvider):
             cand = self._entry_to_candidate(entry, req.lang)
             if idx >= len(shuffled):
                 cand.id = f"{cand.id}_{idx}"
+            cand = await self._enrich_candidate(cand, entry, req)
             results.append(cand)
             idx += 1
 
+        logger.info(
+            "[SCRAPER:anime] Selected %d anime items (source=%s): %s",
+            len(results),
+            req.primary_source,
+            [c.title for c in results],
+        )
         return results
 
     async def search_on_demand(
@@ -104,14 +165,22 @@ class AnimeProvider(BaseMediaProvider):
         lang: str = "fr",
     ) -> Optional[RawMediaCandidate]:
         q_low = query.lower().strip()
+        synth_req = SessionRegisterRequest(count=1, lang=lang)
         for entry in CURATED_ANIME:
             for t in entry["title"].values():
                 if q_low in t.lower():
-                    return self._entry_to_candidate(entry, lang)
-        return self._entry_to_candidate(CURATED_ANIME[0], lang)
+                    cand = self._entry_to_candidate(entry, lang)
+                    return await self._enrich_candidate(cand, entry, synth_req)
+        cand = self._entry_to_candidate(CURATED_ANIME[0], lang)
+        return await self._enrich_candidate(cand, CURATED_ANIME[0], synth_req)
 
     def available_filters(self, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:
         return {
+            "sources": [
+                {"id": "auto", "label": "Auto (AnimeThemes.moe -> Jikan v4)"},
+                {"id": "animethemes", "label": "AnimeThemes.moe (Direct OP/ED Videos)"},
+                {"id": "jikan", "label": "Jikan v4 / MyAnimeList"},
+            ],
             "genres": [
                 {"id": "shonen", "label": "Shonen"},
                 {"id": "seinen", "label": "Seinen"},

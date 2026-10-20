@@ -52,9 +52,21 @@ class RawMediaCandidate:
     poster_url: Optional[str] = None
     marquee_url: Optional[str] = None
     backdrop_url: Optional[str] = None
+    image_urls: List[str] = field(default_factory=list)
     video_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    source_used: str = "curated"
     theme_palette: Tuple[int, int, int] = (230, 74, 25)
     extra_meta: Dict[str, str] = field(default_factory=dict)
+
+    def add_unique_image(self, url: Optional[str]) -> None:
+        """Append an image URL to `image_urls` if valid and not already present."""
+        if not url or not url.startswith(("http://", "https://")):
+            return
+        if url not in self.image_urls:
+            self.image_urls.append(url)
+        if not self.backdrop_url:
+            self.backdrop_url = url
 
 
 class BaseMediaProvider(ABC):
