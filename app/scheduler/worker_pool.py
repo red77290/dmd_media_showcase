@@ -526,6 +526,40 @@ class SessionBatchManager:
         self.cleanup_expired_sessions()
 
         session_id = forced_session_id or self._make_session_id(domain, req)
+        existing = self.sessions.get(session_id)
+        if (
+            existing is not None
+            and existing.domain == domain
+            and existing.request.width == req.width
+            and existing.request.height == req.height
+            and existing.request.lang == req.lang
+            and existing.request.primary_source == req.primary_source
+            and existing.request.include_video == req.include_video
+            and existing.request.jacket_panorama == req.jacket_panorama
+            and existing.request.marquee_panorama == req.marquee_panorama
+            and existing.request.effective_snapshot_count() == req.effective_snapshot_count()
+            and len(existing.current_batch.items) > 0
+        ):
+            existing.last_accessed = time.monotonic()
+            cur_b = existing.current_batch
+            logger.info(
+                "[SESSION] Reusing active session '%s' (domain=%s, status=%s, ready=%d/%d)",
+                session_id,
+                domain,
+                "ready" if cur_b.is_ready else "warming",
+                cur_b.ready_count,
+                len(cur_b.items),
+            )
+            return SessionRegisterResponse(
+                session_id=session_id,
+                domain=domain,
+                status="ready" if cur_b.is_ready else "warming",
+                batch_size=len(cur_b.items),
+                ready_count=cur_b.ready_count,
+                queue_depth=self.queue_depth,
+                active_workers=self.active_workers,
+            )
+
         old = self.sessions.pop(session_id, None)
         if old:
             self._purge_batch_files(session_id, old.current_batch)

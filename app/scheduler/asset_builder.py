@@ -304,85 +304,43 @@ def _convert_image_to_panorama_gif_and_stream(
     pan_h = height * 2 + 8
     src_img_path = out_dir / f"_src_{stem}.png"
 
-    try:
-        with Image.open(io.BytesIO(raw_image_bytes)) as pil_src:
-            rgb_src = pil_src.convert("RGB")
-            rgb_src.save(src_img_path, format="PNG")
-
-            pan_fitted = ImageOps.fit(
-                rgb_src,
-                (width, pan_h),
-                method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.5),
-            )
-            if color_boost:
-                pan_fitted = ImageEnhance.Contrast(pan_fitted).enhance(1.20)
-                pan_fitted = ImageEnhance.Color(pan_fitted).enhance(1.25)
-            static_png_name = f"{stem}_{width}x{pan_h}.png"
-            static_rgb565_name = f"{stem}_{width}x{pan_h}.rgb565"
-            pan_fitted.save(out_dir / static_png_name, format="PNG", optimize=True)
-            (out_dir / static_rgb565_name).write_bytes(
-                rgb888_to_rgb565_le(np.asarray(pan_fitted, dtype=np.uint8))
-            )
-    except Exception as exc:
-        src_img_path.unlink(missing_ok=True)
-        logger.info("[CONVERTER] Failed to decode source image for %s: %s", stem, exc)
-        return None
-
     processor = DmdMediaProcessor()
     try:
-        if hasattr(processor, "process_image_panorama"):
-            res = processor.process_image_panorama(
-                input_image=src_img_path,
-                output_dir=out_dir,
-                width=width,
-                height=height,
-                fps=max(15, fps),
-                duration_s=duration_s,
-                smart_color_boost=color_boost,
-                export_gif=True,
-                export_rgb565_stream=True,
-                stem=stem,
-            )
-            src_img_path.unlink(missing_ok=True)
-            if res.gif_path and res.rgb565_stream_path and res.frame_count > 0:
-                logger.info(
-                    "[CONVERTER] Built smooth panorama '%s' (%dx%d, %d frames @ %dfps)",
-                    stem,
-                    width,
-                    height,
-                    res.frame_count,
-                    res.fps,
-                )
-                return res.gif_path.name, res.rgb565_stream_path.name, static_rgb565_name
+        with Image.open(io.BytesIO(raw_image_bytes)) as pil_src:
+            pil_src.convert("RGB").save(src_img_path, format="PNG")
 
-        # Fallback if `process_image_panorama` is unavailable
-        gif_name = f"{stem}_{width}x{height}.gif"
-        stream_name = f"{stem}_{width}x{height}.rgb565.stream"
-        gif_out = out_dir / gif_name
-        stream_out = out_dir / stream_name
-        scroll_speed = max(12.0, min(40.0, 64.0 / max(1.5, duration_s)))
-        params = {
-            **DEFAULT_PARAMS,
-            "target_width": width,
-            "target_height": height,
-            "fps_min": fps,
-            "fps_max": fps,
-            "scroll_enabled": True,
-            "scroll_cycles": 0.999,
-            "scroll_speed": scroll_speed,
-            "auto_action_enabled": False,
-            "auto_color_enabled": color_boost,
-        }
-        ok, _ = process_file(src_path=str(src_img_path), out_path=str(gif_out), params=params)
+        _, static_rgb565_path = processor.process_pan_backdrop(
+            input_image=src_img_path,
+            output_dir=out_dir,
+            width=width,
+            height=pan_h,
+            smart_color_boost=color_boost,
+            stem=stem,
+        )
+        res = processor.process_image_panorama(
+            input_image=src_img_path,
+            output_dir=out_dir,
+            width=width,
+            height=height,
+            fps=max(15, fps),
+            duration_s=duration_s,
+            smart_color_boost=color_boost,
+            export_gif=True,
+            export_rgb565_stream=True,
+            stem=stem,
+        )
         src_img_path.unlink(missing_ok=True)
-        if not ok or not gif_out.exists():
-            return None
-        frames_rgb, eff_fps = extract_frames_from_gif(gif_out)
-        if not frames_rgb:
-            return None
-        write_rgb565_stream(frames_rgb, stream_out, fps=eff_fps)
-        return gif_name, stream_name, static_rgb565_name
+        if res.gif_path and res.rgb565_stream_path and res.frame_count > 0:
+            logger.info(
+                "[CONVERTER] Built panorama '%s' via dmd_gif_converter pipeline (%dx%d, %d frames @ %dfps)",
+                stem,
+                width,
+                height,
+                res.frame_count,
+                res.fps,
+            )
+            return res.gif_path.name, res.rgb565_stream_path.name, static_rgb565_path.name
+        return None
     except Exception as exc:
         src_img_path.unlink(missing_ok=True)
         logger.info("[CONVERTER] Panorama conversion error for %s: %s", stem, exc)
