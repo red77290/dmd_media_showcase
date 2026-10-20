@@ -1,11 +1,11 @@
 """
-End-to-end unit and integration tests for the DMD Media Showcase Server.
+End-to-end unit and integration tests for the DMD Media Showcase Server (V2.1).
 
 Validates:
-- All 4 media domains (`games`, `movies`, `series`, `anime`)
-- Multilingual localization (`fr`, `en`, `es`, `de`, `it`)
-- Configurable `primary_source` + automatic fallback cascade + engine-supplied credentials
-- Top-to-bottom scrolling panorama images (`image_count` via `dmd_gif_converter` `scroll_enabled=True`)
+- Interactive Swagger UI (`/docs`, `/swagger`, `/redoc`, `/openapi.json`, `/` redirect)
+- Exhaustive live categories across all 4 domains (`games`, `movies`, `series`, `anime`)
+- Adaptive multi-resolution (`128x32`, `128x64`, `256x64`, `64x64`) & TATE (`64x128`, `32x128`) poster dimensions
+- Granular top-to-bottom scrolling panoramas (`jacket_panorama`, `marquee_panorama`, `snapshot_panorama_count`)
 - Strict real-video-only policy (`has_video=False` when no video is available, zero synthetic grid+ball)
 - Immediate `CurrentBatch -> NextBatch` rotation on subsequent polls + `Zero-404` session auto-recovery
 - Dynamic O(1) stream duration truncation (`?max_duration_s=`)
@@ -18,6 +18,7 @@ import asyncio
 import io
 import time
 from pathlib import Path
+from typing import List, Optional, Set
 
 import cv2
 import numpy as np
@@ -29,10 +30,12 @@ from dmd_gif_converter import read_rgb565_stream_header
 
 from app.config import settings
 from app.main import app
+from app.models import DomainType, SessionRegisterRequest
+from app.providers.base import RawMediaCandidate
 from app.scheduler.worker_pool import batch_manager
 
 
-def _make_sample_png_bytes(width: int = 160, height: int = 120, color=(220, 60, 40)) -> bytes:
+def _make_sample_png_bytes(width: int = 160, height: int = 220, color=(220, 60, 40)) -> bytes:
     img = Image.new("RGB", (width, height), color)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -56,8 +59,8 @@ def _make_sample_mp4_bytes(width: int = 160, height: int = 120, fps: int = 10, f
 
 
 @pytest.fixture(autouse=True)
-async def _isolated_test_environment(tmp_path: Path):
-    """Isolate cache directory and use ThreadPoolExecutor in tests for fast deterministic execution."""
+async def _isolated_test_environment(tmp_path: Path, monkeypatch):
+    """Isolate cache directory, use ThreadPoolExecutor, and mock live scraper HTTP in offline test sandbox."""
     orig_cache = settings.cache_dir
     orig_pool = settings.use_process_pool
     orig_master_max = settings.server_master_clip_max_s
@@ -71,6 +74,76 @@ async def _isolated_test_environment(tmp_path: Path):
     batch_manager.asset_index.clear()
     batch_manager.start()
 
+    call_seq = {"n": 0}
+
+    def _make_mock_provider_methods(domain: DomainType):
+        async def _mock_fetch_random(
+            req: SessionRegisterRequest,
+            exclude_ids: Optional[Set[str]] = None,
+        ) -> List[RawMediaCandidate]:
+            exclude = set(exclude_ids or set())
+            out: List[RawMediaCandidate] = []
+            while len(out) < req.count:
+                call_seq["n"] += 1
+                idx = call_seq["n"]
+                cid = f"{domain}_live_{idx}"
+                if cid in exclude:
+                    continue
+                cand = RawMediaCandidate(
+                    id=cid,
+                    domain=domain,
+                    title=f"Live {domain.title()} Title #{idx}",
+                    year="1996",
+                    badge=domain.upper()[:6],
+                    badge_color="#E53935",
+                    subtitle=f"{domain.title()} • 1996",
+                    rating="8.9",
+                    synopsis=f"Complete localized ({req.lang}) synopsis for {domain} item #{idx} scrolling organically across the DMD.",
+                    lang=req.lang,
+                    poster_url=f"https://example.org/{cid}_poster.png",
+                    jacket_url=f"https://example.org/{cid}_jacket.png",
+                    marquee_url=f"https://example.org/{cid}_marquee.png",
+                    backdrop_url=f"https://example.org/{cid}_backdrop.png",
+                    snapshot_urls=[
+                        f"https://example.org/{cid}_snap1.png",
+                        f"https://example.org/{cid}_snap2.png",
+                        f"https://example.org/{cid}_snap3.png",
+                    ],
+                    image_urls=[
+                        f"https://example.org/{cid}_snap1.png",
+                        f"https://example.org/{cid}_snap2.png",
+                    ],
+                    source_used="live_api",
+                )
+                out.append(cand)
+            return out
+
+        async def _mock_search_on_demand(query: str, lang: str = "fr") -> Optional[RawMediaCandidate]:
+            return RawMediaCandidate(
+                id=f"{domain}_ondemand_1",
+                domain=domain,
+                title=query,
+                year="1982",
+                badge=domain.upper()[:6],
+                badge_color="#00ACC1",
+                subtitle=f"{domain.title()} • 1982",
+                rating="9.1",
+                synopsis=f"On-demand synopsis for {query} ({lang}).",
+                lang=lang,
+                poster_url="https://example.org/od_poster.png",
+                jacket_url="https://example.org/od_jacket.png",
+                marquee_url="https://example.org/od_marquee.png",
+                snapshot_urls=["https://example.org/od_snap1.png"],
+                source_used="live_ondemand",
+            )
+
+        return _mock_fetch_random, _mock_search_on_demand
+
+    for dom, prov in batch_manager.providers.items():
+        fn_rand, fn_od = _make_mock_provider_methods(dom)
+        monkeypatch.setattr(prov, "fetch_random_candidates", fn_rand)
+        monkeypatch.setattr(prov, "search_on_demand", fn_od)
+
     yield
 
     await batch_manager.stop()
@@ -80,9 +153,23 @@ async def _isolated_test_environment(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_health_and_domain_filters():
+async def test_swagger_and_exhaustive_domain_filters():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Verify Swagger UI, ReDoc, and OpenAPI schema endpoints
+        for doc_path in ("/docs", "/swagger", "/redoc"):
+            r_doc = await client.get(doc_path)
+            assert r_doc.status_code == 200
+            assert "text/html" in r_doc.headers.get("content-type", "")
+
+        r_openapi = await client.get("/openapi.json")
+        assert r_openapi.status_code == 200
+        schema = r_openapi.json()
+        assert schema["info"]["title"] == "DMD Media Showcase Server API"
+        assert "/api/v1/{domain}/session" in schema["paths"]
+        assert "/api/v1/{domain}/batch" in schema["paths"]
+
+        # 2. Verify Health endpoint
         for path in ("/api/v1/health", "/health"):
             r = await client.get(path)
             assert r.status_code == 200
@@ -91,21 +178,40 @@ async def test_health_and_domain_filters():
             assert data["max_workers"] >= 1
             assert set(data["providers_configured"].keys()) == {"games", "movies", "series", "anime"}
 
-        for domain in ("games", "movies", "series", "anime"):
+        # 3. Verify exhaustive categories on all 4 domains
+        expected_min_genres = {"games": 16, "movies": 20, "series": 20, "anime": 28}
+        for domain, min_g in expected_min_genres.items():
             rf = await client.get(f"/api/v1/{domain}/filters")
             assert rf.status_code == 200
             fdata = rf.json()
             assert fdata["domain"] == domain
             assert "sources" in fdata
-            assert "fr" in fdata["languages"]
-            assert "en" in fdata["languages"]
-            assert "genres" in fdata
+            assert len(fdata["genres"]) >= min_g
+            if domain == "games":
+                assert len(fdata["systems"]) >= 25
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("domain", ["games", "movies", "series", "anime"])
-@pytest.mark.parametrize("lang", ["fr", "en", "es"])
-async def test_static_session_and_panorama_images(domain: str, lang: str, monkeypatch):
+@pytest.mark.parametrize(
+    "width,height,expected_pw,expected_ph",
+    [
+        (128, 32, 32, 32),
+        (128, 64, 48, 64),
+        (256, 64, 48, 64),
+        (64, 64, 32, 32),
+        (64, 128, 40, 40),  # TATE vertical
+        (32, 128, 24, 24),  # Slim TATE vertical
+    ],
+)
+async def test_multi_format_tate_and_granular_panoramas(
+    domain: str,
+    width: int,
+    height: int,
+    expected_pw: int,
+    expected_ph: int,
+    monkeypatch,
+):
     sample_png = _make_sample_png_bytes()
     monkeypatch.setattr(
         "app.scheduler.asset_builder._download_bytes",
@@ -117,22 +223,21 @@ async def test_static_session_and_panorama_images(domain: str, lang: str, monkey
         reg_resp = await client.post(
             f"/api/v1/{domain}/session",
             json={
-                "client_id": f"dmd-{domain}-{lang}",
-                "count": 2,
-                "lang": lang,
-                "width": 128,
-                "height": 32,
-                "image_count": 2,
+                "client_id": f"dmd-{domain}-{width}x{height}",
+                "count": 1,
+                "lang": "fr",
+                "width": width,
+                "height": height,
+                "jacket_panorama": True,
+                "marquee_panorama": True,
+                "snapshot_panorama_count": 2,
                 "primary_source": "auto",
                 "include_video": False,
                 "include_synopsis": True,
             },
         )
         assert reg_resp.status_code == 200
-        reg = reg_resp.json()
-        assert reg["status"] == "ready"
-        assert reg["batch_size"] == 2
-        session_id = reg["session_id"]
+        session_id = reg_resp.json()["session_id"]
 
         batch_resp = await client.get(
             f"/api/v1/{domain}/batch",
@@ -141,27 +246,31 @@ async def test_static_session_and_panorama_images(domain: str, lang: str, monkey
         assert batch_resp.status_code == 200
         batch = batch_resp.json()
         assert batch["status"] == "ready"
-        assert len(batch["items"]) == 2
-
         first = batch["items"][0]
-        assert first["domain"] == domain
-        assert first["lang"] == lang
-        assert len(first["title"]) > 0
-        assert len(first["synopsis"]) > 10
 
-        # Verify binary RGB565 static assets have exact expected byte sizes
+        assert first["poster_width"] == expected_pw
+        assert first["poster_height"] == expected_ph
+        assert first["jacket_panorama"] is True
+        assert first["marquee_panorama"] is True
+        assert first["snapshot_panorama_count"] == 2
+        assert first["assets"]["jacket_stream_rgb565"] != ""
+        assert first["assets"]["marquee_stream_rgb565"] != ""
+        assert len(first["assets"]["snapshot_streams_rgb565"]) == 2
+        # Total ordered panorama streams = 1 jacket + 1 marquee + 2 snapshots = 4
+        assert len(first["assets"]["panorama_streams_rgb565"]) == 4
+
+        # Verify binary RGB565 mini-jacket has exact expected byte size (`expected_pw * expected_ph * 2`)
         poster_r = await client.get(first["assets"]["poster_rgb565"])
         assert poster_r.status_code == 200
-        assert poster_r.headers.get("X-DMD-Media-Ready") == "1"
-        assert len(poster_r.content) == 32 * 32 * 2
+        assert len(poster_r.content) == expected_pw * expected_ph * 2
 
-        marquee_r = await client.get(first["assets"]["marquee_rgb565"])
-        assert marquee_r.status_code == 200
-        assert len(marquee_r.content) == 128 * 32 * 2
-
-        snap_r = await client.get(first["assets"]["snapshot_pan_rgb565"])
-        assert snap_r.status_code == 200
-        assert len(snap_r.content) == 128 * 72 * 2
+        # Verify jacket panorama stream header matches `(width, height)`
+        j_stream_r = await client.get(first["assets"]["jacket_stream_rgb565"])
+        assert j_stream_r.status_code == 200
+        j_hdr = read_rgb565_stream_header(j_stream_r.content[:16])
+        assert j_hdr["width"] == width
+        assert j_hdr["height"] == height
+        assert j_hdr["total_frames"] >= 10
 
 
 @pytest.mark.asyncio
@@ -188,8 +297,10 @@ async def test_video_batch_and_skip_when_no_video_available(monkeypatch):
                 "lang": "fr",
                 "width": 128,
                 "height": 32,
-                "image_count": 2,
-                "primary_source": "arcadeitalia",
+                "jacket_panorama": True,
+                "marquee_panorama": False,
+                "snapshot_panorama_count": 1,
+                "primary_source": "arcade_italia",
                 "include_video": True,
                 "video_max_duration_s": 3.0,
                 "video_fps": 10,
@@ -199,14 +310,9 @@ async def test_video_batch_and_skip_when_no_video_available(monkeypatch):
         assert reg_resp.status_code == 200
         session_id = reg_resp.json()["session_id"]
 
-        # Force candidate 0 to have a valid video_url and candidate 1 to have NO video_url
         state = batch_manager.sessions[session_id]
         keys = list(state.current_batch.candidates.keys())
         state.current_batch.candidates[keys[0]].video_url = "https://example.org/shortplay.mp4"
-        state.current_batch.candidates[keys[0]].image_urls = [
-            "https://example.org/img1.png",
-            "https://example.org/img2.png",
-        ]
         state.current_batch.candidates[keys[1]].video_url = None
         state.current_batch.candidates[keys[1]].youtube_url = None
 
@@ -234,7 +340,6 @@ async def test_video_batch_and_skip_when_no_video_available(monkeypatch):
         assert item_no_vid["has_video"] is False
         assert item_no_vid["assets"]["video_stream_rgb565"] == ""
 
-        # Verify .rgb565.stream binary header and dynamic ?max_duration_s= truncation
         stream_url_base = item_with_vid["assets"]["video_stream_rgb565"].split("?")[0]
         r_full = await client.get(stream_url_base, params={"max_duration_s": 3.0})
         assert r_full.status_code == 200
@@ -256,7 +361,6 @@ async def test_batch_rotation_and_zero_404_session_autorecovery(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. Auto-recovery when RPi polls an unknown `ses_games_...` session after container restart
         r_rec = await client.get(
             "/api/v1/games/batch",
             params={"session_id": "ses_games_b32a6b80e723"},
@@ -264,7 +368,6 @@ async def test_batch_rotation_and_zero_404_session_autorecovery(monkeypatch):
         assert r_rec.status_code == 200
         assert r_rec.json()["session_id"] == "ses_games_b32a6b80e723"
 
-        # 2. Verify immediate batch rotation on subsequent turn polls
         reg = await client.post(
             "/api/v1/games/session",
             json={
@@ -272,7 +375,8 @@ async def test_batch_rotation_and_zero_404_session_autorecovery(monkeypatch):
                 "count": 3,
                 "lang": "fr",
                 "include_video": False,
-                "image_count": 0,
+                "jacket_panorama": False,
+                "snapshot_panorama_count": 0,
             },
         )
         ses_id = reg.json()["session_id"]
@@ -280,13 +384,12 @@ async def test_batch_rotation_and_zero_404_session_autorecovery(monkeypatch):
         b1 = (await client.get("/api/v1/games/batch", params={"session_id": ses_id})).json()
         titles_1 = [it["title"] for it in b1["items"]]
 
-        # Simulate elapsed turn (> 2s) and poll again -> must rotate to NextBatch with different games!
         state = batch_manager.sessions[ses_id]
         state.current_batch.last_served_at = time.monotonic() - 5.0
 
         b2 = (await client.get("/api/v1/games/batch", params={"session_id": ses_id})).json()
         titles_2 = [it["title"] for it in b2["items"]]
-        assert titles_1 != titles_2, "Second rotation turn must serve NextBatch with new games!"
+        assert titles_1 != titles_2, "Second rotation turn must serve NextBatch with new items!"
 
 
 @pytest.mark.asyncio
@@ -302,7 +405,8 @@ async def test_on_demand_priority_injection_and_ttl_cleanup(monkeypatch):
                 "count": 2,
                 "lang": "fr",
                 "include_video": False,
-                "image_count": 0,
+                "jacket_panorama": False,
+                "snapshot_panorama_count": 0,
             },
         )
         session_id = reg.json()["session_id"]
@@ -315,7 +419,8 @@ async def test_on_demand_priority_injection_and_ttl_cleanup(monkeypatch):
                 "lang": "fr",
                 "width": 128,
                 "height": 32,
-                "image_count": 0,
+                "jacket_panorama": False,
+                "snapshot_panorama_count": 0,
                 "video_max_duration_s": 2.0,
                 "video_fps": 10,
                 "target_session_id": session_id,

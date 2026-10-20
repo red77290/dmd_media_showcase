@@ -1,14 +1,15 @@
 """
-Isolated worker functions that build DMD-ready posters (.png, .rgb565),
-top-to-bottom scrolling panorama images (.gif, .rgb565.stream), and real
-video clips (.gif, .rgb565.stream) using `dmd_gif_converter`.
+Isolated worker functions that build DMD-ready mini-jackets (.png, .rgb565),
+granular top-to-bottom scrolling panorama streams (`jacket_panorama`,
+`marquee_panorama`, `snapshot_panorama_count` via `dmd_gif_converter`), and
+real language-agnostic video clips (.gif, .rgb565.stream).
 
 Rules enforced:
 - ZERO synthetic grid+ball fallback: if no real video is available (direct MP4/WebM
-  or YouTube via `yt-dlp`), `has_video` is set to `False` so the DMD skips the video
-  phase cleanly and advances to the next item.
-- Up to `image_count` distinct images per item are converted by `dmd_gif_converter`
-  in vertical Panorama mode (`scroll_enabled=True`) scrolling smoothly from top to bottom.
+  or Dailymotion/YouTube via `yt-dlp`), `has_video` is set to `False` so the DMD
+  skips the video phase cleanly and advances to the next item.
+- Supports adaptive multi-resolution (`256x64`, `128x64`, `128x32`, `64x64`) and
+  vertical TATE (`64x128`, `64x256`, `32x128`) geometries.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
+from app.providers.base import install_ipv4_preference
 from dmd_gif_converter import (
     DmdClipConfig,
     DmdMediaProcessor,
@@ -35,10 +37,13 @@ from dmd_gif_converter import (
 )
 from src.engine.conversion.core import DEFAULT_PARAMS, process_file
 
+install_ipv4_preference()
+
 logger = logging.getLogger("dmd_showcase.converter")
 
 
 def _apply_worker_nice(nice_inc: int = 10) -> None:
+    install_ipv4_preference()
     if nice_inc > 0 and hasattr(os, "nice"):
         try:
             current = os.nice(0)
@@ -61,7 +66,7 @@ def _download_bytes(url: Optional[str], timeout: float = 6.0) -> Optional[bytes]
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 dmd-media-showcase/1.1"
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 dmd-media-showcase/2.1"
                 )
             },
         )
@@ -79,24 +84,79 @@ def _download_bytes(url: Optional[str], timeout: float = 6.0) -> Optional[bytes]
     return None
 
 
-def _extract_youtube_clip_ytdlp(
-    youtube_url: Optional[str],
+def _slice_remote_video_ffmpeg(
+    video_url: Optional[str],
+    out_mp4: Path,
+    max_duration_s: float = 10.0,
+    start_offset_s: float = 10.0,
+) -> bool:
+    """
+    Slice a short 360p MP4 segment directly over HTTP using FFmpeg (`-ss ... -t ... -i <url>`)
+    so large creditless `.webm` / `.mp4` streams (e.g. AnimeThemes 75 MB 1080p files)
+    do not need to be downloaded in full into RAM.
+    """
+    if not video_url or not video_url.startswith(("http://", "https://")):
+        return False
+    out_mp4.parent.mkdir(parents=True, exist_ok=True)
+    out_mp4.unlink(missing_ok=True)
+    dur = max(5.0, min(16.0, float(max_duration_s)))
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{start_offset_s:.1f}",
+        "-t",
+        f"{dur:.1f}",
+        "-i",
+        video_url,
+        "-vf",
+        "scale=-2:360",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "26",
+        str(out_mp4),
+    ]
+    t0 = time.monotonic()
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=16)
+        if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
+            logger.info(
+                "[CONVERTER] FFmpeg HTTP-sliced %.1f KB in %.2fs from %s",
+                out_mp4.stat().st_size / 1024.0,
+                time.monotonic() - t0,
+                video_url,
+            )
+            return True
+    except Exception as exc:
+        logger.debug("[CONVERTER] FFmpeg HTTP slice skipped for %s: %s", video_url, exc)
+    return False
+
+
+def _extract_video_clip_ytdlp(
+    video_page_url: Optional[str],
     out_mp4: Path,
     max_duration_s: float = 10.0,
 ) -> bool:
     """
-    Extract a short 360p MP4 clip from a YouTube URL (e.g. ArcadeItalia `youtube_id`,
-    TMDB trailer, or Jikan PV) using `yt-dlp`.
+    Extract a short 360p MP4 clip from a Dailymotion or YouTube URL using `yt-dlp --force-ipv4`.
     """
-    if not youtube_url or not youtube_url.startswith(("http://", "https://")):
+    if not video_page_url or not video_page_url.startswith(("http://", "https://")):
         return False
 
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     out_mp4.unlink(missing_ok=True)
 
-    sec_end = int(max(12, min(28, 8 + round(max_duration_s))))
+    sec_end = int(max(12, min(28, 6 + round(max_duration_s))))
     cmd = [
         "yt-dlp",
+        "--force-ipv4",
         "--no-playlist",
         "--no-warnings",
         "--quiet",
@@ -110,24 +170,25 @@ def _extract_youtube_clip_ytdlp(
         f"*6-{sec_end}",
         "-o",
         str(out_mp4),
-        youtube_url,
+        video_page_url,
     ]
     t0 = time.monotonic()
     try:
-        logger.info("[CONVERTER] Extracting YouTube clip via yt-dlp: %s", youtube_url)
+        logger.info("[CONVERTER] Extracting video clip via yt-dlp: %s", video_page_url)
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=18)
         if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
             logger.info(
                 "[CONVERTER] yt-dlp extracted %.1f KB in %.2fs from %s",
                 out_mp4.stat().st_size / 1024.0,
                 time.monotonic() - t0,
-                youtube_url,
+                video_page_url,
             )
             return True
 
-        # Fallback without --download-sections if ffmpeg section cutting was rejected by stream
+        # Fallback without --download-sections
         cmd_full = [
             "yt-dlp",
+            "--force-ipv4",
             "--no-playlist",
             "--no-warnings",
             "--quiet",
@@ -139,7 +200,7 @@ def _extract_youtube_clip_ytdlp(
             "worst[ext=mp4][height>=240]/best[ext=mp4][height<=360]/best",
             "-o",
             str(out_mp4),
-            youtube_url,
+            video_page_url,
         ]
         res2 = subprocess.run(cmd_full, capture_output=True, text=True, timeout=15)
         if res2.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
@@ -147,11 +208,11 @@ def _extract_youtube_clip_ytdlp(
                 "[CONVERTER] yt-dlp extracted full short clip (%.1f KB) in %.2fs from %s",
                 out_mp4.stat().st_size / 1024.0,
                 time.monotonic() - t0,
-                youtube_url,
+                video_page_url,
             )
             return True
     except Exception as exc:
-        logger.info("[CONVERTER] yt-dlp extraction skipped for %s: %s", youtube_url, exc)
+        logger.info("[CONVERTER] yt-dlp extraction skipped for %s: %s", video_page_url, exc)
     return False
 
 
@@ -192,17 +253,15 @@ def _fit_poster_preserving_cover(
     color_boost: bool = True,
 ) -> Image.Image:
     """
-    Resize a boxart/flyer/cover to `(width, height)` (e.g. 32x32) without cropping
-    away half of rectangular covers.
-    - If aspect ratio is close to square (0.75..1.33), performs a gentle center fit.
-    - Otherwise, scales the full cover onto a dark ambient background tinted with the
-      cover's palette so 100% of the jacket is visible on the LED matrix.
+    Resize a boxart/flyer/cover to `(width, height)` (e.g. `32x32`, `48x64`, `40x40`, `24x24`)
+    without cropping away half of rectangular covers.
     """
     rgb = img.convert("RGB")
     src_w, src_h = rgb.size
     ratio = src_w / max(1, src_h)
+    target_ratio = width / max(1, height)
 
-    if 0.75 <= ratio <= 1.35:
+    if abs(ratio - target_ratio) <= 0.35:
         canvas = ImageOps.fit(
             rgb,
             (width, height),
@@ -230,37 +289,26 @@ def _convert_image_to_panorama_gif_and_stream(
     stem: str,
     width: int,
     height: int,
-    fps: int = 15,
+    fps: int = 20,
     duration_s: float = 4.0,
     color_boost: bool = True,
 ) -> Optional[Tuple[str, str, str]]:
     """
-    Convert a static image (flyer, title screen, in-game screenshot, backdrop) into:
-    1. A top-to-bottom scrolling panorama `.gif` using `dmd_gif_converter` (`scroll_enabled=True`).
-    2. A binary `.rgb565.stream` (`DMDS`) scrolling from top to bottom.
-    3. A tall `width x (height*2+8)` `.rgb565` static pan surface.
+    Convert a static image (jacket/boxart/poster, marquee/banner, or snapshot/still) into:
+    1. A smooth sub-pixel top-to-bottom scrolling `.gif` (`{stem}_{width}x{height}.gif`)
+    2. A binary `.rgb565.stream` (`{stem}_{width}x{height}.rgb565.stream`)
+    3. A tall `width x (height*2+8)` `.rgb565` static pan surface
+    using `DmdMediaProcessor.process_image_panorama()`.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     pan_h = height * 2 + 8
+    src_img_path = out_dir / f"_src_{stem}.png"
 
     try:
         with Image.open(io.BytesIO(raw_image_bytes)) as pil_src:
             rgb_src = pil_src.convert("RGB")
-            # Ensure the image has enough vertical height (`>= width * 0.75`) for a rich top-to-bottom scroll
-            target_tall_h = max(pan_h, int(round(width * 0.75)))
-            src_w, src_h = rgb_src.size
-            scaled_h_at_w = int(round((width / max(1, src_w)) * src_h))
-            if scaled_h_at_w < height + 20:
-                tall_img = ImageOps.fit(
-                    rgb_src,
-                    (width * 2, target_tall_h * 2),
-                    method=Image.Resampling.LANCZOS,
-                    centering=(0.5, 0.5),
-                )
-            else:
-                tall_img = rgb_src.copy()
+            rgb_src.save(src_img_path, format="PNG")
 
-            # Also write static tall pan backdrop (.png + .rgb565)
             pan_fitted = ImageOps.fit(
                 rgb_src,
                 (width, pan_h),
@@ -276,72 +324,67 @@ def _convert_image_to_panorama_gif_and_stream(
             (out_dir / static_rgb565_name).write_bytes(
                 rgb888_to_rgb565_le(np.asarray(pan_fitted, dtype=np.uint8))
             )
-
-            # Save a 2-frame seed GIF so FFmpeg's `-stream_loop -1` inside `dmd_gif_converter.process_file`
-            # streams frames continuously across the full top-to-bottom `crop_y` trajectory
-            seed_gif = out_dir / f"_seed_{stem}.gif"
-            tall_img.save(
-                seed_gif,
-                format="GIF",
-                save_all=True,
-                append_images=[tall_img],
-                duration=100,
-                loop=0,
-            )
     except Exception as exc:
+        src_img_path.unlink(missing_ok=True)
         logger.info("[CONVERTER] Failed to decode source image for %s: %s", stem, exc)
         return None
 
-    gif_name = f"{stem}_{width}x{height}.gif"
-    stream_name = f"{stem}_{width}x{height}.rgb565.stream"
-    gif_out = out_dir / gif_name
-    stream_out = out_dir / stream_name
-
-    # Compute scroll speed so the top-to-bottom panorama completes in ~duration_s
-    scroll_speed = max(12.0, min(40.0, 64.0 / max(1.5, duration_s)))
-    params = {
-        **DEFAULT_PARAMS,
-        "target_width": width,
-        "target_height": height,
-        "fps_min": fps,
-        "fps_max": fps,
-        "scroll_enabled": True,
-        "scroll_cycles": 0.999,  # Pure top-to-bottom scroll (y = 0 -> max_scroll_dist)
-        "scroll_speed": scroll_speed,
-        "top_crop_pct": 0.0,
-        "bottom_crop_pct": 0.0,
-        "auto_action_enabled": False,
-        "auto_color_enabled": color_boost,
-        "contrast": 1.18 if color_boost else 1.0,
-        "saturation": 1.25 if color_boost else 1.0,
-    }
-
+    processor = DmdMediaProcessor()
     try:
-        ok, msg = process_file(
-            src_path=str(seed_gif),
-            out_path=str(gif_out),
-            params=params,
-        )
-        seed_gif.unlink(missing_ok=True)
-        if not ok or not gif_out.exists():
-            logger.info("[CONVERTER] process_file panorama failed for %s: %s", stem, msg)
-            return None
+        if hasattr(processor, "process_image_panorama"):
+            res = processor.process_image_panorama(
+                input_image=src_img_path,
+                output_dir=out_dir,
+                width=width,
+                height=height,
+                fps=max(15, fps),
+                duration_s=duration_s,
+                smart_color_boost=color_boost,
+                export_gif=True,
+                export_rgb565_stream=True,
+                stem=stem,
+            )
+            src_img_path.unlink(missing_ok=True)
+            if res.gif_path and res.rgb565_stream_path and res.frame_count > 0:
+                logger.info(
+                    "[CONVERTER] Built smooth panorama '%s' (%dx%d, %d frames @ %dfps)",
+                    stem,
+                    width,
+                    height,
+                    res.frame_count,
+                    res.fps,
+                )
+                return res.gif_path.name, res.rgb565_stream_path.name, static_rgb565_name
 
+        # Fallback if `process_image_panorama` is unavailable
+        gif_name = f"{stem}_{width}x{height}.gif"
+        stream_name = f"{stem}_{width}x{height}.rgb565.stream"
+        gif_out = out_dir / gif_name
+        stream_out = out_dir / stream_name
+        scroll_speed = max(12.0, min(40.0, 64.0 / max(1.5, duration_s)))
+        params = {
+            **DEFAULT_PARAMS,
+            "target_width": width,
+            "target_height": height,
+            "fps_min": fps,
+            "fps_max": fps,
+            "scroll_enabled": True,
+            "scroll_cycles": 0.999,
+            "scroll_speed": scroll_speed,
+            "auto_action_enabled": False,
+            "auto_color_enabled": color_boost,
+        }
+        ok, _ = process_file(src_path=str(src_img_path), out_path=str(gif_out), params=params)
+        src_img_path.unlink(missing_ok=True)
+        if not ok or not gif_out.exists():
+            return None
         frames_rgb, eff_fps = extract_frames_from_gif(gif_out)
         if not frames_rgb:
             return None
         write_rgb565_stream(frames_rgb, stream_out, fps=eff_fps)
-        logger.info(
-            "[CONVERTER] Built top-to-bottom panorama '%s' (%dx%d, %d frames @ %dfps)",
-            stem,
-            width,
-            height,
-            len(frames_rgb),
-            eff_fps,
-        )
         return gif_name, stream_name, static_rgb565_name
     except Exception as exc:
-        seed_gif.unlink(missing_ok=True)
+        src_img_path.unlink(missing_ok=True)
         logger.info("[CONVERTER] Panorama conversion error for %s: %s", stem, exc)
         return None
 
@@ -355,40 +398,49 @@ def build_static_assets_sync(
     marquee_url: Optional[str],
     backdrop_url: Optional[str],
     image_urls: Optional[List[str]] = None,
-    image_count: int = 2,
+    image_count: int = 0,
     width: int = 128,
     height: int = 32,
-    fps: int = 15,
+    fps: int = 20,
     color_boost: bool = True,
+    poster_w: int = 32,
+    poster_h: int = 32,
+    jacket_url: Optional[str] = None,
+    jacket_panorama: bool = True,
+    marquee_panorama: bool = False,
 ) -> Dict[str, object]:
     """
-    Build DMD Poster (`32x32` with full-jacket fitting), Marquee (`WxH`), and up to
-    `image_count` top-to-bottom scrolling panorama images using `dmd_gif_converter`.
+    Build:
+    1. Mini-Jacket for the Info Card (`poster_{poster_w}x{poster_h}.png` & `.rgb565`),
+    2. Static Marquee (`marquee_{width}x{height}.png` & `.rgb565`),
+    3. Granular full-screen top-to-bottom scrolling panoramas:
+       - `jacket_stream_rgb565` (when `jacket_panorama=True`, default `True`)
+       - `marquee_stream_rgb565` (when `marquee_panorama=True`, default `False`)
+       - `snapshot_streams_rgb565` (`0..image_count` screenshots/stills)
     """
     t0 = time.monotonic()
     out_dir = Path(item_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     processor = DmdMediaProcessor()
 
-    # 1. Poster (height x height square, e.g. 32x32) — preserves full jacket without cutting in half
-    poster_dim = min(width, height)
-    poster_png_name = f"poster_{poster_dim}x{poster_dim}.png"
-    poster_rgb_name = f"poster_{poster_dim}x{poster_dim}.rgb565"
-    poster_bytes = _download_bytes(poster_url, timeout=4.0)
+    # 1. Mini-Jacket on Info Card (`poster_w x poster_h`)
+    poster_png_name = f"poster_{poster_w}x{poster_h}.png"
+    poster_rgb_name = f"poster_{poster_w}x{poster_h}.rgb565"
+    poster_bytes = _download_bytes(poster_url or jacket_url, timeout=4.5)
 
     poster_img: Optional[Image.Image] = None
     if poster_bytes:
         try:
             with Image.open(io.BytesIO(poster_bytes)) as src_p:
                 poster_img = _fit_poster_preserving_cover(
-                    src_p, poster_dim, poster_dim, palette, color_boost=color_boost
+                    src_p, poster_w, poster_h, palette, color_boost=color_boost
                 )
         except Exception as exc:
             logger.info("[CONVERTER] Poster decode failed for '%s': %s", title, exc)
 
     if poster_img is None:
         raw_poster = out_dir / "src_poster.png"
-        _generate_fallback_artwork(raw_poster, poster_dim, poster_dim, title, badge, palette)
+        _generate_fallback_artwork(raw_poster, poster_w, poster_h, title, badge, palette)
         with Image.open(raw_poster) as src_p:
             poster_img = src_p.convert("RGB")
         raw_poster.unlink(missing_ok=True)
@@ -398,9 +450,9 @@ def build_static_assets_sync(
         rgb888_to_rgb565_le(np.asarray(poster_img, dtype=np.uint8))
     )
 
-    # 2. Marquee / Banner (width x height, e.g. 128x32)
+    # 2. Static Marquee / Banner (`width x height`)
     raw_marquee = out_dir / "src_marquee.img"
-    marquee_bytes = _download_bytes(marquee_url, timeout=3.5)
+    marquee_bytes = _download_bytes(marquee_url or backdrop_url, timeout=4.0)
     if marquee_bytes:
         raw_marquee.write_bytes(marquee_bytes)
     else:
@@ -427,46 +479,95 @@ def build_static_assets_sync(
         )
     raw_marquee.unlink(missing_ok=True)
 
-    # 3. Top-to-Bottom Scrolling Panorama Images (`0..image_count`) via `dmd_gif_converter`
+    # 3. Granular Top-to-Bottom Scrolling Panoramas (`Jacket` -> `Marquee` -> `Snapshots`)
     pan_h = height * 2 + 8
-    candidate_urls: List[str] = []
-    for u in (image_urls or []):
-        if u and u not in candidate_urls:
-            candidate_urls.append(u)
-    if backdrop_url and backdrop_url not in candidate_urls:
-        candidate_urls.insert(0, backdrop_url)
-    if poster_url and poster_url not in candidate_urls:
-        candidate_urls.append(poster_url)
-
     panorama_gifs: List[str] = []
     panorama_streams: List[str] = []
     snapshots_rgb565: List[str] = []
 
-    target_count = max(0, min(5, int(image_count)))
-    for url in candidate_urls:
-        if len(panorama_streams) >= target_count:
-            break
-        img_bytes = _download_bytes(url, timeout=4.0)
-        if not img_bytes:
-            continue
-        idx = len(panorama_streams)
-        pan_res = _convert_image_to_panorama_gif_and_stream(
-            raw_image_bytes=img_bytes,
-            out_dir=out_dir,
-            stem=f"pan_{idx}",
-            width=width,
-            height=height,
-            fps=fps,
-            duration_s=4.0,
-            color_boost=color_boost,
-        )
-        if pan_res:
-            gif_f, stream_f, static_rgb_f = pan_res
-            panorama_gifs.append(gif_f)
-            panorama_streams.append(stream_f)
-            snapshots_rgb565.append(static_rgb_f)
+    jacket_gif_name = ""
+    jacket_stream_name = ""
+    marquee_gif_name = ""
+    marquee_stream_name = ""
+    snapshot_gif_names: List[str] = []
+    snapshot_stream_names: List[str] = []
 
-    # Also ensure legacy `snap_{width}x{pan_h}.png` and `.rgb565` exist for backward compatibility
+    # 3a. Jacket Panorama (boolean default True)
+    if jacket_panorama:
+        j_bytes = poster_bytes or _download_bytes(jacket_url or poster_url, timeout=4.0)
+        if j_bytes:
+            j_res = _convert_image_to_panorama_gif_and_stream(
+                raw_image_bytes=j_bytes,
+                out_dir=out_dir,
+                stem="pan_jacket",
+                width=width,
+                height=height,
+                fps=max(15, fps),
+                duration_s=3.8,
+                color_boost=color_boost,
+            )
+            if j_res:
+                jacket_gif_name, jacket_stream_name, j_static_rgb = j_res
+                panorama_gifs.append(jacket_gif_name)
+                panorama_streams.append(jacket_stream_name)
+                snapshots_rgb565.append(j_static_rgb)
+
+    # 3b. Marquee Panorama (boolean default False)
+    if marquee_panorama:
+        m_bytes = marquee_bytes or _download_bytes(marquee_url or backdrop_url, timeout=4.0)
+        if m_bytes:
+            m_res = _convert_image_to_panorama_gif_and_stream(
+                raw_image_bytes=m_bytes,
+                out_dir=out_dir,
+                stem="pan_marquee",
+                width=width,
+                height=height,
+                fps=max(15, fps),
+                duration_s=3.6,
+                color_boost=color_boost,
+            )
+            if m_res:
+                marquee_gif_name, marquee_stream_name, m_static_rgb = m_res
+                panorama_gifs.append(marquee_gif_name)
+                panorama_streams.append(marquee_stream_name)
+                snapshots_rgb565.append(m_static_rgb)
+
+    # 3c. Snapshot Panoramas (`0..5`, default `0`)
+    target_snap_count = max(0, min(5, int(image_count)))
+    if target_snap_count > 0:
+        candidate_urls: List[str] = []
+        for u in (image_urls or []):
+            if u and u not in candidate_urls and u != poster_url:
+                candidate_urls.append(u)
+        if backdrop_url and backdrop_url not in candidate_urls and backdrop_url != poster_url:
+            candidate_urls.insert(0, backdrop_url)
+
+        for url in candidate_urls:
+            if len(snapshot_stream_names) >= target_snap_count:
+                break
+            img_bytes = _download_bytes(url, timeout=4.0)
+            if not img_bytes:
+                continue
+            idx = len(snapshot_stream_names)
+            pan_res = _convert_image_to_panorama_gif_and_stream(
+                raw_image_bytes=img_bytes,
+                out_dir=out_dir,
+                stem=f"pan_snap_{idx}",
+                width=width,
+                height=height,
+                fps=max(15, fps),
+                duration_s=3.8,
+                color_boost=color_boost,
+            )
+            if pan_res:
+                gif_f, stream_f, static_rgb_f = pan_res
+                snapshot_gif_names.append(gif_f)
+                snapshot_stream_names.append(stream_f)
+                panorama_gifs.append(gif_f)
+                panorama_streams.append(stream_f)
+                snapshots_rgb565.append(static_rgb_f)
+
+    # Ensure legacy `snap_{width}x{pan_h}.png` and `.rgb565` exist for backward compatibility
     snap_png_default = f"snap_{width}x{pan_h}.png"
     snap_rgb_default = f"snap_{width}x{pan_h}.rgb565"
     if snapshots_rgb565:
@@ -490,9 +591,11 @@ def build_static_assets_sync(
         raw_snap.unlink(missing_ok=True)
 
     logger.info(
-        "[CONVERTER] Static + %d/%d panorama image(s) built for '%s' in %.2fs",
-        len(panorama_streams),
-        target_count,
+        "[CONVERTER] Built static + panoramas (jacket=%s, marquee=%s, snaps=%d/%d) for '%s' in %.2fs",
+        bool(jacket_stream_name),
+        bool(marquee_stream_name),
+        len(snapshot_stream_names),
+        target_snap_count,
         title,
         time.monotonic() - t0,
     )
@@ -500,10 +603,18 @@ def build_static_assets_sync(
     return {
         "poster_png": poster_png_name,
         "poster_rgb565": poster_rgb_name,
+        "poster_width": poster_w,
+        "poster_height": poster_h,
         "marquee_png": f"marquee_{width}x{height}.png",
         "marquee_rgb565": f"marquee_{width}x{height}.rgb565",
         "snapshot_pan_png": snap_png_default,
         "snapshot_pan_rgb565": snap_rgb_default,
+        "jacket_gif": jacket_gif_name,
+        "jacket_stream_rgb565": jacket_stream_name,
+        "marquee_gif": marquee_gif_name,
+        "marquee_stream_rgb565": marquee_stream_name,
+        "snapshot_gifs": snapshot_gif_names,
+        "snapshot_streams_rgb565": snapshot_stream_names,
         "panorama_gifs": panorama_gifs,
         "panorama_streams_rgb565": panorama_streams,
         "snapshots_pan_rgb565": snapshots_rgb565,
@@ -527,9 +638,11 @@ def build_video_assets_worker_task(
 ) -> Dict[str, object]:
     """
     Top-level worker function executed in the bounded ProcessPoolExecutor.
-    1. Attempts direct download from `video_url` (e.g. ScreenScraper, ArcadeItalia shortplay MP4, AnimeThemes).
-    2. If unavailable, attempts extraction from `youtube_url` via `yt-dlp`.
-    3. If neither is available, returns `has_video=False` immediately (NO synthetic grid+ball!).
+    1. If `video_url` is a large `.webm`/`.mp4` stream (e.g. AnimeThemes), slices a short
+       segment directly over HTTP via `ffmpeg -ss 10 -t <dur> -i <url>`.
+    2. Otherwise downloads `video_url` directly (e.g. ScreenScraper or ArcadeItalia shortplay MP4).
+    3. If unavailable, extracts from `youtube_url` (Dailymotion / YouTube) via `yt-dlp --force-ipv4`.
+    4. If neither is available, returns `has_video=False` immediately (NO synthetic grid+ball!).
     """
     _apply_worker_nice(nice_inc)
     out_dir = Path(item_dir)
@@ -537,12 +650,19 @@ def build_video_assets_worker_task(
     src_video_path = out_dir / "src_trailer.mp4"
 
     have_real_video = False
-    vid_bytes = _download_bytes(video_url, timeout=8.0)
-    if vid_bytes and len(vid_bytes) > 8192:
-        src_video_path.write_bytes(vid_bytes)
-        have_real_video = True
-    elif youtube_url:
-        have_real_video = _extract_youtube_clip_ytdlp(
+    if video_url:
+        if video_url.endswith(".webm") or "animethemes.moe" in video_url:
+            have_real_video = _slice_remote_video_ffmpeg(
+                video_url, src_video_path, max_duration_s=max_duration_s, start_offset_s=12.0
+            )
+        if not have_real_video:
+            vid_bytes = _download_bytes(video_url, timeout=8.0)
+            if vid_bytes and len(vid_bytes) > 8192:
+                src_video_path.write_bytes(vid_bytes)
+                have_real_video = True
+
+    if not have_real_video and youtube_url:
+        have_real_video = _extract_video_clip_ytdlp(
             youtube_url, src_video_path, max_duration_s=max_duration_s
         )
 
@@ -564,7 +684,6 @@ def build_video_assets_worker_task(
             "stream_file": "",
         }
 
-    # For 4:3 arcade gameplay videos or `panorama` mode, enable vertical scroll unless auto_action is explicitly requested
     scroll_on_video = video_mode in ("panorama", "pixel_art")
     use_auto_action = video_mode == "auto_action"
     preset_mode = video_mode if video_mode in ("pixel_art", "anime", "cinema") else "pixel_art"

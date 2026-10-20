@@ -1,9 +1,12 @@
 """
-FastAPI entrypoint for the DMD Media Showcase Server.
+FastAPI entrypoint for the DMD Media Showcase Server (V2.1).
 
-Exposes the 4 media domain APIs (`/api/v1/games`, `/api/v1/movies`, `/api/v1/series`,
-`/api/v1/anime`), the proactive session & double-batch polling endpoints, the future-ready
-on-demand endpoint, and the zero-overhead binary asset streamer.
+Exposes:
+- Interactive Swagger UI (`/docs`, `/swagger`, `/`), ReDoc (`/redoc`), and OpenAPI 3.1 (`/openapi.json`)
+- 4 live media domain APIs (`/api/v1/games`, `/api/v1/movies`, `/api/v1/series`, `/api/v1/anime`)
+- Proactive session & double-batch polling endpoints (`/session`, `/batch`, `/random`)
+- Future-ready on-demand / voice assistant endpoint (`/on-demand`)
+- Zero-overhead binary RGB565 & GIF asset streamer (`/api/v1/assets/{item_key}/{filename}`)
 """
 
 from __future__ import annotations
@@ -16,7 +19,8 @@ from typing import AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 
 import dmd_gif_converter
 from dmd_gif_converter import truncate_gif_bytes, truncate_rgb565_stream
@@ -34,7 +38,6 @@ from app.models import (
 )
 from app.scheduler.worker_pool import batch_manager
 
-# Configure human-readable structured logging to stdout for Docker container visibility
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -43,6 +46,42 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger("dmd_showcase.http")
+
+OPENAPI_TAGS = [
+    {
+        "name": "System",
+        "description": "Server health, worker pool saturation, and configured live scraper providers.",
+    },
+    {
+        "name": "Discovery",
+        "description": (
+            "Exhaustive live categories, systems, genres, decades, and scraper source options "
+            "for each media domain (`games`, `movies`, `series`, `anime`)."
+        ),
+    },
+    {
+        "name": "DMD Rotation Protocol",
+        "description": (
+            "Two-step proactive double-batch rotation protocol (`POST /session` + `GET /batch`) "
+            "and single-call convenience endpoint (`GET /random`) for ESP32 and Raspberry Pi DMDs."
+        ),
+    },
+    {
+        "name": "On-Demand & Voice Assistant",
+        "description": (
+            "Priority queue endpoint (`POST /on-demand`) for voice assistants (Google Home, Alexa, "
+            "Home Assistant) and interactive WebUI triggers."
+        ),
+    },
+    {
+        "name": "Assets & Streaming",
+        "description": (
+            "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), top-to-bottom scrolling "
+            "panoramas (`jacket_stream_rgb565`, `marquee_stream_rgb565`, `snapshot_streams_rgb565`), "
+            "and stabilized video trailers (`video_stream_rgb565`, `.gif`) with $O(1)$ truncation."
+        ),
+    },
+]
 
 
 @asynccontextmanager
@@ -61,12 +100,27 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="DMD Media Showcase Server",
+    title="DMD Media Showcase Server API",
+    summary="Live Multilingual Retro Games, Movies, TV Series & Anime Showcase Server for LED Matrices",
     description=(
         "Self-hosted, stateless multilingual media & video trailer streaming server "
-        "for ArcadeMatrix (ESP32 / ESP32-S3) and ArcadeMatrix_RPi LED matrices."
+        "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
+        "### Key Features\n"
+        "- **100% Live Random Discovery by Category**: Queries ScreenScraper, ArcadeItalia ADB, "
+        "IGDB, TMDB, IMDb, TVMaze, Jikan v4, Kitsu, AnimeThemes.moe, Wikipedia, and Dailymotion "
+        "with zero hardcoded mock catalogs.\n"
+        "- **Granular Top-to-Bottom Panoramas**: Independently toggle `jacket_panorama` (default `true`), "
+        "`marquee_panorama` (default `false`), and `snapshot_panorama_count` (`0..5`, default `0`).\n"
+        "- **Multi-Format & TATE Geometries**: Supports `256x64`, `128x64`, `128x32`, `64x64`, "
+        "and vertical TATE (`64x128`, `64x256`, `32x128`) resolutions.\n"
+        "- **Language-Agnostic Trailers**: Automatically extracts video trailers and openings "
+        "in any language since the DMD is mute."
     ),
     version=__version__,
+    openapi_tags=OPENAPI_TAGS,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan,
 )
 
@@ -78,52 +132,43 @@ app.add_middleware(
 )
 
 
-DOMAIN_FILTERS: Dict[DomainType, Dict[str, List[str]]] = {
-    "games": {
-        "sources": ["auto", "screenscraper", "arcadeitalia", "libretro"],
-        "systems": ["mame", "neogeo", "cps", "fbneo", "snes", "megadrive", "psx", "nes", "gba", "pcengine"],
-        "genres": ["action", "fighting", "shootemup", "platform", "rpg", "racing", "puzzle"],
-        "decades": ["1980s", "1990s", "2000s", "2010s"],
-    },
-    "movies": {
-        "sources": ["auto", "tmdb", "wikipedia"],
-        "systems": [],
-        "genres": ["scifi", "action", "animation", "horror", "thriller", "adventure", "fantasy"],
-        "decades": ["1970s", "1980s", "1990s", "2000s", "2010s", "2020s"],
-    },
-    "series": {
-        "sources": ["auto", "tvmaze", "tmdb", "tvdb"],
-        "systems": [],
-        "genres": ["scifi", "drama", "crime", "fantasy", "mystery", "action", "comedy"],
-        "decades": ["1990s", "2000s", "2010s", "2020s"],
-    },
-    "anime": {
-        "sources": ["auto", "animethemes", "jikan", "tmdb"],
-        "systems": [],
-        "genres": ["shonen", "seinen", "mecha", "cyberpunk", "fantasy", "action", "adventure"],
-        "decades": ["1980s", "1990s", "2000s", "2010s", "2020s"],
-    },
-}
+@app.get("/", include_in_schema=False)
+async def root_redirect() -> RedirectResponse:
+    """Redirect browser root to interactive Swagger UI (`/docs`)."""
+    return RedirectResponse(url="/docs")
+
+
+@app.get("/swagger", include_in_schema=False)
+async def swagger_alias() -> HTMLResponse:
+    """Alias route serving the interactive Swagger UI at `/swagger`."""
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - Swagger UI",
+    )
 
 
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["System"])
 async def get_health() -> HealthResponse:
-    """Return server health, worker pool saturation, and configured scraper providers."""
+    """Return server health, worker pool saturation, and configured live scraper providers."""
     batch_manager.start()
     providers_cfg = {
         "games": (
-            "screenscraper+arcadeitalia+libretro"
+            "screenscraper+arcadeitalia+wikipedia+dailymotion"
             if (settings.screenscraper_user or settings.screenscraper_dev_id)
-            else "arcadeitalia+libretro+curated_catalog"
+            else "arcadeitalia+wikipedia+libretro+dailymotion"
         ),
-        "movies": "tmdb+wikipedia+curated_catalog" if settings.tmdb_api_key else "wikipedia+curated_catalog",
-        "series": (
-            "tmdb+tvmaze+catalog"
+        "movies": (
+            "tmdb+imdb+wikipedia+dailymotion"
             if settings.tmdb_api_key
-            else ("tvdb+tvmaze+catalog" if settings.tvdb_api_key else "tvmaze+curated_catalog")
+            else "imdb+wikipedia+dailymotion"
         ),
-        "anime": "animethemes+jikan+curated_catalog",
+        "series": (
+            "tmdb+tvmaze+wikipedia+dailymotion"
+            if settings.tmdb_api_key
+            else "tvmaze+wikipedia+dailymotion"
+        ),
+        "anime": "kitsu+animethemes+jikan+dailymotion",
     }
     return HealthResponse(
         status="ok",
@@ -140,14 +185,20 @@ async def get_health() -> HealthResponse:
 
 
 @app.get("/api/v1/{domain}/filters", tags=["Discovery"])
-async def get_domain_filters(domain: DomainType) -> Dict[str, object]:
-    """Return available filter values for the specified media domain."""
+async def get_domain_filters(
+    domain: DomainType,
+    lang: str = Query(default="fr", description="Preferred UI language (`fr`, `en`, `es`, `de`, `it`)"),
+) -> Dict[str, object]:
+    """Return exhaustive live filter categories, systems, genres, decades, and sources for `domain`."""
+    batch_manager.start()
+    provider = batch_manager.providers[domain]
+    filters = provider.available_filters(lang=lang)
     return {
         "domain": domain,
         "languages": ["fr", "en", "es", "de", "it"],
         "video_modes": ["auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"],
         "video_types": ["any", "opening", "ending", "pv", "trailer"],
-        **DOMAIN_FILTERS[domain],
+        **filters,
     }
 
 
@@ -170,7 +221,7 @@ async def register_domain_session(
     client_ip = request.client.host if request.client else "unknown"
     logger.info(
         "[HTTP IN] --> POST /api/v1/%s/session from %s | client_id=%s, count=%d, lang=%s, %dx%d, "
-        "primary_source=%s, image_count=%d, include_video=%s, credentials=%s",
+        "primary_source=%s, jacket_pan=%s, marquee_pan=%s, snaps=%d, include_video=%s",
         domain,
         client_ip,
         req.client_id,
@@ -179,9 +230,10 @@ async def register_domain_session(
         req.width,
         req.height,
         req.primary_source,
-        req.image_count,
+        req.jacket_panorama,
+        req.marquee_panorama,
+        req.effective_snapshot_count(),
         req.include_video,
-        bool(req.scraper_user or req.scraper_api_key),
     )
     return await batch_manager.register_session(domain, req)
 
@@ -200,8 +252,8 @@ async def get_domain_batch(
     Step 2 of the DMD Rotation Protocol ("Are you ready?"):
     Ultra-fast (< 2 ms) LAN status check called by the DMD right before its rotation turn.
     - If `status == "ready"`: returns the `N` pre-rendered items and rotates/schedules `NextBatch`.
-    - If `status == "warming"`: allows the DMD to cleanly skip its rotation turn (if other
-      engines are active) or display static fallback cards while video jobs finish.
+    - If `status == "warming"`: allows the DMD to cleanly skip its rotation turn if other
+      engines are active in rotation.
     """
     client_ip = request.client.host if request.client else "unknown"
     logger.info(
@@ -237,27 +289,36 @@ async def get_domain_random(
     lang: str = Query(default="fr"),
     width: int = Query(default=128, ge=32, le=512),
     height: int = Query(default=32, ge=16, le=256),
-    image_count: int = Query(default=2, ge=0, le=5),
+    jacket_panorama: bool = Query(default=True, description="Scroll full jacket top-to-bottom after Card"),
+    marquee_panorama: bool = Query(default=False, description="Scroll marquee/banner top-to-bottom"),
+    snapshot_panorama_count: int = Query(default=0, ge=0, le=5, description="Number of snapshots to scroll (0..5)"),
+    image_count: Optional[int] = Query(default=None, ge=0, le=5, description="Legacy alias for snapshot_panorama_count"),
     primary_source: str = Query(default="auto"),
     include_video: bool = Query(default=True),
     video_max_duration_s: float = Query(default=6.0, ge=1.5, le=30.0),
     video_fps: int = Query(default=15, ge=6, le=30),
     systems: Optional[str] = Query(default=None, description="Comma-separated systems"),
     genres: Optional[str] = Query(default=None, description="Comma-separated genres"),
+    decade: Optional[str] = Query(default=None, description="Decade filter e.g. 1980s, 1990s"),
 ) -> BatchStatusResponse:
     """
     Convenience single-call endpoint that automatically creates or polls a session
     associated with `client_id`.
     """
     client_ip = request.client.host if request.client else "unknown"
+    eff_snaps = snapshot_panorama_count if snapshot_panorama_count > 0 else (image_count or 0)
     logger.info(
-        "[HTTP IN] --> GET /api/v1/%s/random from %s (client_id=%s, count=%d, primary_source=%s, image_count=%d)",
+        "[HTTP IN] --> GET /api/v1/%s/random from %s (client_id=%s, count=%d, %dx%d, source=%s, jacket_pan=%s, marquee_pan=%s, snaps=%d)",
         domain,
         client_ip,
         client_id,
         count,
+        width,
+        height,
         primary_source,
-        image_count,
+        jacket_panorama,
+        marquee_panorama,
+        eff_snaps,
     )
     req = SessionRegisterRequest(
         client_id=client_id,
@@ -265,13 +326,17 @@ async def get_domain_random(
         lang=lang,
         width=width,
         height=height,
-        image_count=image_count,
+        jacket_panorama=jacket_panorama,
+        marquee_panorama=marquee_panorama,
+        snapshot_panorama_count=eff_snaps,
+        image_count=eff_snaps,
         primary_source=primary_source,
         include_video=include_video,
         video_max_duration_s=video_max_duration_s,
         video_fps=video_fps,
-        systems=[s.strip() for s in systems.split(",") if s.strip()] if systems else ["mame", "neogeo", "snes"],
+        systems=[s.strip() for s in systems.split(",") if s.strip()] if systems else ["arcade", "neogeo", "snes", "megadrive"],
         genres=[g.strip() for g in genres.split(",") if g.strip()] if genres else [],
+        decade=decade,
     )
     ses_id = batch_manager._make_session_id(domain, req)
     if ses_id in batch_manager.sessions:

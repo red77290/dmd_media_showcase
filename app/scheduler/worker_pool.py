@@ -192,6 +192,18 @@ class SessionBatchManager:
             f"/api/v1/assets/{item_key}/{fname}"
             for fname in (files_map.get("snapshots_pan_rgb565") or [])  # type: ignore[union-attr]
         ]
+        snap_gifs = [
+            f"/api/v1/assets/{item_key}/{fname}"
+            for fname in (files_map.get("snapshot_gifs") or [])  # type: ignore[union-attr]
+        ]
+        snap_streams = [
+            f"/api/v1/assets/{item_key}/{fname}"
+            for fname in (files_map.get("snapshot_streams_rgb565") or [])  # type: ignore[union-attr]
+        ]
+        j_gif = str(files_map.get("jacket_gif") or "")
+        j_stream = str(files_map.get("jacket_stream_rgb565") or "")
+        m_gif = str(files_map.get("marquee_gif") or "")
+        m_stream = str(files_map.get("marquee_stream_rgb565") or "")
         return MediaAssetsUrls(
             poster_png=f"/api/v1/assets/{item_key}/{files_map['poster_png']}",
             poster_rgb565=f"/api/v1/assets/{item_key}/{files_map['poster_rgb565']}",
@@ -199,6 +211,12 @@ class SessionBatchManager:
             marquee_rgb565=f"/api/v1/assets/{item_key}/{files_map['marquee_rgb565']}",
             snapshot_pan_png=f"/api/v1/assets/{item_key}/{files_map['snapshot_pan_png']}",
             snapshot_pan_rgb565=f"/api/v1/assets/{item_key}/{files_map['snapshot_pan_rgb565']}",
+            jacket_gif=f"/api/v1/assets/{item_key}/{j_gif}" if j_gif else "",
+            jacket_stream_rgb565=f"/api/v1/assets/{item_key}/{j_stream}" if j_stream else "",
+            marquee_gif=f"/api/v1/assets/{item_key}/{m_gif}" if m_gif else "",
+            marquee_stream_rgb565=f"/api/v1/assets/{item_key}/{m_stream}" if m_stream else "",
+            snapshot_gifs=snap_gifs,
+            snapshot_streams_rgb565=snap_streams,
             panorama_gifs=pan_gifs,
             panorama_streams_rgb565=pan_streams,
             snapshots_pan_rgb565=snaps_rgb,
@@ -217,15 +235,23 @@ class SessionBatchManager:
         provider = self.providers[domain]
         candidates = await provider.fetch_random_candidates(req, exclude_ids=exclude_ids)
         batch_id = f"b_{uuid.uuid4().hex[:8]}"
+        poster_w, poster_h = req.resolved_poster_dims()
+        eff_snap_count = req.effective_snapshot_count()
 
         logger.info(
-            "[SESSION] Building batch '%s' for session '%s' (domain=%s, priority=%s, count=%d, image_count=%d): %s",
+            "[SESSION] Building batch '%s' for session '%s' (domain=%s, priority=%s, count=%d, %dx%d, poster=%dx%d, jacket_pan=%s, marquee_pan=%s, snaps=%d): %s",
             batch_id,
             session_id,
             domain,
             priority.name,
             len(candidates),
-            req.image_count,
+            req.width,
+            req.height,
+            poster_w,
+            poster_h,
+            req.jacket_panorama,
+            req.marquee_panorama,
+            eff_snap_count,
             [c.title for c in candidates],
         )
 
@@ -247,12 +273,17 @@ class SessionBatchManager:
                 cand.poster_url,
                 cand.marquee_url,
                 cand.backdrop_url,
-                cand.image_urls,
-                req.image_count if req.include_snapshot else 0,
+                cand.snapshot_urls or cand.image_urls,
+                eff_snap_count if req.include_snapshot else 0,
                 req.width,
                 req.height,
                 req.video_fps,
                 req.color_boost,
+                poster_w,
+                poster_h,
+                cand.resolved_jacket_url(),
+                req.jacket_panorama,
+                req.marquee_panorama,
             )
             self.asset_index[item_key] = item_dir
             dir_map[item_key] = item_dir
@@ -273,6 +304,11 @@ class SessionBatchManager:
                 synopsis=cand.synopsis if req.include_synopsis else "",
                 lang=req.lang,
                 source_used=cand.source_used,
+                poster_width=poster_w,
+                poster_height=poster_h,
+                jacket_panorama=bool(urls.jacket_stream_rgb565),
+                marquee_panorama=bool(urls.marquee_stream_rgb565),
+                snapshot_panorama_count=len(urls.snapshot_streams_rgb565),
                 image_count=len(urls.panorama_streams_rgb565),
                 has_video=False,
                 video_ready=not req.include_video,
@@ -636,6 +672,9 @@ class SessionBatchManager:
             lang=on_demand_req.lang,
             width=on_demand_req.width,
             height=on_demand_req.height,
+            jacket_panorama=on_demand_req.jacket_panorama,
+            marquee_panorama=on_demand_req.marquee_panorama,
+            snapshot_panorama_count=on_demand_req.snapshot_panorama_count,
             image_count=on_demand_req.image_count,
             primary_source=on_demand_req.primary_source,
             scraper_user=on_demand_req.scraper_user,
@@ -644,6 +683,7 @@ class SessionBatchManager:
             video_max_duration_s=on_demand_req.video_max_duration_s,
             video_fps=on_demand_req.video_fps,
         )
+        poster_w, poster_h = synth_req.resolved_poster_dims()
         batch_id = f"od_{uuid.uuid4().hex[:8]}"
         item_key = f"{batch_id}_{cand.id}"
         target_ses = on_demand_req.target_session_id or "on_demand"
@@ -660,12 +700,17 @@ class SessionBatchManager:
             cand.poster_url,
             cand.marquee_url,
             cand.backdrop_url,
-            cand.image_urls,
-            synth_req.image_count,
+            cand.snapshot_urls or cand.image_urls,
+            synth_req.effective_snapshot_count(),
             synth_req.width,
             synth_req.height,
             synth_req.video_fps,
             True,
+            poster_w,
+            poster_h,
+            cand.resolved_jacket_url(),
+            synth_req.jacket_panorama,
+            synth_req.marquee_panorama,
         )
         self.asset_index[item_key] = item_dir
         urls = self._build_asset_urls(
@@ -683,6 +728,11 @@ class SessionBatchManager:
             synopsis=cand.synopsis,
             lang=on_demand_req.lang,
             source_used=cand.source_used,
+            poster_width=poster_w,
+            poster_height=poster_h,
+            jacket_panorama=bool(urls.jacket_stream_rgb565),
+            marquee_panorama=bool(urls.marquee_stream_rgb565),
+            snapshot_panorama_count=len(urls.snapshot_streams_rgb565),
             image_count=len(urls.panorama_streams_rgb565),
             has_video=False,
             video_ready=False,
