@@ -1,33 +1,43 @@
 """
-FastAPI entrypoint for the DMD Media Showcase Server (V2.1).
+FastAPI entrypoint for the DMD Media Showcase Server (V3.0).
 
 Exposes:
-- Interactive Swagger UI (`/docs`, `/swagger`, `/`), ReDoc (`/redoc`), and OpenAPI 3.1 (`/openapi.json`)
-- 4 live media domain APIs (`/api/v1/games`, `/api/v1/movies`, `/api/v1/series`, `/api/v1/anime`)
-- Proactive session & double-batch polling endpoints (`/session`, `/batch`, `/random`)
-- Future-ready on-demand / voice assistant endpoint (`/on-demand`)
-- Zero-overhead binary RGB565 & GIF asset streamer (`/api/v1/assets/{item_key}/{filename}`)
+- Centralized Web Admin Dashboard (`/`, `/admin`) & Interactive Swagger UI (`/docs`, `/swagger`, `/redoc`)
+- Embedded MQTT 3.1.1 Control Plane (`:1883` with `retain=True` + `LWT`) + Real-Time `ffmpeg -re` UDP streamer
+- V3.0 Consume-Once HTTP Polling endpoints (`/api/v1/{domain}/config`, `/api/v1/{domain}/next`, `/api/v1/{domain}/stream/{item_id}.rgb565.stream`)
+- Backward-compatible session/batch polling endpoints (`/session`, `/batch`, `/random`, `/on-demand`)
 """
 
 from __future__ import annotations
+
+from app.portable_env import enforce_hermetic_environment
+
+# Lock down portable environment before any media/subprocess imports
+enforce_hermetic_environment()
 
 import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict, List, Optional
-
-from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from typing import Any, AsyncIterator, Dict, Optional
 
 import dmd_gif_converter
 from dmd_gif_converter import truncate_gif_bytes, truncate_rgb565_stream
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from app import __version__
+from app.application.consume_once_orchestrator import consume_once_orchestrator
 from app.config import settings
+from app.domain.entities import PanelGeometry
+from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
+from app.infrastructure.persistence import seen_repository, server_config_store
+from app.infrastructure.scrapers.registry import scraper_registry
+from app.infrastructure.web_admin import ADMIN_DASHBOARD_HTML
 from app.models import (
+    AdminServerConfigPayload,
     BatchStatusResponse,
     DomainType,
     HealthResponse,
@@ -49,37 +59,28 @@ logger = logging.getLogger("dmd_showcase.http")
 
 OPENAPI_TAGS = [
     {
-        "name": "System",
-        "description": "Server health, worker pool saturation, and configured live scraper providers.",
+        "name": "System & Admin",
+        "description": "Server health, centralized API credentials (`server_config.json`), and `seen_history.json` management.",
     },
     {
         "name": "Discovery",
-        "description": (
-            "Exhaustive live categories, systems, genres, decades, and scraper source options "
-            "for each media domain (`games`, `movies`, `series`, `anime`)."
-        ),
+        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` DDD scraper sources.",
+    },
+    {
+        "name": "Consume-Once Protocol (V3.0)",
+        "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`) with automatic disk purge after playback.",
     },
     {
         "name": "DMD Rotation Protocol",
-        "description": (
-            "Two-step proactive double-batch rotation protocol (`POST /session` + `GET /batch`) "
-            "and single-call convenience endpoint (`GET /random`) for ESP32 and Raspberry Pi DMDs."
-        ),
+        "description": "Proactive session/batch polling endpoints (`/session`, `/batch`, `/random`) for HTTP polling clients.",
     },
     {
         "name": "On-Demand & Voice Assistant",
-        "description": (
-            "Priority queue endpoint (`POST /on-demand`) for voice assistants (Google Home, Alexa, "
-            "Home Assistant) and interactive WebUI triggers."
-        ),
+        "description": "Priority queue endpoint (`POST /on-demand`) for voice assistants and webhooks.",
     },
     {
         "name": "Assets & Streaming",
-        "description": (
-            "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), top-to-bottom scrolling "
-            "panoramas (`jacket_stream_rgb565`, `marquee_stream_rgb565`, `snapshot_streams_rgb565`), "
-            "and stabilized video trailers (`video_stream_rgb565`, `.gif`) with $O(1)$ truncation."
-        ),
+        "description": "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), panoramas, and video trailers.",
     },
 ]
 
@@ -93,28 +94,24 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         settings.effective_max_workers,
     )
     batch_manager.start()
+    await showcase_mqtt_gateway.start()
     try:
         yield
     finally:
+        await showcase_mqtt_gateway.stop()
         await batch_manager.stop()
 
 
 app = FastAPI(
     title="DMD Media Showcase Server API",
-    summary="Live Multilingual Retro Games, Movies, TV Series & Anime Showcase Server for LED Matrices",
+    summary="DDD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 DMDs",
     description=(
-        "Self-hosted, stateless multilingual media & video trailer streaming server "
+        "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
-        "### Key Features\n"
-        "- **100% Live Random Discovery by Category**: Queries ScreenScraper, ArcadeItalia ADB, "
-        "IGDB, TMDB, IMDb, TVMaze, Jikan v4, Kitsu, AnimeThemes.moe, Wikipedia, and Dailymotion "
-        "with zero hardcoded mock catalogs.\n"
-        "- **Granular Top-to-Bottom Panoramas**: Independently toggle `jacket_panorama` (default `true`), "
-        "`marquee_panorama` (default `false`), and `snapshot_panorama_count` (`0..5`, default `0`).\n"
-        "- **Multi-Format & TATE Geometries**: Supports `256x64`, `128x64`, `128x32`, `64x64`, "
-        "and vertical TATE (`64x128`, `64x256`, `32x128`) resolutions.\n"
-        "- **Language-Agnostic Trailers**: Automatically extracts video trailers and openings "
-        "in any language since the DMD is mute."
+        "### V3.0 Architecture Highlights\n"
+        "- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n"
+        "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
+        "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming, plus HTTP Polling."
     ),
     version=__version__,
     openapi_tags=OPENAPI_TAGS,
@@ -132,10 +129,11 @@ app.add_middleware(
 )
 
 
-@app.get("/", include_in_schema=False)
-async def root_redirect() -> RedirectResponse:
-    """Redirect browser root to interactive Swagger UI (`/docs`)."""
-    return RedirectResponse(url="/docs")
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def web_admin_dashboard() -> HTMLResponse:
+    """Serve the centralized Web Administration Dashboard (`http://localhost:8080/`)."""
+    return HTMLResponse(content=ADMIN_DASHBOARD_HTML)
 
 
 @app.get("/swagger", include_in_schema=False)
@@ -148,28 +146,16 @@ async def swagger_alias() -> HTMLResponse:
 
 
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)
-@app.get("/api/v1/health", response_model=HealthResponse, tags=["System"])
+@app.get("/api/v1/health", response_model=HealthResponse, tags=["System & Admin"])
 async def get_health() -> HealthResponse:
-    """Return server health, worker pool saturation, and configured live scraper providers."""
+    """Return server health, worker pool saturation, MQTT broker mode, and DDD scraper chains."""
     batch_manager.start()
-    providers_cfg = {
-        "games": (
-            "screenscraper+arcadeitalia+wikipedia+dailymotion"
-            if (settings.screenscraper_user or settings.screenscraper_dev_id)
-            else "arcadeitalia+wikipedia+libretro+dailymotion"
-        ),
-        "movies": (
-            "tmdb+imdb+wikipedia+dailymotion"
-            if settings.tmdb_api_key
-            else "imdb+wikipedia+dailymotion"
-        ),
-        "series": (
-            "tmdb+tvmaze+wikipedia+dailymotion"
-            if settings.tmdb_api_key
-            else "tvmaze+wikipedia+dailymotion"
-        ),
-        "anime": "kitsu+animethemes+jikan+dailymotion",
-    }
+    srv_cfg = server_config_store.get_all()
+    mqtt_port = (
+        showcase_mqtt_gateway.embedded_broker.port
+        if showcase_mqtt_gateway.embedded_broker
+        else int(srv_cfg.get("mqtt_port") or 1883)
+    )
     return HealthResponse(
         status="ok",
         version=__version__,
@@ -177,29 +163,174 @@ async def get_health() -> HealthResponse:
         active_workers=batch_manager.active_workers,
         max_workers=settings.effective_max_workers,
         queue_depth=batch_manager.queue_depth,
-        active_sessions=len(batch_manager.sessions),
+        active_sessions=len(batch_manager.sessions) + len(consume_once_orchestrator.client_configs),
         completed_jobs_total=batch_manager.completed_jobs_total,
         avg_job_duration_s=batch_manager.avg_job_duration_s,
-        providers_configured=providers_cfg,
+        providers_configured=scraper_registry.describe_active_chains(),
+        mqtt_mode=str(srv_cfg.get("mqtt_mode") or "embedded"),
+        mqtt_port=mqtt_port,
+        seen_history_counts=seen_repository.stats(),
     )
+
+
+@app.get("/api/v1/admin/config", tags=["System & Admin"])
+async def get_admin_config() -> Dict[str, Any]:
+    """Return centralized server configuration (`server_config.json`) and `seen_history.json` counts."""
+    return {
+        "config": server_config_store.get_all(),
+        "providers": scraper_registry.describe_active_chains(),
+        "seen_history": seen_repository.stats(),
+    }
+
+
+@app.post("/api/v1/admin/config", tags=["System & Admin"])
+async def update_admin_config(payload: AdminServerConfigPayload) -> Dict[str, Any]:
+    """Update centralized scraper credentials and MQTT settings in `./data/server_config.json`."""
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    updated = server_config_store.update(updates)
+    return {
+        "status": "saved",
+        "config": updated,
+        "providers": scraper_registry.describe_active_chains(),
+    }
+
+
+@app.post("/api/v1/admin/history/reset", tags=["System & Admin"])
+async def reset_seen_history(
+    domain: Optional[DomainType] = Query(default=None, description="Optional domain to reset (or all if omitted)"),
+) -> Dict[str, Any]:
+    """Reset `seen_history.json` for a single domain or all domains."""
+    cleared = seen_repository.reset(domain)
+    return {
+        "status": "reset",
+        "domain": domain or "all",
+        "cleared_count": cleared,
+        "seen_history": seen_repository.stats(),
+    }
 
 
 @app.get("/api/v1/{domain}/filters", tags=["Discovery"])
 async def get_domain_filters(
     domain: DomainType,
-    lang: str = Query(default="fr", description="Preferred UI language (`fr`, `en`, `es`, `de`, `it`)"),
+    lang: str = Query(default="fr", description="Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"),
 ) -> Dict[str, object]:
-    """Return exhaustive live filter categories, systems, genres, decades, and sources for `domain`."""
-    batch_manager.start()
-    provider = batch_manager.providers[domain]
-    filters = provider.available_filters(lang=lang)
+    """Return live filter categories, systems, genres, decades, and `[Primary, Fallback]` DDD sources."""
+    filters = scraper_registry.available_filters(domain=domain, lang=lang)
     return {
         "domain": domain,
-        "languages": ["fr", "en", "es", "de", "it"],
+        "languages": ["fr", "en", "es", "de", "it", "ja"],
+        "text_scroll_speeds": ["slow", "normal", "fast"],
         "video_modes": ["auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"],
         "video_types": ["any", "opening", "ending", "pv", "trailer"],
         **filters,
     }
+
+
+@app.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol (V3.0)"])
+async def register_consume_once_config(
+    domain: DomainType,
+    req: SessionRegisterRequest,
+) -> Dict[str, Any]:
+    """
+    HTTP equivalent of publishing `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
+    Registers the DMD client's panel geometry and filter criteria and triggers background
+    preparation of 1 unseen `PreparedShowcasePackage`.
+    """
+    dmd_id = req.client_id or f"http_{domain}_{req.width}x{req.height}"
+    geometry = PanelGeometry(
+        width=req.width,
+        height=req.height,
+        poster_width=req.poster_width,
+        poster_height=req.poster_height,
+    )
+    criteria = consume_once_orchestrator._parse_domain_criteria(
+        domain,
+        req.model_dump(),
+        top_lang=req.lang,
+    )
+    await consume_once_orchestrator.register_client_domain(dmd_id, domain, geometry, criteria)
+    ready_pkg = consume_once_orchestrator.ready_packages.get((dmd_id, domain))
+    return {
+        "dmd_id": dmd_id,
+        "domain": domain,
+        "ready": ready_pkg is not None,
+        "status": "ready" if ready_pkg is not None else "preparing",
+    }
+
+
+@app.get("/api/v1/{domain}/next", tags=["Consume-Once Protocol (V3.0)"])
+async def claim_next_consume_once_item(
+    domain: DomainType,
+    background_tasks: BackgroundTasks,
+    dmd_id: str = Query(default="default_dmd", description="DMD client identifier"),
+    width: int = Query(default=128, ge=32, le=512),
+    height: int = Query(default=32, ge=16, le=256),
+    lang: str = Query(default="fr"),
+) -> Dict[str, Any]:
+    """
+    Atomically claim the next prepared unseen item for `(dmd_id, domain)`:
+    - If not ready yet: returns `{"ready": false, "status": "preparing"}` immediately (`0 ms` block).
+    - If ready: marks the item consumed in `seen_history.json`, invalidates the ready slot,
+      and returns the JSON Card + `stream_url` (`/api/v1/{domain}/stream/{item_id}.rgb565.stream`).
+    """
+    key = (dmd_id, domain)
+    if key not in consume_once_orchestrator.client_configs:
+        geometry = PanelGeometry(width=width, height=height)
+        criteria = consume_once_orchestrator._parse_domain_criteria(domain, {"lang": lang}, top_lang=lang)
+        await consume_once_orchestrator.register_client_domain(dmd_id, domain, geometry, criteria)
+
+    pkg = await consume_once_orchestrator.claim_next_package(dmd_id, domain)
+    if pkg is None:
+        return {
+            "ready": False,
+            "status": "preparing",
+            "dmd_id": dmd_id,
+            "domain": domain,
+        }
+
+    stream_url = ""
+    if pkg.card.stream_frames > 0 and pkg.unified_stream_path and pkg.unified_stream_path.exists():
+        stream_url = f"/api/v1/{domain}/stream/{pkg.item_id}.rgb565.stream"
+    else:
+        background_tasks.add_task(consume_once_orchestrator.purge_consumed_package, pkg.item_id)
+
+    return {
+        "ready": True,
+        "status": "ready",
+        "dmd_id": dmd_id,
+        "domain": domain,
+        "item_id": pkg.item_id,
+        "card": pkg.card.to_dict(),
+        "stream_url": stream_url,
+    }
+
+
+@app.get("/api/v1/{domain}/stream/{item_id}.rgb565.stream", tags=["Consume-Once Protocol (V3.0)"])
+async def stream_consume_once_sequence(
+    domain: DomainType,
+    item_id: str,
+    background_tasks: BackgroundTasks,
+) -> Response:
+    """
+    Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
+    for `item_id` and immediately purge the consumed files from disk once the HTTP response completes.
+    """
+    pkg = consume_once_orchestrator.active_packages.get(item_id)
+    if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
+        raise HTTPException(status_code=404, detail=f"Stream '{item_id}' not found or already consumed and purged.")
+
+    raw_bytes = pkg.unified_stream_path.read_bytes()
+    background_tasks.add_task(consume_once_orchestrator.purge_consumed_package, item_id)
+    return StreamingResponse(
+        _iter_aligned_chunks(raw_bytes, chunk_size=8192),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(raw_bytes)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DMD-Consume-Once": "1",
+        },
+        background=background_tasks,
+    )
 
 
 @app.post(
@@ -212,16 +343,9 @@ async def register_domain_session(
     req: SessionRegisterRequest,
     request: Request,
 ) -> SessionRegisterResponse:
-    """
-    Step 1 of the DMD Rotation Protocol:
-    Sent proactively by the DMD engine on boot or when WebUI settings are saved.
-    Registers the session and immediately enqueues `count` items into the bounded
-    worker pool so `CurrentBatch` is warmed up before the engine's rotation turn.
-    """
     client_ip = request.client.host if request.client else "unknown"
     logger.info(
-        "[HTTP IN] --> POST /api/v1/%s/session from %s | client_id=%s, count=%d, lang=%s, %dx%d, "
-        "primary_source=%s, jacket_pan=%s, marquee_pan=%s, snaps=%d, include_video=%s",
+        "[HTTP IN] --> POST /api/v1/%s/session from %s | client_id=%s, count=%d, lang=%s, %dx%d",
         domain,
         client_ip,
         req.client_id,
@@ -229,11 +353,6 @@ async def register_domain_session(
         req.lang,
         req.width,
         req.height,
-        req.primary_source,
-        req.jacket_panorama,
-        req.marquee_panorama,
-        req.effective_snapshot_count(),
-        req.include_video,
     )
     return await batch_manager.register_session(domain, req)
 
@@ -248,13 +367,6 @@ async def get_domain_batch(
     request: Request,
     session_id: str = Query(..., description="Session ID returned by POST /api/v1/{domain}/session"),
 ) -> BatchStatusResponse:
-    """
-    Step 2 of the DMD Rotation Protocol ("Are you ready?"):
-    Ultra-fast (< 2 ms) LAN status check called by the DMD right before its rotation turn.
-    - If `status == "ready"`: returns the `N` pre-rendered items and rotates/schedules `NextBatch`.
-    - If `status == "warming"`: allows the DMD to cleanly skip its rotation turn if other
-      engines are active in rotation.
-    """
     client_ip = request.client.host if request.client else "unknown"
     logger.info(
         "[HTTP IN] --> GET /api/v1/%s/batch?session_id=%s from %s",
@@ -264,11 +376,6 @@ async def get_domain_batch(
     )
     res = await batch_manager.get_batch_status(domain, session_id)
     if res is None:
-        logger.warning(
-            "[HTTP OUT] <-- 404 Unknown session_id '%s' for domain '%s'",
-            session_id,
-            domain,
-        )
         raise HTTPException(
             status_code=404,
             detail=f"Unknown or expired session_id '{session_id}' for domain '{domain}'.",
@@ -285,41 +392,23 @@ async def get_domain_random(
     domain: DomainType,
     request: Request,
     client_id: str = Query(default="default_dmd", description="Stable client identifier"),
-    count: int = Query(default=3, ge=1, le=25),
+    count: int = Query(default=1, ge=1, le=25),
     lang: str = Query(default="fr"),
     width: int = Query(default=128, ge=32, le=512),
     height: int = Query(default=32, ge=16, le=256),
-    jacket_panorama: bool = Query(default=True, description="Scroll full jacket top-to-bottom after Card"),
-    marquee_panorama: bool = Query(default=False, description="Scroll marquee/banner top-to-bottom"),
-    snapshot_panorama_count: int = Query(default=0, ge=0, le=5, description="Number of snapshots to scroll (0..5)"),
-    image_count: Optional[int] = Query(default=None, ge=0, le=5, description="Legacy alias for snapshot_panorama_count"),
+    jacket_panorama: bool = Query(default=True),
+    marquee_panorama: bool = Query(default=False),
+    snapshot_panorama_count: int = Query(default=0, ge=0, le=5),
+    image_count: Optional[int] = Query(default=None, ge=0, le=5),
     primary_source: str = Query(default="auto"),
     include_video: bool = Query(default=True),
     video_max_duration_s: float = Query(default=6.0, ge=1.5, le=30.0),
     video_fps: int = Query(default=15, ge=6, le=30),
-    systems: Optional[str] = Query(default=None, description="Comma-separated systems"),
-    genres: Optional[str] = Query(default=None, description="Comma-separated genres"),
-    decade: Optional[str] = Query(default=None, description="Decade filter e.g. 1980s, 1990s"),
+    systems: Optional[str] = Query(default=None),
+    genres: Optional[str] = Query(default=None),
+    decade: Optional[str] = Query(default=None),
 ) -> BatchStatusResponse:
-    """
-    Convenience single-call endpoint that automatically creates or polls a session
-    associated with `client_id`.
-    """
-    client_ip = request.client.host if request.client else "unknown"
     eff_snaps = snapshot_panorama_count if snapshot_panorama_count > 0 else (image_count or 0)
-    logger.info(
-        "[HTTP IN] --> GET /api/v1/%s/random from %s (client_id=%s, count=%d, %dx%d, source=%s, jacket_pan=%s, marquee_pan=%s, snaps=%d)",
-        domain,
-        client_ip,
-        client_id,
-        count,
-        width,
-        height,
-        primary_source,
-        jacket_panorama,
-        marquee_panorama,
-        eff_snaps,
-    )
     req = SessionRegisterRequest(
         client_id=client_id,
         count=count,
@@ -359,19 +448,6 @@ async def trigger_on_demand_media(
     req: OnDemandRequest,
     request: Request,
 ) -> MediaShowcaseItem:
-    """
-    Future-ready endpoint for on-demand requests (Google Home, Alexa, Home Assistant,
-    or custom webhooks). Enqueues the requested media item with `HIGH_ON_DEMAND`
-    priority ahead of background rotation batches.
-    """
-    client_ip = request.client.host if request.client else "unknown"
-    logger.info(
-        "[HTTP IN] --> POST /api/v1/%s/on-demand from %s | query='%s', target_session=%s",
-        domain,
-        client_ip,
-        req.query,
-        req.target_session_id,
-    )
     req.domain = domain
     try:
         return await batch_manager.prepare_on_demand(req)
@@ -389,26 +465,10 @@ async def stream_media_asset(
     item_key: str,
     filename: str,
     request: Request,
-    max_duration_s: Optional[float] = Query(
-        default=None,
-        ge=0.5,
-        le=30.0,
-        description="Optional on-the-fly duration cap in seconds (zero re-encoding).",
-    ),
+    max_duration_s: Optional[float] = Query(default=None, ge=0.5, le=30.0),
 ) -> Response:
-    """
-    Serve or stream pre-rendered DMD assets (`.png`, `.rgb565`, `.gif`, `.rgb565.stream`).
-    Supports $O(1)$ dynamic truncation via `?max_duration_s=` without re-running FFmpeg.
-    """
-    client_ip = request.client.host if request.client else "unknown"
     asset_path: Optional[Path] = batch_manager.resolve_asset_path(item_key, filename)
     if asset_path is None:
-        logger.warning(
-            "[STREAM OUT] <-- 404 Asset '%s' for item '%s' not found (client=%s)",
-            filename,
-            item_key,
-            client_ip,
-        )
         raise HTTPException(
             status_code=404,
             detail=f"Asset '{filename}' for item '{item_key}' is not ready or has expired.",
@@ -416,23 +476,16 @@ async def stream_media_asset(
 
     headers = {
         "X-DMD-Media-Ready": "1",
-        "Cache-Control": f"public, max-age={settings.batch_ttl_seconds}",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     }
 
     if filename.endswith(".rgb565.stream"):
-        if max_duration_s is not None:
-            raw_bytes = truncate_rgb565_stream(asset_path, max_duration_s)
-        else:
-            raw_bytes = asset_path.read_bytes()
-        headers["Content-Length"] = str(len(raw_bytes))
-        logger.info(
-            "[STREAM OUT] <-- Serving stream '%s/%s' (%.1f KB, max_duration_s=%s) to %s",
-            item_key,
-            filename,
-            len(raw_bytes) / 1024.0,
-            max_duration_s,
-            client_ip,
+        raw_bytes = (
+            truncate_rgb565_stream(asset_path, max_duration_s)
+            if max_duration_s is not None
+            else asset_path.read_bytes()
         )
+        headers["Content-Length"] = str(len(raw_bytes))
         return StreamingResponse(
             _iter_aligned_chunks(raw_bytes, chunk_size=8192),
             media_type="application/octet-stream",
@@ -440,32 +493,14 @@ async def stream_media_asset(
         )
 
     if filename.endswith(".gif"):
-        if max_duration_s is not None:
-            raw_bytes = truncate_gif_bytes(asset_path, max_duration_s)
-        else:
-            raw_bytes = asset_path.read_bytes()
+        raw_bytes = (
+            truncate_gif_bytes(asset_path, max_duration_s)
+            if max_duration_s is not None
+            else asset_path.read_bytes()
+        )
         headers["Content-Length"] = str(len(raw_bytes))
-        logger.info(
-            "[STREAM OUT] <-- Serving GIF '%s/%s' (%.1f KB, max_duration_s=%s) to %s",
-            item_key,
-            filename,
-            len(raw_bytes) / 1024.0,
-            max_duration_s,
-            client_ip,
-        )
-        return Response(
-            content=raw_bytes,
-            media_type="image/gif",
-            headers=headers,
-        )
+        return Response(content=raw_bytes, media_type="image/gif", headers=headers)
 
-    logger.info(
-        "[STREAM OUT] <-- Serving static asset '%s/%s' (%.1f KB) to %s",
-        item_key,
-        filename,
-        asset_path.stat().st_size / 1024.0,
-        client_ip,
-    )
     if filename.endswith(".png"):
         return FileResponse(asset_path, media_type="image/png", headers=headers)
 

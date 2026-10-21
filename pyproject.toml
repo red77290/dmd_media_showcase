@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dmd-media-showcase"
-version = "1.0.0"
-description = "Stateless Dockerized media showcase & video streaming server (Games, Movies, TV Series, Anime) for HUB75 LED matrices / DMDs"
+version = "3.0.0"
+description = "V3.0 DDD Media Showcase & Real-Time MQTT+UDP / HTTP Streaming Server (Games, Movies, TV Series, Anime) for HUB75 LED Matrices"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "red77290" }
 ]
-keywords = ["dmd", "hub75", "led-matrix", "arcade", "retrogaming", "tmdb", "screenscraper", "fastapi", "esp32", "raspberry-pi"]
+keywords = ["dmd", "hub75", "led-matrix", "arcade", "retrogaming", "tmdb", "screenscraper", "mqtt", "udp", "fastapi", "esp32", "raspberry-pi"]
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
@@ -32,6 +32,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
+    "pyinstaller>=6.6.0",
 ]
 
 [project.scripts]

@@ -27,6 +27,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
+from app.infrastructure.scrapers.youtube_resolver import (
+    extract_hd_youtube_clip_ytdlp,
+    slice_hd_remote_video_ffmpeg,
+)
 from app.providers.base import install_ipv4_preference
 from dmd_gif_converter import (
     DmdClipConfig,
@@ -90,53 +94,13 @@ def _slice_remote_video_ffmpeg(
     max_duration_s: float = 10.0,
     start_offset_s: float = 10.0,
 ) -> bool:
-    """
-    Slice a short 360p MP4 segment directly over HTTP using FFmpeg (`-ss ... -t ... -i <url>`)
-    so large creditless `.webm` / `.mp4` streams (e.g. AnimeThemes 75 MB 1080p files)
-    do not need to be downloaded in full into RAM.
-    """
-    if not video_url or not video_url.startswith(("http://", "https://")):
-        return False
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    out_mp4.unlink(missing_ok=True)
-    dur = max(5.0, min(16.0, float(max_duration_s)))
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{start_offset_s:.1f}",
-        "-t",
-        f"{dur:.1f}",
-        "-i",
-        video_url,
-        "-vf",
-        "scale=-2:360",
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "26",
-        str(out_mp4),
-    ]
-    t0 = time.monotonic()
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=16)
-        if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
-            logger.info(
-                "[CONVERTER] FFmpeg HTTP-sliced %.1f KB in %.2fs from %s",
-                out_mp4.stat().st_size / 1024.0,
-                time.monotonic() - t0,
-                video_url,
-            )
-            return True
-    except Exception as exc:
-        logger.debug("[CONVERTER] FFmpeg HTTP slice skipped for %s: %s", video_url, exc)
-    return False
+    """Slice a clean HD (`720p`) segment directly over HTTP using FFmpeg."""
+    return slice_hd_remote_video_ffmpeg(
+        video_url=video_url,
+        out_mp4=out_mp4,
+        max_duration_s=max_duration_s,
+        start_offset_s=start_offset_s,
+    )
 
 
 def _extract_video_clip_ytdlp(
@@ -144,76 +108,12 @@ def _extract_video_clip_ytdlp(
     out_mp4: Path,
     max_duration_s: float = 10.0,
 ) -> bool:
-    """
-    Extract a short 360p MP4 clip from a Dailymotion or YouTube URL using `yt-dlp --force-ipv4`.
-    """
-    if not video_page_url or not video_page_url.startswith(("http://", "https://")):
-        return False
-
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    out_mp4.unlink(missing_ok=True)
-
-    sec_end = int(max(12, min(28, 6 + round(max_duration_s))))
-    cmd = [
-        "yt-dlp",
-        "--force-ipv4",
-        "--no-playlist",
-        "--no-warnings",
-        "--quiet",
-        "--socket-timeout",
-        "6",
-        "--max-filesize",
-        "25M",
-        "-f",
-        "best[ext=mp4][height<=360]/best[ext=mp4][height<=480]/best[height<=480]/best",
-        "--download-sections",
-        f"*6-{sec_end}",
-        "-o",
-        str(out_mp4),
-        video_page_url,
-    ]
-    t0 = time.monotonic()
-    try:
-        logger.info("[CONVERTER] Extracting video clip via yt-dlp: %s", video_page_url)
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=18)
-        if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
-            logger.info(
-                "[CONVERTER] yt-dlp extracted %.1f KB in %.2fs from %s",
-                out_mp4.stat().st_size / 1024.0,
-                time.monotonic() - t0,
-                video_page_url,
-            )
-            return True
-
-        # Fallback without --download-sections
-        cmd_full = [
-            "yt-dlp",
-            "--force-ipv4",
-            "--no-playlist",
-            "--no-warnings",
-            "--quiet",
-            "--socket-timeout",
-            "6",
-            "--max-filesize",
-            "18M",
-            "-f",
-            "worst[ext=mp4][height>=240]/best[ext=mp4][height<=360]/best",
-            "-o",
-            str(out_mp4),
-            video_page_url,
-        ]
-        res2 = subprocess.run(cmd_full, capture_output=True, text=True, timeout=15)
-        if res2.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
-            logger.info(
-                "[CONVERTER] yt-dlp extracted full short clip (%.1f KB) in %.2fs from %s",
-                out_mp4.stat().st_size / 1024.0,
-                time.monotonic() - t0,
-                video_page_url,
-            )
-            return True
-    except Exception as exc:
-        logger.info("[CONVERTER] yt-dlp extraction skipped for %s: %s", video_page_url, exc)
-    return False
+    """Extract a clean HD (`720p`/`1080p`) MP4 clip from YouTube using `yt-dlp`."""
+    return extract_hd_youtube_clip_ytdlp(
+        video_page_url=video_page_url,
+        out_mp4=out_mp4,
+        max_duration_s=max_duration_s,
+    )
 
 
 def _generate_fallback_artwork(

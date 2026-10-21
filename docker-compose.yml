@@ -8,25 +8,27 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-8080}:8080"
+      - "${MQTT_PORT:-1883}:1883"
     env_file:
       - path: .env
         required: false
     environment:
       - DEFAULT_LANG=${DEFAULT_LANG:-fr}
+      - MQTT_MODE=${MQTT_MODE:-embedded}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - MQTT_EXTERNAL_URL=${MQTT_EXTERNAL_URL:-}
       - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-2}
       - FFMPEG_THREADS_PER_JOB=${FFMPEG_THREADS_PER_JOB:-1}
       - WORKER_NICE_INCREMENT=${WORKER_NICE_INCREMENT:-10}
-      - BATCH_TTL_SECONDS=${BATCH_TTL_SECONDS:-180}
-      - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-1200}
       - SERVER_MASTER_CLIP_MAX_S=${SERVER_MASTER_CLIP_MAX_S:-12.0}
       - TMDB_API_KEY=${TMDB_API_KEY:-}
       - SCREENSCRAPER_USER=${SCREENSCRAPER_USER:-}
       - SCREENSCRAPER_PASS=${SCREENSCRAPER_PASS:-}
       - SCREENSCRAPER_DEV_ID=${SCREENSCRAPER_DEV_ID:-}
       - SCREENSCRAPER_DEV_PASS=${SCREENSCRAPER_DEV_PASS:-}
-      - TVDB_API_KEY=${TVDB_API_KEY:-}
+    volumes:
+      - ./data:/app/data
     tmpfs:
-      # Ephemeral RAM-backed cache: zero SD/SSD wear and automatic cleanup
       - /tmp/dmd_media_showcase_cache:size=256m,mode=1777
     deploy:
       resources:

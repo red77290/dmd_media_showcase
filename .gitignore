@@ -23,6 +23,7 @@ htmlcov/
 # Runtime media cache
 cache/
 tmp_cache/
+data/
 *.log
 
 # IDEs & OS
