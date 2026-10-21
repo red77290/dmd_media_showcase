@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from app.config import settings
+from app.infrastructure.persistence.json_seen_repository import seen_repository
 from app.models import (
     BatchStatusResponse,
     DomainType,
@@ -306,6 +307,7 @@ class SessionBatchManager:
                 source_used=cand.source_used,
                 poster_width=poster_w,
                 poster_height=poster_h,
+                text_scroll_speed=req.text_scroll_speed,
                 jacket_panorama=bool(urls.jacket_stream_rgb565),
                 marquee_panorama=bool(urls.marquee_stream_rgb565),
                 snapshot_panorama_count=len(urls.snapshot_streams_rgb565),
@@ -653,6 +655,8 @@ class SessionBatchManager:
             )
 
         if cur.is_ready:
+            for cand in cur.candidates.values():
+                seen_repository.mark_consumed(domain, cand.id)
             cur.served_count += 1
             cur.last_served_at = now
             # Ensure NextBatch is scheduled one step ahead

@@ -89,6 +89,10 @@ class SessionRegisterRequest(BaseModel):
         default=True,
         description="Scroll the full localized synopsis on the Info Card.",
     )
+    text_scroll_speed: Literal["slow", "normal", "fast"] = Field(
+        default="normal",
+        description="Organic text scrolling speed on the DMD Info Card ('slow'=16px/s, 'normal'=24px/s, 'fast'=36px/s).",
+    )
     jacket_panorama: bool = Field(
         default=True,
         description="Display full-screen top-to-bottom scrolling panorama of the Jacket / Poster right after the Info Card.",
@@ -223,6 +227,7 @@ class MediaShowcaseItem(BaseModel):
     source_used: str = "live_api"
     poster_width: int = 32
     poster_height: int = 32
+    text_scroll_speed: str = "normal"
     jacket_panorama: bool = False
     marquee_panorama: bool = False
     snapshot_panorama_count: int = 0
@@ -302,3 +307,19 @@ class HealthResponse(BaseModel):
     completed_jobs_total: int
     avg_job_duration_s: float
     providers_configured: Dict[str, str]
+    mqtt_mode: str = "embedded"
+    mqtt_port: int = 1883
+    seen_history_counts: Dict[str, int] = Field(default_factory=dict)
+
+
+class AdminServerConfigPayload(BaseModel):
+    tmdb_api_key: Optional[str] = None
+    screenscraper_user: Optional[str] = None
+    screenscraper_pass: Optional[str] = None
+    screenscraper_dev_id: Optional[str] = None
+    screenscraper_dev_pass: Optional[str] = None
+    mqtt_mode: Optional[Literal["embedded", "external"]] = None
+    mqtt_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    mqtt_external_url: Optional[str] = None
+    default_lang: Optional[str] = None
+

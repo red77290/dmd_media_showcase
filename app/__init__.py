@@ -1,5 +1,5 @@
 """
-DMD Media Showcase Server — Stateless media & video streaming hub for LED matrices.
+DMD Media Showcase Server — V3.0 (DDD Architecture, MQTT Retain + UDP FFmpeg `-re`, Consume-Once).
 """
 
-__version__ = "1.0.0"
+__version__ = "3.0.0"

@@ -1,4 +1,4 @@
-name: CI & Snapshot Pre-Release
+name: CI, Portable Bundles & Snapshot Pre-Release
 
 on:
   push:
@@ -38,13 +38,53 @@ jobs:
           python -m pip install --upgrade pip build
           python -m pip install ".[dev]"
 
-      - name: Run full API & worker pool test suite
+      - name: Run full DDD, MQTT Retain/LWT, UDP DMDF & Consume-Once test suite
         run: |
           pytest
 
-  snapshot:
-    name: Build & Publish v1.0.0-SNAPSHOT Pre-Release
+  portable:
+    name: Build Hermetic Portable Package (${{ matrix.os }})
     needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: portable-windows-x64
+          - os: macos-14
+            artifact_name: portable-macos-arm64
+          - os: ubuntu-latest
+            artifact_name: portable-linux-x64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install static FFmpeg & FFprobe for portable bundling
+        uses: AnimMouse/setup-ffmpeg@v2
+
+      - name: Build hermetic portable bundle (PyInstaller + bundled FFmpeg + MQTT broker)
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m pip install "."
+          python scripts/build_portable.py
+
+      - name: Upload portable zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/DMD_Media_Showcase_Portable_*.zip
+
+  snapshot:
+    name: Publish v3.0.0-SNAPSHOT Pre-Release (Wheels + Portable Bundles)
+    needs: [test, portable]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -61,13 +101,20 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
-      - name: Publish or Update v1.0.0-SNAPSHOT Pre-Release
+      - name: Download portable archives from matrix jobs
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Publish or Update v3.0.0-SNAPSHOT Pre-Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-SNAPSHOT
-          name: "dmd-media-showcase v1.0.0-SNAPSHOT (Rolling CI Build)"
+          tag_name: v3.0.0-SNAPSHOT
+          name: "dmd-media-showcase v3.0.0-SNAPSHOT (DDD + MQTT/UDP + Hermetic Portable)"
           body: |
-            Automated rolling snapshot pre-release built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
-            Includes the stateless FastAPI server, bounded worker pool (`MAX_CONCURRENT_JOBS`), and 4 multilingual showcase providers (`games`, `movies`, `series`, `anime`).
+            Automated rolling V3.0 snapshot built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
+            - **Hermetic Portable Packages** for **Windows x64**, **macOS Apple Silicon (arm64)**, and **Linux x64** (bundling Python, static `ffmpeg`/`ffprobe`, `dmd_gif_converter`, `yt-dlp`, and the embedded MQTT `:1883` broker).
+            - **DDD Ports & Adapters**: 2 dedicated sources per domain (`Primary` + `Fallback`), strict `Consume-Once` (`seen_history.json`), and real-time `ffmpeg -re` UDP `DMDF` streaming.
           prerelease: true
           files: dist/*
