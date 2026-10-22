@@ -494,7 +494,7 @@ async def get_domain_random(
     image_count: Optional[int] = Query(default=None, ge=0, le=5),
     primary_source: str = Query(default="auto"),
     include_video: bool = Query(default=True),
-    video_max_duration_s: float = Query(default=6.0, ge=1.5, le=30.0),
+    video_max_duration_s: float = Query(default=6.0, ge=1.5, le=60.0),
     video_fps: int = Query(default=15, ge=6, le=30),
     systems: Optional[str] = Query(default=None),
     genres: Optional[str] = Query(default=None),
@@ -557,7 +557,7 @@ async def stream_media_asset(
     item_key: str,
     filename: str,
     request: Request,
-    max_duration_s: Optional[float] = Query(default=None, ge=0.5, le=30.0),
+    max_duration_s: Optional[float] = Query(default=None, ge=0.5, le=60.0),
 ) -> Response:
     asset_path: Optional[Path] = batch_manager.resolve_asset_path(item_key, filename)
     if asset_path is None:

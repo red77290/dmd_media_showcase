@@ -3,8 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual Environments
+# Virtual Environments & Local Secrets (.env)
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/

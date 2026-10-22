@@ -120,8 +120,28 @@ class TvMazeAdapter(IScraperSource):
             except Exception:
                 pass
 
-        # Attach YouTube trailer/opening search query so `yt-dlp` can resolve clean 720p/1080p video
-        cand.youtube_url = f"ytsearch1:{title} {year} series trailer opening"
+        # Try Apple iTunes TV Episode previewUrl (.m4v) for official series clip; otherwise None (no random ytsearch)
+        try:
+            it_resp = await client.get(
+                "https://itunes.apple.com/search",
+                params={
+                    "term": title,
+                    "media": "tvShow",
+                    "entity": "tvEpisode",
+                    "country": "US",
+                    "limit": "5",
+                },
+                timeout=3.5,
+            )
+            if it_resp.status_code == 200:
+                for row in it_resp.json().get("results") or []:
+                    prev = str(row.get("previewUrl") or "").strip()
+                    if prev.startswith("http"):
+                        cand.video_url = prev
+                        break
+        except Exception:
+            pass
+
         return cand
 
     async def fetch_random_unseen(

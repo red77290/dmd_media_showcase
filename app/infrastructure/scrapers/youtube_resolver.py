@@ -45,7 +45,7 @@ def slice_hd_remote_video_ffmpeg(
         return False
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     out_mp4.unlink(missing_ok=True)
-    dur = max(4.0, min(20.0, float(max_duration_s)))
+    dur = max(2.0, min(60.0, float(max_duration_s)))
     ffmpeg_bin = get_ffmpeg_binary()
     cmd = [
         ffmpeg_bin,
@@ -72,7 +72,7 @@ def slice_hd_remote_video_ffmpeg(
     ]
     t0 = time.monotonic()
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=18)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=max(20, int(dur) + 15))
         if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
             logger.info(
                 "[VIDEO HD] FFmpeg sliced clean HD clip (%.1f KB) in %.2fs from %s",
@@ -102,7 +102,9 @@ def extract_hd_youtube_clip_ytdlp(
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     out_mp4.unlink(missing_ok=True)
 
-    sec_end = int(max(14, min(32, 8 + round(max_duration_s))))
+    clip_dur = max(2.0, min(60.0, float(max_duration_s)))
+    sec_start = 8
+    sec_end = int(sec_start + round(clip_dur))
     ffmpeg_bin = get_ffmpeg_binary()
     cmd = [
         "yt-dlp",
@@ -123,7 +125,7 @@ def extract_hd_youtube_clip_ytdlp(
         "--merge-output-format",
         "mp4",
         "--download-sections",
-        f"*8-{sec_end}",
+        f"*{sec_start}-{sec_end}",
         "-o",
         str(out_mp4),
         video_page_url,
@@ -131,7 +133,7 @@ def extract_hd_youtube_clip_ytdlp(
     t0 = time.monotonic()
     try:
         logger.info("[VIDEO HD] Extracting 720p/1080p clip via yt-dlp: %s", video_page_url)
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=22)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=max(24, int(clip_dur) + 15))
         if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
             logger.info(
                 "[VIDEO HD] yt-dlp extracted clean HD clip (%.1f KB) in %.2fs from %s",

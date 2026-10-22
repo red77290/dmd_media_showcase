@@ -17,7 +17,12 @@ from app.infrastructure.scrapers.http_utils import clean_synopsis_text, create_a
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.screenscraper")
 
-_ALPHANUM_TOKENS = list("abcdefghijklmnopqrstuvwxyz0123456789")
+_SEARCH_SYLLABLES = [
+    "ma", "st", "ca", "so", "dr", "fi", "ki", "me", "su", "ba",
+    "to", "ra", "da", "ko", "sh", "ga", "le", "pa", "ch", "bo",
+    "al", "ar", "ta", "mo", "ro", "ni", "sa", "te", "ka", "cr",
+]
+_WARNED_MISSING_DEVID = False
 
 
 class ScreenScraperAdapter(IScraperSource):
@@ -39,8 +44,17 @@ class ScreenScraperAdapter(IScraperSource):
         }
 
     def is_configured(self) -> bool:
+        global _WARNED_MISSING_DEVID
         creds = self._credentials()
-        return bool(creds["user"] or creds["devid"])
+        if creds["devid"] and creds["devpass"]:
+            return True
+        if creds["user"] and not _WARNED_MISSING_DEVID:
+            _WARNED_MISSING_DEVID = True
+            logger.warning(
+                "[ScreenScraper] SCREENSCRAPER_USER is set, but SCREENSCRAPER_DEV_ID / SCREENSCRAPER_DEV_PASS "
+                "are empty (required by ScreenScraper API v2) -> using fallback game scrapers."
+            )
+        return False
 
     def supported_filters(self, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:
         return {
@@ -153,7 +167,7 @@ class ScreenScraperAdapter(IScraperSource):
                     break
                 sys_key = random.choice(valid_systems)
                 sys_meta = SYSTEM_METADATA[sys_key]
-                token = random.choice(_ALPHANUM_TOKENS) + random.choice(_ALPHANUM_TOKENS)
+                token = random.choice(_SEARCH_SYLLABLES)
                 params: Dict[str, str] = {
                     "softname": "dmd-media-showcase",
                     "output": "json",

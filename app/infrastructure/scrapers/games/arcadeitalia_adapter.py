@@ -149,8 +149,6 @@ class ArcadeItaliaAdapter(IScraperSource):
         yt_id = str(info.get("youtube_id") or "").strip()
         if yt_id:
             cand.youtube_url = f"https://www.youtube.com/watch?v={yt_id}"
-        elif not cand.video_url:
-            cand.youtube_url = f"ytsearch1:{clean_title} {sys_meta['badge']} arcade gameplay"
 
         if not cand.poster_url and not cand.snapshot_urls:
             return None
@@ -178,7 +176,7 @@ class ArcadeItaliaAdapter(IScraperSource):
         params = {
             "ajax": "query_mame",
             "lang": "en",
-            "game_name": ",".join(clean_roms),
+            "game_name": ";".join(clean_roms),
         }
         try:
             resp = await client.get(ADB_HTTPS_URL, params=params)
@@ -247,6 +245,22 @@ class ArcadeItaliaAdapter(IScraperSource):
                 if picked_roms:
                     rows = await self._query_adb_roms(client, picked_roms)
                     random.shuffle(rows)
+                    req_genres = {
+                        resolve_canonical_genre("games", g)
+                        for g in (criteria.genres or [])
+                        if g and g.lower() != "all"
+                    }
+                    if req_genres:
+                        rows.sort(
+                            key=lambda r: (
+                                0
+                                if resolve_canonical_genre(
+                                    "games", str(r.get("genre") or "").split("/")[0].strip()
+                                )
+                                in req_genres
+                                else 1
+                            )
+                        )
                     for row in rows:
                         rom = str(row.get("game_name") or "").strip()
                         cand_id = f"games_adb_{rom}"
@@ -264,6 +278,14 @@ class ArcadeItaliaAdapter(IScraperSource):
                             results.append(cand)
                             if len(results) >= count:
                                 break
+
+        if len(results) < count:
+            fallback_batch = await self.console_adapter.fetch_random_unseen(
+                criteria=criteria,
+                seen_ids=seen_ids,
+                count=count - len(results),
+            )
+            results.extend(fallback_batch)
 
         return results[:count]
 

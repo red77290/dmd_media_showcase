@@ -201,6 +201,17 @@ class ConsumeOnceOrchestrator:
         # and purge any pre-reboot consumed package that was waiting for `start_stream`.
         await self._cleanup_abandoned_active_packages(dmd_id)
 
+        # If this physical DMD (identified by its LAN `best_ip`) switched to a different
+        # domain client (e.g. `rpi_games_128x32` -> `rpi_movies_128x32`), cancel any in-flight
+        # background prep tasks of the previous domain on the same IP so the active domain gets immediate priority.
+        if best_ip and best_ip != "127.0.0.1":
+            for (other_dmd_id, other_dom), task in list(self._prep_tasks.items()):
+                if other_dmd_id != dmd_id and self.client_udp_ips.get(other_dmd_id) == best_ip:
+                    if not task.done():
+                        task.cancel()
+                    self._prep_tasks.pop((other_dmd_id, other_dom), None)
+                    await self.streamer.stop_stream(other_dmd_id)
+
         engines_map = payload.get("domains") or payload.get("engines")
         if isinstance(engines_map, dict):
             for dom_key, dom_cfg in engines_map.items():
@@ -227,7 +238,14 @@ class ConsumeOnceOrchestrator:
             if pkg.dmd_id == dmd_id and pkg.consumed
         ]
         for item_id in abandoned_ids:
-            await self.purge_consumed_package(item_id)
+            pkg = self.active_packages.pop(item_id, None)
+            if pkg is not None:
+                shutil.rmtree(pkg.item_dir, ignore_errors=True)
+                logger.info(
+                    "[ORCHESTRATOR] Purged abandoned media files for '%s' ('%s')",
+                    item_id,
+                    pkg.candidate.title,
+                )
 
     async def register_client_domain(
         self,
@@ -265,11 +283,15 @@ class ConsumeOnceOrchestrator:
             if stale_pkg is not None:
                 self.active_packages.pop(stale_pkg.item_id, None)
                 shutil.rmtree(stale_pkg.item_dir, ignore_errors=True)
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-                    {"ready": False, "item_id": "", "domain": domain, "status": "reconfiguring"},
-                    retain=True,
-                )
+            for active_id, active_pkg in list(self.active_packages.items()):
+                if active_pkg.dmd_id == dmd_id and active_pkg.domain == domain:
+                    self.active_packages.pop(active_id, None)
+                    shutil.rmtree(active_pkg.item_dir, ignore_errors=True)
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                {"ready": False, "item_id": "", "domain": domain, "status": "reconfiguring"},
+                retain=True,
+            )
             self._schedule_preparation(dmd_id, domain)
             return
 
@@ -338,17 +360,11 @@ class ConsumeOnceOrchestrator:
                     if slot_pkg.domain == domain:
                         active_exclude.add(slot_pkg.candidate.id)
 
-                max_attempts = 2 if criteria.include_video else 1
                 chosen_pkg: Optional[PreparedShowcasePackage] = None
-
-                for attempt in range(max_attempts):
-                    candidates = await self.chain_service.acquire_unseen_candidates(
-                        criteria, count=1, extra_exclude_ids=active_exclude
-                    )
-                    if not candidates:
-                        break
-                    if chosen_pkg is not None:
-                        shutil.rmtree(chosen_pkg.item_dir, ignore_errors=True)
+                candidates = await self.chain_service.acquire_unseen_candidates(
+                    criteria, count=1, extra_exclude_ids=active_exclude
+                )
+                if candidates:
                     cand = candidates[0]
                     active_exclude.add(cand.id)
                     item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
@@ -381,7 +397,7 @@ class ConsumeOnceOrchestrator:
                         stream_duration_s=float(files_map.get("stream_duration_s") or 0.0),
                     )
                     unified_path_str = str(files_map.get("unified_stream_path") or "")
-                    pkg = PreparedShowcasePackage(
+                    chosen_pkg = PreparedShowcasePackage(
                         item_id=item_id,
                         domain=domain,
                         dmd_id=dmd_id,
@@ -392,16 +408,6 @@ class ConsumeOnceOrchestrator:
                         unified_stream_path=Path(unified_path_str) if unified_path_str else None,
                         files_map=files_map,
                     )
-                    chosen_pkg = pkg
-                    if criteria.include_video and not card.has_video and (attempt + 1) < max_attempts:
-                        logger.info(
-                            "[ORCHESTRATOR] Candidate '%s' had no video clip -> trying next candidate for %s/%s",
-                            cand.title,
-                            dmd_id,
-                            domain,
-                        )
-                        continue
-                    break
 
                 if chosen_pkg is None:
                     if key not in self.ready_packages:
@@ -410,6 +416,14 @@ class ConsumeOnceOrchestrator:
                             {"ready": False, "item_id": "", "status": "empty_catalog"},
                             retain=True,
                         )
+                    loop = asyncio.get_running_loop()
+
+                    async def _delayed_retry() -> None:
+                        await asyncio.sleep(5.0)
+                        if key in self.client_configs:
+                            self._schedule_preparation(dmd_id, domain)
+
+                    loop.create_task(_delayed_retry())
                     return
 
                 # Ensure item_dir still exists in case the last fallback candidate was kept
@@ -624,6 +638,11 @@ class ConsumeOnceOrchestrator:
 
         elif ev_type == "client_offline":
             logger.info("[ORCHESTRATOR] DMD client '%s' went offline (LWT) -> cleaning up active streams", dmd_id)
+            for dom_key in VALID_DOMAINS:
+                self.client_configs.pop((dmd_id, dom_key), None)
+                t = self._prep_tasks.pop((dmd_id, dom_key), None)
+                if t and not t.done():
+                    t.cancel()
             await self._cleanup_abandoned_active_packages(dmd_id)
 
 
