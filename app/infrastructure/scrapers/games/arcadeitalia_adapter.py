@@ -88,8 +88,9 @@ class ArcadeItaliaAdapter(IScraperSource):
         raw_title = str(info.get("title") or rom).strip()
         clean_title = re.sub(r"\s*\([^)]*\)\s*$", "", raw_title).strip() or raw_title
         year = str(info.get("year") or "1991")[:4]
-        raw_genre = str(info.get("genre") or "Arcade").split("/")[0].strip()
-        canon_genre = resolve_canonical_genre("games", raw_genre)
+        full_genre = str(info.get("genre") or "Arcade").strip()
+        raw_genre = full_genre.split("/")[0].strip()
+        canon_genre = resolve_canonical_genre("games", full_genre)
         short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
         gmeta = GAME_GENRE_CATALOG.get(canon_genre)
         genre_label = localize_label(gmeta["labels"], short_lang, raw_genre) if gmeta else raw_genre
@@ -240,32 +241,45 @@ class ArcadeItaliaAdapter(IScraperSource):
                     client,
                     criteria=criteria,
                     seen_ids=seen_ids,
-                    count=max(3, (count - len(results)) * 3),
+                    count=max(8, (count - len(results)) * 6),
                 )
                 if picked_roms:
                     rows = await self._query_adb_roms(client, picked_roms)
+                    # If any returned row is a clone without video, also fetch its parent ROM
+                    parent_roms_to_fetch = [
+                        str(r.get("cloneof") or "").strip()
+                        for r in rows
+                        if r.get("cloneof")
+                        and not r.get("url_video_shortplay")
+                        and f"games_adb_{str(r.get('cloneof') or '').strip()}" not in seen_ids
+                    ]
+                    if parent_roms_to_fetch:
+                        parent_rows = await self._query_adb_roms(client, list(dict.fromkeys(parent_roms_to_fetch))[:8])
+                        rows = parent_rows + rows
                     random.shuffle(rows)
+                    # Prioritize parent ROMs with shortplay video over clones
+                    rows.sort(
+                        key=lambda r: (
+                            0 if r.get("url_video_shortplay") else 1,
+                            0 if not r.get("cloneof") else 1,
+                        )
+                    )
                     req_genres = {
                         resolve_canonical_genre("games", g)
                         for g in (criteria.genres or [])
                         if g and g.lower() != "all"
                     }
-                    if req_genres:
-                        rows.sort(
-                            key=lambda r: (
-                                0
-                                if resolve_canonical_genre(
-                                    "games", str(r.get("genre") or "").split("/")[0].strip()
-                                )
-                                in req_genres
-                                else 1
-                            )
-                        )
                     for row in rows:
                         rom = str(row.get("game_name") or "").strip()
                         cand_id = f"games_adb_{rom}"
                         if not rom or cand_id in seen_ids:
                             continue
+                        if req_genres:
+                            row_genre = resolve_canonical_genre(
+                                "games", str(row.get("genre") or "").strip()
+                            )
+                            if row_genre not in req_genres:
+                                continue
                         if (
                             not row.get("url_image_ingame")
                             and not row.get("url_image_flyer")
@@ -274,12 +288,17 @@ class ArcadeItaliaAdapter(IScraperSource):
                             continue
                         cand = await self._build_candidate(client, row, sys_key, criteria.lang)
                         if cand:
+                            title_slug = re.sub(r"[^a-z0-9]+", "_", cand.title.lower()).strip("_")
+                            title_key = f"games_adb_title_{title_slug}"
+                            if title_key in seen_ids:
+                                continue
                             seen_ids.add(cand.id)
+                            seen_ids.add(title_key)
                             results.append(cand)
                             if len(results) >= count:
                                 break
 
-        if len(results) < count:
+        if console_systems and len(results) < count:
             fallback_batch = await self.console_adapter.fetch_random_unseen(
                 criteria=criteria,
                 seen_ids=seen_ids,

@@ -20,6 +20,7 @@ from app.infrastructure.scrapers.catalog_metadata import DECADE_BOUNDS, MOVIE_GE
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
     create_async_http_client,
+    fetch_dailymotion_trailer_and_stills,
     fetch_imdb_suggestion_items,
     fetch_wikipedia_localized_synopsis,
 )
@@ -169,11 +170,12 @@ class ItunesMovieAdapter(IScraperSource):
         results: List[MediaCandidate] = []
         async with create_async_http_client(timeout=6.0) as client:
             # 1. Discover real films for the requested decade + genre via Wikipedia MediaWiki API,
-            #    then enrich via Apple iTunes Movie Trailers (`previewUrl` .m4v) + IMDb CDN + Wikipedia synopsis.
-            search_q = f"{base_yr}s {g_meta['query']} film incategory:Films"
+            #    then enrich via Apple iTunes Movie Trailers (`previewUrl` .m4v) + IMDb CDN + Dailymotion trailer.
+            rand_year = random.randint(base_yr, base_yr + 9)
+            search_q = f'"{rand_year}" "{g_meta["query"]} film" "directed by"'
             wiki_items: List[Dict[str, Any]] = []
             try:
-                sroffset = random.randint(0, 35)
+                sroffset = random.randint(0, 25)
                 w_resp = await client.get(
                     "https://en.wikipedia.org/w/api.php",
                     params={
@@ -193,7 +195,7 @@ class ItunesMovieAdapter(IScraperSource):
                         params={
                             "action": "query",
                             "list": "search",
-                            "srsearch": f"{g_meta['query']} film incategory:Films",
+                            "srsearch": f'"{g_meta["query"]} film" "directed by"',
                             "srlimit": "20",
                             "format": "json",
                         },
@@ -219,11 +221,19 @@ class ItunesMovieAdapter(IScraperSource):
                     client, clean_title, country, g_meta, short_lang, seen_ids, decade_bounds=decade_bounds
                 )
                 if itunes_cand is not None:
+                    if not itunes_cand.video_url and not itunes_cand.youtube_url:
+                        dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                            client, f"{itunes_cand.title} {itunes_cand.year} trailer", max_snapshots=4
+                        )
+                        if dm_url:
+                            itunes_cand.youtube_url = dm_url
+                        for st in dm_stills:
+                            itunes_cand.add_unique_snapshot(st)
                     seen_ids.add(itunes_cand.id)
                     results.append(itunes_cand)
                     continue
 
-                # Fallback to IMDb Suggestion CDN + Wikipedia localized synopsis if not in iTunes Store
+                # Fallback to IMDb Suggestion CDN + Dailymotion HD Trailer + Wikipedia localized synopsis
                 imdb_hits = await fetch_imdb_suggestion_items(client, clean_title, qid_filter={"movie", "feature"})
                 if not imdb_hits:
                     continue
@@ -250,6 +260,11 @@ class ItunesMovieAdapter(IScraperSource):
                 if not wiki_syn:
                     wiki_syn = f"{imdb_title} ({year_val}) — {g_meta['label']}. {stars}".strip()
 
+                dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                    client, f"{imdb_title} {year_val} trailer", max_snapshots=4
+                )
+                backdrop_img = (dm_stills[0] if dm_stills else None) or wiki_thumb or poster_url
+
                 cand = MediaCandidate(
                     id=cand_id,
                     domain="movies",
@@ -263,12 +278,15 @@ class ItunesMovieAdapter(IScraperSource):
                     lang=short_lang,
                     poster_url=poster_url,
                     jacket_url=poster_url,
-                    marquee_url=wiki_thumb or poster_url,
-                    backdrop_url=wiki_thumb or poster_url,
+                    marquee_url=backdrop_img,
+                    backdrop_url=backdrop_img,
                     video_url=None,
+                    youtube_url=dm_url,
                     source_id=self.source_id,
                     theme_palette=g_meta["palette"],
                 )
+                for st in dm_stills:
+                    cand.add_unique_snapshot(st)
                 if wiki_thumb:
                     cand.add_unique_snapshot(wiki_thumb)
                 seen_ids.add(cand.id)

@@ -70,7 +70,7 @@ GAME_GENRES: Dict[str, str] = {
 
 MOVIE_GENRES: Dict[str, Dict[str, Any]] = {
     "action": {"tmdb_id": 28, "label": "Action", "query": "action", "color": "#E53935", "palette": (229, 57, 53)},
-    "scifi": {"tmdb_id": 878, "label": "Sci-Fi", "query": "sci-fi", "color": "#00ACC1", "palette": (0, 172, 193)},
+    "scifi": {"tmdb_id": 878, "label": "Sci-Fi", "query": "science fiction", "color": "#00ACC1", "palette": (0, 172, 193)},
     "thriller": {"tmdb_id": 53, "label": "Thriller", "query": "thriller", "color": "#FB8C00", "palette": (251, 140, 0)},
     "animation": {"tmdb_id": 16, "label": "Animation", "query": "animation", "color": "#43A047", "palette": (67, 160, 71)},
     "horror": {"tmdb_id": 27, "label": "Horror", "query": "horror", "color": "#B71C1C", "palette": (183, 28, 28)},

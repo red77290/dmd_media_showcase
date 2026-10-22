@@ -153,6 +153,7 @@ class LibretroWikidataAdapter(IScraperSource):
         boxart_url = verified_urls.get("boxart")
         title_url = verified_urls.get("title")
         snap_url = verified_urls.get("snap")
+        video_url = verified_urls.get("video")
 
         # Require at least one verified Libretro asset so non-system games (e.g. SNES game on NES) are rejected
         if not boxart_url and not snap_url and not title_url:
@@ -203,6 +204,7 @@ class LibretroWikidataAdapter(IScraperSource):
             poster_url=poster_url,
             jacket_url=poster_url,
             marquee_url=title_url or poster_url,
+            video_url=video_url,
             youtube_url=None,
             source_id=self.source_id,
             theme_palette=tuple(smeta["palette"]),
@@ -276,6 +278,7 @@ class LibretroWikidataAdapter(IScraperSource):
             )
             title_url = verified.get("title")
             snap_url = verified.get("snap")
+            video_url = verified.get("video")
 
             wiki_syn, _ = await fetch_wikipedia_localized_synopsis(
                 client,
@@ -307,6 +310,7 @@ class LibretroWikidataAdapter(IScraperSource):
                 poster_url=boxart_url,
                 jacket_url=boxart_url,
                 marquee_url=title_url or boxart_url,
+                video_url=video_url,
                 youtube_url=None,
                 source_id=self.source_id,
                 theme_palette=tuple(smeta["palette"]),
@@ -346,10 +350,11 @@ class LibretroWikidataAdapter(IScraperSource):
                 if len(results) >= count:
                     break
                 sys_key = random.choice(req_systems)
+                chosen_genre = random.choice(req_genres) if req_genres else None
                 harvested = await self.referential_strategy.harvest_wikidata_games(
                     client, sys_key=sys_key, genre_key=chosen_genre
                 )
-                if not harvested:
+                if not harvested and not req_genres:
                     harvested = await self.referential_strategy.harvest_wikidata_games(
                         client, sys_key=sys_key, genre_key=None
                     )
@@ -373,18 +378,20 @@ class LibretroWikidataAdapter(IScraperSource):
                             client,
                             entry=entry,
                             sys_key=sys_key,
-                            genre_key=chosen_genre,
+                            genre_key=chosen_genre or "platform",
                             lang=criteria.lang,
                         )
                         if cand and cand.id not in seen_ids:
                             seen_ids.add(cand.id)
                             results.append(cand)
 
-                if len(results) < count:
+                # Only fall back to uncategorized Libretro tree when no specific genre filter was set
+                # or when Wikidata SPARQL returned zero games for the requested genre.
+                if len(results) < count and not harvested:
                     tree_cands = await self._discover_from_verified_libretro_tree(
                         client,
                         sys_key=sys_key,
-                        genre_key=chosen_genre,
+                        genre_key=chosen_genre or "platform",
                         lang=criteria.lang,
                         seen_ids=seen_ids,
                         count=count - len(results),
