@@ -113,6 +113,7 @@ async def _isolated_test_environment(tmp_path: Path, monkeypatch):
                         f"https://example.org/{cid}_snap1.png",
                         f"https://example.org/{cid}_snap2.png",
                     ],
+                    video_url=f"https://example.org/{cid}_shortplay.mp4" if (idx % 2 == 1) else None,
                     source_used="live_api",
                 )
                 out.append(cand)

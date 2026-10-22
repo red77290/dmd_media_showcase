@@ -63,6 +63,7 @@ class ConsumeOnceOrchestrator:
 
         # Per `(dmd_id, domain)` configuration, ready slot, active playing slot, and prep task
         self.client_configs: Dict[Tuple[str, DomainType], Tuple[PanelGeometry, FilterCriteria]] = {}
+        self.client_udp_ips: Dict[str, str] = {}
         self.ready_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
         self.active_packages: Dict[str, PreparedShowcasePackage] = {}
         self._prep_tasks: Dict[Tuple[str, DomainType], asyncio.Task[None]] = {}
@@ -130,7 +131,11 @@ class ConsumeOnceOrchestrator:
         top_lang = str(payload.get("lang") or "fr")
         geometry = PanelGeometry(width=width, height=height)
 
-        engines_map = payload.get("engines")
+        udp_ip = str(payload.get("udp_ip") or payload.get("_peer_ip") or "").strip()
+        if udp_ip:
+            self.client_udp_ips[dmd_id] = udp_ip
+
+        engines_map = payload.get("domains") or payload.get("engines")
         if isinstance(engines_map, dict):
             for dom_key, dom_cfg in engines_map.items():
                 if dom_key in VALID_DOMAINS and isinstance(dom_cfg, dict):
@@ -287,12 +292,13 @@ class ConsumeOnceOrchestrator:
 
     async def handle_mqtt_client_event(self, dmd_id: str, event_payload: Dict[str, Any]) -> None:
         """
-        Handle real-time DMD events on `dmd_showcase/clients/{dmd_id}/events`:
+        Handle real-time DMD events on `dmd_showcase/clients/{dmd_id}/events`
+        or `dmd_showcase/clients/{dmd_id}/{domain}/events`:
         - `start_card`   : locks/consumes the item immediately (`ready=False` retained + `seen_history.json`).
         - `start_stream` : launches `ffmpeg -re` UDP stream to `udp_ip:udp_port`.
         - `stop_stream`  : stops active `ffmpeg -re` UDP stream and purges the consumed item.
         """
-        ev_type = str(event_payload.get("event") or "")
+        ev_type = str(event_payload.get("event") or event_payload.get("action") or "")
         dom_raw = str(event_payload.get("domain") or "games")
         item_id = str(event_payload.get("item_id") or "")
         domain: DomainType = dom_raw if dom_raw in VALID_DOMAINS else "games"  # type: ignore[assignment]
@@ -308,11 +314,9 @@ class ConsumeOnceOrchestrator:
             if pkg is None:
                 pkg = await self.claim_next_package(dmd_id, domain, item_id=item_id)
             if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{dmd_id}/stream_state",
-                    {"event": "stream_eof", "item_id": item_id, "domain": domain},
-                    retain=False,
-                )
+                eof_msg = {"event": "stream_eof", "item_id": item_id, "domain": domain}
+                await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/events", eof_msg, retain=False)
+                await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/stream_state", eof_msg, retain=False)
                 if item_id:
                     await self.purge_consumed_package(item_id)
                 return
@@ -320,18 +324,27 @@ class ConsumeOnceOrchestrator:
             if not pkg.consumed:
                 await self.claim_next_package(dmd_id, domain, item_id=item_id)
 
-            udp_ip = str(event_payload.get("udp_ip") or "127.0.0.1")
-            udp_port = int(event_payload.get("udp_port") or 4210)
-            await self.mqtt.publish_json(
-                f"dmd_showcase/clients/{dmd_id}/stream_state",
-                {"event": "stream_started", "item_id": pkg.item_id, "domain": domain},
-                retain=False,
+            udp_ip = str(
+                event_payload.get("udp_ip")
+                or self.client_udp_ips.get(dmd_id)
+                or event_payload.get("_peer_ip")
+                or "127.0.0.1"
             )
+            udp_port = int(event_payload.get("udp_port") or 4210)
+            started_msg = {"event": "stream_started", "item_id": pkg.item_id, "domain": domain}
+            await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/events", started_msg, retain=False)
+            await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=False)
 
             async def _on_stream_eof(client_dmd_id: str, finished_item_id: str, _ok: bool) -> None:
+                eof_msg = {"event": "stream_eof", "item_id": finished_item_id, "domain": domain}
+                await self.mqtt.publish_json(
+                    f"dmd_showcase/clients/{client_dmd_id}/{domain}/events",
+                    eof_msg,
+                    retain=False,
+                )
                 await self.mqtt.publish_json(
                     f"dmd_showcase/clients/{client_dmd_id}/stream_state",
-                    {"event": "stream_eof", "item_id": finished_item_id, "domain": domain},
+                    eof_msg,
                     retain=False,
                 )
                 await self.purge_consumed_package(finished_item_id)

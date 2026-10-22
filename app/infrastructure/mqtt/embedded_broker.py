@@ -90,6 +90,7 @@ def build_publish_packet(
 class _ClientSession:
     client_id: str
     writer: asyncio.StreamWriter
+    peer_ip: str = "127.0.0.1"
     subscriptions: List[str] = field(default_factory=list)
     will_topic: Optional[str] = None
     will_payload: bytes = b""
@@ -137,6 +138,12 @@ class EmbeddedMqttBroker:
 
     def subscribe_internal(self, topic_filter: str, callback: MessageCallback) -> None:
         self._internal_callbacks.append((topic_filter, callback))
+
+    def get_client_peer_ip(self, client_id: str) -> Optional[str]:
+        for cid, sess in self.clients.items():
+            if cid == client_id or cid.startswith(f"{client_id}_"):
+                return sess.peer_ip
+        return None
 
     async def publish(self, topic: str, payload: bytes, retain: bool = False) -> None:
         if retain:
@@ -189,9 +196,12 @@ class EmbeddedMqttBroker:
                         (w_len,) = struct.unpack_from("!H", body, pos)
                         pos += 2
                         will_payload = body[pos : pos + w_len]
+                    peername = writer.get_extra_info("peername")
+                    peer_ip = str(peername[0]) if isinstance(peername, tuple) and len(peername) >= 1 else "127.0.0.1"
                     session = _ClientSession(
                         client_id=client_id,
                         writer=writer,
+                        peer_ip=peer_ip,
                         will_topic=will_topic,
                         will_payload=will_payload,
                         will_retain=will_retain,

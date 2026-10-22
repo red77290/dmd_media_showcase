@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     screenscraper_dev_pass: str = ""
     tvdb_api_key: str = ""
 
+    # Home-Lab HTTP (default open) & Future Scalable Online HTTPS / API Key Security
+    showcase_api_key: str = ""
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
+    trust_proxy_headers: bool = True
+
     @property
     def effective_max_workers(self) -> int:
         if self.max_concurrent_jobs > 0:

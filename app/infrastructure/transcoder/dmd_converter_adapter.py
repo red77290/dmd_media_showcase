@@ -61,14 +61,15 @@ def merge_rgb565_streams(
     eff_fps = max(1, min(60, int(fps)))
     frame_dur_ms = max(16, int(round(1000.0 / eff_fps)))
     header = struct.pack(
-        "<4sHHHHHH",
+        "<4sBBHHHHH",
         b"DMDS",
         1,
+        eff_fps,
         width,
         height,
-        eff_fps,
-        frame_dur_ms,
         min(65535, total_frames),
+        frame_dur_ms,
+        0,
     )
     out_stream_path.parent.mkdir(parents=True, exist_ok=True)
     with out_stream_path.open("wb") as f:

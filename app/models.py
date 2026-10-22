@@ -322,4 +322,5 @@ class AdminServerConfigPayload(BaseModel):
     mqtt_port: Optional[int] = Field(default=None, ge=1, le=65535)
     mqtt_external_url: Optional[str] = None
     default_lang: Optional[str] = None
+    showcase_api_key: Optional[str] = None
 

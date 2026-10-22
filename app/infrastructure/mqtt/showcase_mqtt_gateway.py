@@ -72,6 +72,7 @@ class ShowcaseMqttGateway:
                 await self.external_client.connect()
                 await self.external_client.subscribe("dmd_showcase/clients/+/config", self._on_raw_msg)
                 await self.external_client.subscribe("dmd_showcase/clients/+/events", self._on_raw_msg)
+                await self.external_client.subscribe("dmd_showcase/clients/+/+/events", self._on_raw_msg)
                 await self.publish_json(
                     SERVER_STATUS_TOPIC,
                     {"online": True, "version": __version__, "mode": "external"},
@@ -91,6 +92,7 @@ class ShowcaseMqttGateway:
         self.embedded_broker = EmbeddedMqttBroker(host="0.0.0.0", port=port)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/config", self._on_raw_msg)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/events", self._on_raw_msg)
+        self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/+/events", self._on_raw_msg)
         await self.embedded_broker.start()
         await self.publish_json(
             SERVER_STATUS_TOPIC,
@@ -131,13 +133,21 @@ class ShowcaseMqttGateway:
         if len(parts) < 4 or parts[0] != "dmd_showcase" or parts[1] != "clients":
             return
         dmd_id = parts[2]
-        leaf = parts[3]
+        leaf = parts[-1]
         try:
             decoded = json.loads(payload.decode("utf-8"))
             if not isinstance(decoded, dict):
                 return
         except Exception:
             return
+
+        if self.embedded_broker is not None:
+            peer_ip = self.embedded_broker.get_client_peer_ip(dmd_id)
+            if peer_ip:
+                decoded.setdefault("_peer_ip", peer_ip)
+
+        if len(parts) >= 5 and leaf == "events":
+            decoded.setdefault("domain", parts[3])
 
         if leaf == "config" and self._on_client_config is not None:
             await self._on_client_config(dmd_id, decoded)
