@@ -207,6 +207,12 @@ class EmbeddedMqttBroker:
                         will_retain=will_retain,
                     )
                     self.clients[client_id] = session
+                    logger.info(
+                        "[MQTT BROKER] Client connected: client_id='%s' peer_ip=%s (will_topic=%s)",
+                        client_id,
+                        peer_ip,
+                        will_topic or "none",
+                    )
                     writer.write(b"\x20\x02\x00\x00")  # CONNACK Accepted
                     await writer.drain()
 
@@ -240,10 +246,22 @@ class EmbeddedMqttBroker:
                     suback_body = struct.pack("!H", pkt_id) + bytes(return_codes)
                     writer.write(b"\x90" + _encode_remaining_length(len(suback_body)) + suback_body)
                     await writer.drain()
+                    logger.info(
+                        "[MQTT BROKER] Client '%s' (%s) subscribed to %s",
+                        session.client_id,
+                        session.peer_ip,
+                        new_subs,
+                    )
                     # Immediately deliver matching retained messages
                     for r_topic, r_payload in list(self.retained.items()):
                         if any(mqtt_topic_matches(sf, r_topic) for sf in new_subs):
                             writer.write(build_publish_packet(r_topic, r_payload, qos=0, retain=True))
+                            logger.info(
+                                "[MQTT RETAIN DELIVERED] --> client='%s' topic='%s' (%d bytes)",
+                                session.client_id,
+                                r_topic,
+                                len(r_payload),
+                            )
                     await writer.drain()
 
                 elif pkt_type == 12:  # PINGREQ

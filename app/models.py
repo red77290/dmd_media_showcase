@@ -89,9 +89,9 @@ class SessionRegisterRequest(BaseModel):
         default=True,
         description="Scroll the full localized synopsis on the Info Card.",
     )
-    text_scroll_speed: Literal["slow", "normal", "fast"] = Field(
+    text_scroll_speed: str = Field(
         default="normal",
-        description="Organic text scrolling speed on the DMD Info Card ('slow'=16px/s, 'normal'=24px/s, 'fast'=36px/s).",
+        description="Organic text scrolling speed on the DMD Info Card ('1'..'10' or 'slow'|'normal'|'fast'|'turbo').",
     )
     jacket_panorama: bool = Field(
         default=True,

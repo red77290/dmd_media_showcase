@@ -2,18 +2,18 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DMD Media Showcase Server API",
-    "summary": "Live Multilingual Retro Games, Movies, TV Series & Anime Showcase Server for LED Matrices",
-    "description": "Self-hosted, stateless multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Key Features\n- **100% Live Random Discovery by Category**: Queries ScreenScraper, ArcadeItalia ADB, IGDB, TMDB, IMDb, TVMaze, Jikan v4, Kitsu, AnimeThemes.moe, Wikipedia, and Dailymotion with zero hardcoded mock catalogs.\n- **Granular Top-to-Bottom Panoramas**: Independently toggle `jacket_panorama` (default `true`), `marquee_panorama` (default `false`), and `snapshot_panorama_count` (`0..5`, default `0`).\n- **Multi-Format & TATE Geometries**: Supports `256x64`, `128x64`, `128x32`, `64x64`, and vertical TATE (`64x128`, `64x256`, `32x128`) resolutions.\n- **Language-Agnostic Trailers**: Automatically extracts video trailers and openings in any language since the DMD is mute.",
-    "version": "1.0.0"
+    "summary": "DDD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 DMDs",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### V3.0 Architecture Highlights\n- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming, plus HTTP Polling.",
+    "version": "3.0.0"
   },
   "paths": {
     "/api/v1/health": {
       "get": {
         "tags": [
-          "System"
+          "System & Admin"
         ],
         "summary": "Get Health",
-        "description": "Return server health, worker pool saturation, and configured live scraper providers.",
+        "description": "Return server health, worker pool saturation, MQTT broker mode, and DDD scraper chains.",
         "operationId": "get_health_api_v1_health_get",
         "responses": {
           "200": {
@@ -29,13 +29,226 @@
         }
       }
     },
+    "/api/v1/admin/config": {
+      "get": {
+        "tags": [
+          "System & Admin"
+        ],
+        "summary": "Get Admin Config",
+        "description": "Return centralized server configuration (`server_config.json`) and `seen_history.json` counts.",
+        "operationId": "get_admin_config_api_v1_admin_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Admin Config Api V1 Admin Config Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "System & Admin"
+        ],
+        "summary": "Update Admin Config",
+        "description": "Update centralized scraper credentials and MQTT settings in `./data/server_config.json`.",
+        "operationId": "update_admin_config_api_v1_admin_config_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminServerConfigPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Update Admin Config Api V1 Admin Config Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/history/reset": {
+      "post": {
+        "tags": [
+          "System & Admin"
+        ],
+        "summary": "Reset Seen History",
+        "description": "Reset `seen_history.json` for a single domain or all domains.",
+        "operationId": "reset_seen_history_api_v1_admin_history_reset_post",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "games",
+                    "movies",
+                    "series",
+                    "anime"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional domain to reset (or all if omitted)",
+              "title": "Domain"
+            },
+            "description": "Optional domain to reset (or all if omitted)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Reset Seen History Api V1 Admin History Reset Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/referentials/sync": {
+      "post": {
+        "tags": [
+          "System & Admin"
+        ],
+        "summary": "Sync Live Referentials",
+        "description": "Force real-time synchronization of live upstream scraper referentials (`./data/referentials/*.json`).",
+        "operationId": "sync_live_referentials_api_v1_admin_referentials_sync_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Sync Live Referentials Api V1 Admin Referentials Sync Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/{domain}/referential": {
+      "get": {
+        "tags": [
+          "Discovery"
+        ],
+        "summary": "Get Domain Filters",
+        "description": "Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources.",
+        "operationId": "get_domain_filters_api_v1__domain__referential_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)",
+              "default": "fr",
+              "title": "Lang"
+            },
+            "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Domain Filters Api V1  Domain  Referential Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/{domain}/filters": {
       "get": {
         "tags": [
           "Discovery"
         ],
         "summary": "Get Domain Filters",
-        "description": "Return exhaustive live filter categories, systems, genres, decades, and sources for `domain`.",
+        "description": "Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources.",
         "operationId": "get_domain_filters_api_v1__domain__filters_get",
         "parameters": [
           {
@@ -59,11 +272,11 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`)",
+              "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)",
               "default": "fr",
               "title": "Lang"
             },
-            "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`)"
+            "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"
           }
         ],
         "responses": {
@@ -92,13 +305,300 @@
         }
       }
     },
+    "/api/v1/{domain}/config": {
+      "post": {
+        "tags": [
+          "Consume-Once Protocol (V3.0)"
+        ],
+        "summary": "Register Consume Once Config",
+        "description": "HTTP equivalent of publishing `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).\nRegisters the DMD client's panel geometry and filter criteria and triggers background\npreparation of 1 unseen `PreparedShowcasePackage`.",
+        "operationId": "register_consume_once_config_api_v1__domain__config_post",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Register Consume Once Config Api V1  Domain  Config Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/{domain}/next": {
+      "get": {
+        "tags": [
+          "Consume-Once Protocol (V3.0)"
+        ],
+        "summary": "Claim Next Consume Once Item",
+        "description": "Atomically claim the next prepared unseen item for `(dmd_id, domain)`:\n- If not ready yet: returns `{\"ready\": false, \"status\": \"preparing\"}` immediately (`0 ms` block).\n- If ready: marks the item consumed in `seen_history.json`, invalidates the ready slot,\n  and returns the JSON Card + `stream_url` (`/api/v1/{domain}/stream/{item_id}.rgb565.stream`).",
+        "operationId": "claim_next_consume_once_item_api_v1__domain__next_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "dmd_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "DMD client identifier",
+              "default": "default_dmd",
+              "title": "Dmd Id"
+            },
+            "description": "DMD client identifier"
+          },
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Alias for dmd_id",
+              "title": "Client Id"
+            },
+            "description": "Alias for dmd_id"
+          },
+          {
+            "name": "width",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 512,
+              "minimum": 32,
+              "default": 128,
+              "title": "Width"
+            }
+          },
+          {
+            "name": "height",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 256,
+              "minimum": 16,
+              "default": 32,
+              "title": "Height"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "fr",
+              "title": "Lang"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Claim Next Consume Once Item Api V1  Domain  Next Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/{domain}/poster/{item_id}.rgb565": {
+      "get": {
+        "tags": [
+          "Consume-Once Protocol (V3.0)"
+        ],
+        "summary": "Stream Consume Once Poster",
+        "description": "Serve the binary RGB565 mini-jacket for `item_id` over HTTP/HTTPS.",
+        "operationId": "stream_consume_once_poster_api_v1__domain__poster__item_id__rgb565_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/{domain}/stream/{item_id}.rgb565.stream": {
+      "get": {
+        "tags": [
+          "Consume-Once Protocol (V3.0)"
+        ],
+        "summary": "Stream Consume Once Sequence",
+        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` and immediately purge the consumed files from disk once the HTTP response completes.",
+        "operationId": "stream_consume_once_sequence_api_v1__domain__stream__item_id__rgb565_stream_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/{domain}/session": {
       "post": {
         "tags": [
           "DMD Rotation Protocol"
         ],
         "summary": "Register Domain Session",
-        "description": "Step 1 of the DMD Rotation Protocol:\nSent proactively by the DMD engine on boot or when WebUI settings are saved.\nRegisters the session and immediately enqueues `count` items into the bounded\nworker pool so `CurrentBatch` is warmed up before the engine's rotation turn.",
         "operationId": "register_domain_session_api_v1__domain__session_post",
         "parameters": [
           {
@@ -157,7 +657,6 @@
           "DMD Rotation Protocol"
         ],
         "summary": "Get Domain Batch",
-        "description": "Step 2 of the DMD Rotation Protocol (\"Are you ready?\"):\nUltra-fast (< 2 ms) LAN status check called by the DMD right before its rotation turn.\n- If `status == \"ready\"`: returns the `N` pre-rendered items and rotates/schedules `NextBatch`.\n- If `status == \"warming\"`: allows the DMD to cleanly skip its rotation turn if other\n  engines are active in rotation.",
         "operationId": "get_domain_batch_api_v1__domain__batch_get",
         "parameters": [
           {
@@ -217,7 +716,6 @@
           "DMD Rotation Protocol"
         ],
         "summary": "Get Domain Random",
-        "description": "Convenience single-call endpoint that automatically creates or polls a session\nassociated with `client_id`.",
         "operationId": "get_domain_random_api_v1__domain__random_get",
         "parameters": [
           {
@@ -255,7 +753,7 @@
               "type": "integer",
               "maximum": 25,
               "minimum": 1,
-              "default": 3,
+              "default": 1,
               "title": "Count"
             }
           },
@@ -299,11 +797,9 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "Scroll full jacket top-to-bottom after Card",
               "default": true,
               "title": "Jacket Panorama"
-            },
-            "description": "Scroll full jacket top-to-bottom after Card"
+            }
           },
           {
             "name": "marquee_panorama",
@@ -311,11 +807,9 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "Scroll marquee/banner top-to-bottom",
               "default": false,
               "title": "Marquee Panorama"
-            },
-            "description": "Scroll marquee/banner top-to-bottom"
+            }
           },
           {
             "name": "snapshot_panorama_count",
@@ -325,11 +819,9 @@
               "type": "integer",
               "maximum": 5,
               "minimum": 0,
-              "description": "Number of snapshots to scroll (0..5)",
               "default": 0,
               "title": "Snapshot Panorama Count"
-            },
-            "description": "Number of snapshots to scroll (0..5)"
+            }
           },
           {
             "name": "image_count",
@@ -346,10 +838,8 @@
                   "type": "null"
                 }
               ],
-              "description": "Legacy alias for snapshot_panorama_count",
               "title": "Image Count"
-            },
-            "description": "Legacy alias for snapshot_panorama_count"
+            }
           },
           {
             "name": "primary_source",
@@ -408,10 +898,8 @@
                   "type": "null"
                 }
               ],
-              "description": "Comma-separated systems",
               "title": "Systems"
-            },
-            "description": "Comma-separated systems"
+            }
           },
           {
             "name": "genres",
@@ -426,10 +914,8 @@
                   "type": "null"
                 }
               ],
-              "description": "Comma-separated genres",
               "title": "Genres"
-            },
-            "description": "Comma-separated genres"
+            }
           },
           {
             "name": "decade",
@@ -444,10 +930,8 @@
                   "type": "null"
                 }
               ],
-              "description": "Decade filter e.g. 1980s, 1990s",
               "title": "Decade"
-            },
-            "description": "Decade filter e.g. 1980s, 1990s"
+            }
           }
         ],
         "responses": {
@@ -480,7 +964,6 @@
           "On-Demand & Voice Assistant"
         ],
         "summary": "Trigger On Demand Media",
-        "description": "Future-ready endpoint for on-demand requests (Google Home, Alexa, Home Assistant,\nor custom webhooks). Enqueues the requested media item with `HIGH_ON_DEMAND`\npriority ahead of background rotation batches.",
         "operationId": "trigger_on_demand_media_api_v1__domain__on_demand_post",
         "parameters": [
           {
@@ -539,7 +1022,6 @@
           "Assets & Streaming"
         ],
         "summary": "Stream Media Asset",
-        "description": "Serve or stream pre-rendered DMD assets (`.png`, `.rgb565`, `.gif`, `.rgb565.stream`).\nSupports $O(1)$ dynamic truncation via `?max_duration_s=` without re-running FFmpeg.",
         "operationId": "stream_media_asset_api_v1_assets__item_key___filename__get",
         "parameters": [
           {
@@ -575,10 +1057,8 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional on-the-fly duration cap in seconds (zero re-encoding).",
               "title": "Max Duration S"
-            },
-            "description": "Optional on-the-fly duration cap in seconds (zero re-encoding)."
+            }
           }
         ],
         "responses": {
@@ -606,6 +1086,128 @@
   },
   "components": {
     "schemas": {
+      "AdminServerConfigPayload": {
+        "properties": {
+          "tmdb_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tmdb Api Key"
+          },
+          "screenscraper_user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenscraper User"
+          },
+          "screenscraper_pass": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenscraper Pass"
+          },
+          "screenscraper_dev_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenscraper Dev Id"
+          },
+          "screenscraper_dev_pass": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenscraper Dev Pass"
+          },
+          "mqtt_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "embedded",
+                  "external"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mqtt Mode"
+          },
+          "mqtt_port": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 65535.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mqtt Port"
+          },
+          "mqtt_external_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mqtt External Url"
+          },
+          "default_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Lang"
+          },
+          "showcase_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Showcase Api Key"
+          }
+        },
+        "type": "object",
+        "title": "AdminServerConfigPayload"
+      },
       "BatchStatusResponse": {
         "properties": {
           "session_id": {
@@ -726,6 +1328,23 @@
             },
             "type": "object",
             "title": "Providers Configured"
+          },
+          "mqtt_mode": {
+            "type": "string",
+            "title": "Mqtt Mode",
+            "default": "embedded"
+          },
+          "mqtt_port": {
+            "type": "integer",
+            "title": "Mqtt Port",
+            "default": 1883
+          },
+          "seen_history_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Seen History Counts"
           }
         },
         "type": "object",
@@ -910,6 +1529,11 @@
             "type": "integer",
             "title": "Poster Height",
             "default": 32
+          },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "default": "normal"
           },
           "jacket_panorama": {
             "type": "boolean",
@@ -1168,6 +1792,12 @@
             "description": "Scroll the full localized synopsis on the Info Card.",
             "default": true
           },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "description": "Organic text scrolling speed on the DMD Info Card ('1'..'10' or 'slow'|'normal'|'fast'|'turbo').",
+            "default": "normal"
+          },
           "jacket_panorama": {
             "type": "boolean",
             "title": "Jacket Panorama",
@@ -1425,24 +2055,28 @@
   },
   "tags": [
     {
-      "name": "System",
-      "description": "Server health, worker pool saturation, and configured live scraper providers."
+      "name": "System & Admin",
+      "description": "Server health, centralized API credentials (`server_config.json`), and `seen_history.json` management."
     },
     {
       "name": "Discovery",
-      "description": "Exhaustive live categories, systems, genres, decades, and scraper source options for each media domain (`games`, `movies`, `series`, `anime`)."
+      "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` DDD scraper sources."
+    },
+    {
+      "name": "Consume-Once Protocol (V3.0)",
+      "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`) with automatic disk purge after playback."
     },
     {
       "name": "DMD Rotation Protocol",
-      "description": "Two-step proactive double-batch rotation protocol (`POST /session` + `GET /batch`) and single-call convenience endpoint (`GET /random`) for ESP32 and Raspberry Pi DMDs."
+      "description": "Proactive session/batch polling endpoints (`/session`, `/batch`, `/random`) for HTTP polling clients."
     },
     {
       "name": "On-Demand & Voice Assistant",
-      "description": "Priority queue endpoint (`POST /on-demand`) for voice assistants (Google Home, Alexa, Home Assistant) and interactive WebUI triggers."
+      "description": "Priority queue endpoint (`POST /on-demand`) for voice assistants and webhooks."
     },
     {
       "name": "Assets & Streaming",
-      "description": "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), top-to-bottom scrolling panoramas (`jacket_stream_rgb565`, `marquee_stream_rgb565`, `snapshot_streams_rgb565`), and stabilized video trailers (`video_stream_rgb565`, `.gif`) with $O(1)$ truncation."
+      "description": "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), panoramas, and video trailers."
     }
   ]
 }

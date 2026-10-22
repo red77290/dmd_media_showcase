@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Set
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.seen_repository import ISeenHistoryRepository
+from app.domain.taxonomy import ReferentialConsolidator
 from app.infrastructure.persistence.json_seen_repository import seen_repository
 from app.infrastructure.scrapers.registry import ScraperRegistry, scraper_registry
 
@@ -53,6 +54,8 @@ class DomainSourceChainService:
         results: List[MediaCandidate] = []
         for source in chain:
             if not source.is_configured():
+                continue
+            if not ReferentialConsolidator.source_supports_criteria(source.source_id, criteria) and source.source_id != "arcadeitalia":
                 continue
             needed = count - len(results)
             if needed <= 0:

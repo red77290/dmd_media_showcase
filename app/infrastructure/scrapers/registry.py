@@ -1,17 +1,24 @@
 """
 Extensible DDD `ScraperRegistry` managing the `[Primary, Fallback]` `IScraperSource`
-chain for each media domain (`games`, `movies`, `series`, `anime`).
+chain for each media domain (`games`, `movies`, `series`, `anime`) and consolidating
+their live referentials via `ReferentialConsolidator`.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 from app.domain.entities import DomainType
 from app.domain.ports.scraper_source import IScraperSource
+from app.domain.taxonomy import ReferentialConsolidator
 from app.infrastructure.scrapers.anime import AniListAdapter, JikanAnimeThemesAdapter
 from app.infrastructure.scrapers.games import ArcadeItaliaAdapter, ScreenScraperAdapter
 from app.infrastructure.scrapers.movies import ItunesMovieAdapter, TmdbMovieAdapter
+from app.infrastructure.scrapers.referential_store import (
+    anilist_referential_strategy,
+    jikan_referential_strategy,
+    tvmaze_referential_strategy,
+)
 from app.infrastructure.scrapers.series import TmdbSeriesAdapter, TvMazeAdapter
 
 
@@ -52,10 +59,12 @@ class ScraperRegistry:
             summary[dom] = " -> ".join(active) if active else "none"
         return summary
 
-    def available_filters(self, domain: DomainType, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:
-        """Return the filter catalog for `domain` merged with the registered sources list."""
+    def available_filters(self, domain: DomainType, lang: str = "fr") -> Dict[str, Any]:
+        """
+        Return the consolidated, localized referential for `domain` (`systems`, `genres`, `decades`,
+        `sources`) merging canonical taxonomy and live-harvested scraper referentials.
+        """
         chain = self.get_chain(domain)
-        base = chain[0].supported_filters(lang=lang) if chain else {}
         sources = [
             {
                 "id": s.source_id,
@@ -63,7 +72,28 @@ class ScraperRegistry:
             }
             for s in chain
         ]
-        return {"sources": sources, **base}
+        extra_genres: List[Tuple[str, str]] = []
+        if domain == "anime":
+            jikan_data = jikan_referential_strategy.store.load()
+            for slug, gmeta in ((jikan_data.get("metadata") or {}).get("genres") or {}).items():
+                if isinstance(gmeta, dict) and gmeta.get("label"):
+                    extra_genres.append((str(slug), str(gmeta["label"])))
+            anilist_data = anilist_referential_strategy.store.load()
+            for gname in (anilist_data.get("tokens") or []):
+                if gname:
+                    extra_genres.append((str(gname), str(gname)))
+        elif domain == "series":
+            tvm_data = tvmaze_referential_strategy.store.load()
+            for gname in (tvm_data.get("tokens") or []):
+                if gname:
+                    extra_genres.append((str(gname), str(gname)))
+
+        return ReferentialConsolidator.build_domain_referential(
+            domain=domain,
+            lang=lang,
+            sources_info=sources,
+            extra_discovered_genres=extra_genres,
+        )
 
 
 scraper_registry = ScraperRegistry()

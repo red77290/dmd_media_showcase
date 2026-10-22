@@ -3,12 +3,14 @@ Application Service: `ConsumeOnceOrchestrator`.
 
 Coordinates:
 1. Stateless DMD client registration via MQTT (`dmd_showcase/clients/{dmd_id}/config`, `retain=True`)
-   or HTTP (`POST /api/v1/{domain}/config`).
-2. Background preparation of 1 unseen `PreparedShowcasePackage` per `(dmd_id, domain)` slot.
+   or HTTP (`POST /api/v1/{domain}/config`), with immediate invalidation of stale slots on config change.
+2. Background `N+1` preparation of 1 unseen `PreparedShowcasePackage` per `(dmd_id, domain)` slot:
+   - Starts preparing item `N+1` as soon as item `N` enters `start_card`, eliminating inter-item pauses.
 3. Strict Consume-Once locking on `start_card` (MQTT) or `GET /api/v1/{domain}/next` (HTTP):
    - Marks candidate ID consumed in `seen_history.json` immediately.
    - Publishes `ready: false` (`retain=True`) on MQTT so it can never be replayed.
-4. Real-time UDP streaming via `ffmpeg -re` (`start_stream` event) and immediate disk purge on `stream_eof`.
+4. Real-time UDP streaming via `ffmpeg -re` (`start_stream` event) to the DMD's real LAN `client_ip`
+   (bypassing Docker bridge NAT `172.x.0.1`) and immediate disk purge on `stream_eof`.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.application.source_chain_service import DomainSourceChainService, source_chain_service
 from app.config import settings
@@ -32,6 +34,7 @@ from app.domain.entities import (
 from app.domain.ports.frame_streamer import IFrameStreamerPort
 from app.domain.ports.media_transcoder import IMediaTranscoderPort
 from app.domain.ports.seen_repository import ISeenHistoryRepository
+from app.domain.taxonomy import resolve_canonical_genre, resolve_canonical_system
 from app.infrastructure.mqtt.showcase_mqtt_gateway import ShowcaseMqttGateway, showcase_mqtt_gateway
 from app.infrastructure.persistence.json_seen_repository import seen_repository
 from app.infrastructure.streaming.ffmpeg_udp_streamer import udp_clock_streamer
@@ -40,6 +43,39 @@ from app.infrastructure.transcoder.dmd_converter_adapter import dmd_transcoder_a
 logger = logging.getLogger("dmd_showcase.application.orchestrator")
 
 VALID_DOMAINS: Tuple[DomainType, ...] = ("games", "movies", "series", "anime")
+VALID_SCROLL_SPEEDS = {
+    "slow",
+    "normal",
+    "fast",
+    "turbo",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+}
+
+
+def _select_best_udp_ip(
+    declared_ip: Optional[str],
+    cached_ip: Optional[str],
+    peer_ip: Optional[str],
+) -> str:
+    """
+    Resolve the real LAN IP of the DMD client for UDP `DMDF` streaming:
+    - Always prefer the explicit `client_ip` / `udp_ip` declared by the DMD inside its MQTT payload
+      so Docker bridge NAT gateways (`172.17.0.1`, `172.18.0.1`, `host.docker.internal`) are bypassed.
+    """
+    for candidate in (declared_ip, cached_ip, peer_ip):
+        ip = str(candidate or "").strip()
+        if ip and ip not in ("0.0.0.0", "auto", "unknown"):
+            return ip
+    return "127.0.0.1"
 
 
 class ConsumeOnceOrchestrator:
@@ -75,29 +111,52 @@ class ConsumeOnceOrchestrator:
     def _parse_domain_criteria(
         self, domain: DomainType, raw_cfg: Dict[str, Any], top_lang: str = "fr"
     ) -> FilterCriteria:
-        lang = str(raw_cfg.get("lang") or top_lang or "fr")
-        if lang == "system":
-            lang = top_lang or "fr"
-        systems = raw_cfg.get("systems")
-        if isinstance(systems, str):
-            systems = [s.strip() for s in systems.split(",") if s.strip()]
-        elif not isinstance(systems, list):
-            systems = ["arcade", "mame", "neogeo", "cps1", "cps2", "snes", "megadrive"]
+        lang = str(raw_cfg.get("lang") or top_lang or "fr").strip().lower()
+        if lang in ("", "system", "auto"):
+            lang = (top_lang if top_lang not in ("", "system", "auto") else "fr").lower()
 
-        genres = raw_cfg.get("genres")
-        if isinstance(genres, str):
-            genres = [g.strip() for g in genres.split(",") if g.strip()]
-        elif not isinstance(genres, list):
-            genres = []
+        raw_systems = raw_cfg.get("systems")
+        if isinstance(raw_systems, str):
+            sys_tokens = [s.strip() for s in raw_systems.split(",") if s.strip()]
+        elif isinstance(raw_systems, list):
+            sys_tokens = [str(s).strip() for s in raw_systems if str(s).strip()]
+        else:
+            sys_tokens = ["arcade", "mame", "neogeo", "cps1", "cps2", "snes", "megadrive"]
 
-        decades = raw_cfg.get("decades")
-        if isinstance(decades, str):
-            decades = [d.strip() for d in decades.split(",") if d.strip()]
-        elif not isinstance(decades, list):
+        systems: List[str] = []
+        for s in sys_tokens:
+            if s.lower() == "all":
+                continue
+            canon_s = resolve_canonical_system(s)
+            if canon_s and canon_s not in systems:
+                systems.append(canon_s)
+
+        raw_genres = raw_cfg.get("genres")
+        if isinstance(raw_genres, str):
+            genre_tokens = [g.strip() for g in raw_genres.split(",") if g.strip()]
+        elif isinstance(raw_genres, list):
+            genre_tokens = [str(g).strip() for g in raw_genres if str(g).strip()]
+        else:
+            genre_tokens = []
+
+        genres: List[str] = []
+        for g in genre_tokens:
+            if g.lower() == "all":
+                continue
+            canon_g = resolve_canonical_genre(domain, g)
+            if canon_g and canon_g not in genres:
+                genres.append(canon_g)
+
+        raw_decades = raw_cfg.get("decades")
+        if isinstance(raw_decades, str):
+            decades = [d.strip() for d in raw_decades.split(",") if d.strip() and d.strip().lower() != "all"]
+        elif isinstance(raw_decades, list):
+            decades = [str(d).strip() for d in raw_decades if str(d).strip() and str(d).strip().lower() != "all"]
+        else:
             decades = []
 
-        speed = str(raw_cfg.get("text_scroll_speed") or "normal").lower()
-        if speed not in ("slow", "normal", "fast"):
+        speed = str(raw_cfg.get("text_scroll_speed") or "normal").strip().lower()
+        if speed not in VALID_SCROLL_SPEEDS:
             speed = "normal"
 
         return FilterCriteria(
@@ -131,9 +190,11 @@ class ConsumeOnceOrchestrator:
         top_lang = str(payload.get("lang") or "fr")
         geometry = PanelGeometry(width=width, height=height)
 
-        udp_ip = str(payload.get("udp_ip") or payload.get("_peer_ip") or "").strip()
-        if udp_ip:
-            self.client_udp_ips[dmd_id] = udp_ip
+        declared_ip = str(payload.get("client_ip") or payload.get("udp_ip") or "").strip()
+        peer_ip = str(payload.get("_peer_ip") or "").strip()
+        best_ip = _select_best_udp_ip(declared_ip, self.client_udp_ips.get(dmd_id), peer_ip)
+        if best_ip:
+            self.client_udp_ips[dmd_id] = best_ip
 
         engines_map = payload.get("domains") or payload.get("engines")
         if isinstance(engines_map, dict):
@@ -157,12 +218,57 @@ class ConsumeOnceOrchestrator:
         criteria: FilterCriteria,
     ) -> None:
         key = (dmd_id, domain)
+        old_pair = self.client_configs.get(key)
         self.client_configs[key] = (geometry, criteria)
+
+        if old_pair is not None and old_pair != (geometry, criteria):
+            logger.info(
+                "[ORCHESTRATOR] Retained config changed for dmd='%s' domain='%s' "
+                "(%dx%d, lang=%s, systems=%s, genres=%s, decades=%s, speed=%s) -> invalidating stale slot",
+                dmd_id,
+                domain,
+                geometry.width,
+                geometry.height,
+                criteria.lang,
+                criteria.systems,
+                criteria.genres,
+                criteria.decades,
+                criteria.text_scroll_speed,
+            )
+            old_task = self._prep_tasks.pop(key, None)
+            if old_task and not old_task.done():
+                old_task.cancel()
+            stale_pkg = self.ready_packages.pop(key, None)
+            if stale_pkg is not None:
+                self.active_packages.pop(stale_pkg.item_id, None)
+                shutil.rmtree(stale_pkg.item_dir, ignore_errors=True)
+                await self.mqtt.publish_json(
+                    f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                    {"ready": False, "item_id": "", "domain": domain, "status": "reconfiguring"},
+                    retain=True,
+                )
+            self._schedule_preparation(dmd_id, domain)
+            return
+
         if key not in self.ready_packages and (key not in self._prep_tasks or self._prep_tasks[key].done()):
+            logger.info(
+                "[ORCHESTRATOR] Registered dmd='%s' domain='%s' (%dx%d, lang=%s, systems=%s, genres=%s, decades=%s, speed=%s)",
+                dmd_id,
+                domain,
+                geometry.width,
+                geometry.height,
+                criteria.lang,
+                criteria.systems,
+                criteria.genres,
+                criteria.decades,
+                criteria.text_scroll_speed,
+            )
             self._schedule_preparation(dmd_id, domain)
 
     def _schedule_preparation(self, dmd_id: str, domain: DomainType) -> None:
         key = (dmd_id, domain)
+        if key in self.ready_packages:
+            return
         existing = self._prep_tasks.get(key)
         if existing and not existing.done():
             return
@@ -176,7 +282,15 @@ class ConsumeOnceOrchestrator:
             return
         geometry, criteria = cfg_pair
         try:
-            candidates = await self.chain_service.acquire_unseen_candidates(criteria, count=1)
+            # Exclude any currently active/in-flight candidate IDs so N+1 is guaranteed distinct from N
+            active_exclude = {
+                pkg.candidate.id
+                for pkg in self.active_packages.values()
+                if pkg.domain == domain
+            }
+            candidates = await self.chain_service.acquire_unseen_candidates(
+                criteria, count=1, extra_exclude_ids=active_exclude
+            )
             if not candidates:
                 await self.mqtt.publish_json(
                     f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
@@ -247,6 +361,8 @@ class ConsumeOnceOrchestrator:
                 card.has_video,
                 card.stream_frames,
             )
+        except asyncio.CancelledError:
+            logger.info("[ORCHESTRATOR] Cancelled outdated preparation task for %s/%s", dmd_id, domain)
         except Exception as exc:
             logger.error("[ORCHESTRATOR] Failed preparing slot for %s/%s: %s", dmd_id, domain, exc)
 
@@ -257,14 +373,15 @@ class ConsumeOnceOrchestrator:
         Atomically claim and lock the prepared package for `(dmd_id, domain)`:
         1. Marks the candidate ID as consumed in `seen_history.json`.
         2. Publishes `ready: false` (`retain=True`) on MQTT.
-        3. Schedules background preparation of the next unseen title if no stream is needed.
+        3. Immediately schedules background `N+1` preparation for the next turn while keeping
+           item `N` in `self.active_packages[item_id]` until its stream finishes (`stream_eof`).
         """
         key = (dmd_id, domain)
         pkg = self.ready_packages.pop(key, None)
         if pkg is None and item_id:
             pkg = self.active_packages.get(item_id)
             if pkg and pkg.consumed:
-                return None
+                return pkg
         if pkg is None:
             self._schedule_preparation(dmd_id, domain)
             return None
@@ -276,15 +393,17 @@ class ConsumeOnceOrchestrator:
             {"ready": False, "item_id": pkg.item_id, "domain": domain},
             retain=True,
         )
+        # N+1 Background Pipelining: start preparing the next unseen item right away!
+        self._schedule_preparation(dmd_id, domain)
         return pkg
 
     async def purge_consumed_package(self, item_id: str) -> None:
-        """Delete all disk files of a consumed package and schedule the next unseen title."""
+        """Delete all disk files of a consumed package and ensure the next slot is prepared."""
         pkg = self.active_packages.pop(item_id, None)
         if pkg is not None:
             shutil.rmtree(pkg.item_dir, ignore_errors=True)
             logger.info(
-                "[ORCHESTRATOR] Purged consumed media files for '%s' ('%s') and scheduling next unseen title",
+                "[ORCHESTRATOR] Purged consumed media files for '%s' ('%s')",
                 item_id,
                 pkg.candidate.title,
             )
@@ -294,8 +413,9 @@ class ConsumeOnceOrchestrator:
         """
         Handle real-time DMD events on `dmd_showcase/clients/{dmd_id}/events`
         or `dmd_showcase/clients/{dmd_id}/{domain}/events`:
-        - `start_card`   : locks/consumes the item immediately (`ready=False` retained + `seen_history.json`).
-        - `start_stream` : launches `ffmpeg -re` UDP stream to `udp_ip:udp_port`.
+        - `start_card`   : locks/consumes item `N` immediately (`ready=False` retained + `seen_history.json`)
+                           and triggers `N+1` background preparation.
+        - `start_stream` : launches `ffmpeg -re` UDP stream to the DMD's LAN `udp_ip:udp_port`.
         - `stop_stream`  : stops active `ffmpeg -re` UDP stream and purges the consumed item.
         """
         ev_type = str(event_payload.get("event") or event_payload.get("action") or "")
@@ -303,10 +423,20 @@ class ConsumeOnceOrchestrator:
         item_id = str(event_payload.get("item_id") or "")
         domain: DomainType = dom_raw if dom_raw in VALID_DOMAINS else "games"  # type: ignore[assignment]
 
+        declared_ip = str(event_payload.get("udp_ip") or event_payload.get("client_ip") or "").strip()
+        if declared_ip and declared_ip not in ("0.0.0.0", "127.0.0.1"):
+            self.client_udp_ips[dmd_id] = declared_ip
+
         if ev_type == "start_card":
             pkg = await self.claim_next_package(dmd_id, domain, item_id=item_id)
+            logger.info(
+                "[ORCHESTRATOR] Event 'start_card' from dmd='%s' domain='%s' item='%s' -> claimed=%s (N+1 background prep triggered)",
+                dmd_id,
+                domain,
+                item_id,
+                pkg.candidate.title if pkg else "none",
+            )
             if pkg and pkg.card.stream_frames == 0:
-                # No panoramas and no video -> purge disk directory and prepare next right away
                 await self.purge_consumed_package(pkg.item_id)
 
         elif ev_type == "start_stream":
@@ -314,6 +444,11 @@ class ConsumeOnceOrchestrator:
             if pkg is None:
                 pkg = await self.claim_next_package(dmd_id, domain, item_id=item_id)
             if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
+                logger.warning(
+                    "[ORCHESTRATOR] Event 'start_stream' from dmd='%s' for '%s', but stream file is missing -> sending stream_eof",
+                    dmd_id,
+                    item_id,
+                )
                 eof_msg = {"event": "stream_eof", "item_id": item_id, "domain": domain}
                 await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/events", eof_msg, retain=False)
                 await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/stream_state", eof_msg, retain=False)
@@ -324,13 +459,22 @@ class ConsumeOnceOrchestrator:
             if not pkg.consumed:
                 await self.claim_next_package(dmd_id, domain, item_id=item_id)
 
-            udp_ip = str(
-                event_payload.get("udp_ip")
-                or self.client_udp_ips.get(dmd_id)
-                or event_payload.get("_peer_ip")
-                or "127.0.0.1"
+            udp_ip = _select_best_udp_ip(
+                declared_ip,
+                self.client_udp_ips.get(dmd_id),
+                str(event_payload.get("_peer_ip") or ""),
             )
             udp_port = int(event_payload.get("udp_port") or 4210)
+            logger.info(
+                "[ORCHESTRATOR] Event 'start_stream' from dmd='%s' item='%s' ('%s') -> streaming %d frames @ %dfps to UDP %s:%d",
+                dmd_id,
+                pkg.item_id,
+                pkg.candidate.title,
+                pkg.card.stream_frames,
+                pkg.card.stream_fps,
+                udp_ip,
+                udp_port,
+            )
             started_msg = {"event": "stream_started", "item_id": pkg.item_id, "domain": domain}
             await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/events", started_msg, retain=False)
             await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=False)
@@ -362,6 +506,7 @@ class ConsumeOnceOrchestrator:
             )
 
         elif ev_type == "stop_stream":
+            logger.info("[ORCHESTRATOR] Event 'stop_stream' from dmd='%s' item='%s'", dmd_id, item_id)
             await self.streamer.stop_stream(dmd_id)
             if item_id:
                 await self.purge_consumed_package(item_id)

@@ -487,3 +487,180 @@ async def test_live_referential_strategy_zero_hardcoded_roms(tmp_path: Path, mon
     persisted = json.loads(strategy.store.file_path.read_text(encoding="utf-8"))
     assert "mslug" in persisted["tokens"]
     assert "garou" in persisted["tokens"]
+
+
+@pytest.mark.asyncio
+async def test_consolidated_referential_and_nes_platformer_strict_isolation(tmp_path: Path, monkeypatch):
+    """
+    Verify:
+    1. Consolidated referential (`/api/v1/games/referential?lang=fr`) exposes relational
+       `System -> Genres & Decades` and French labels (`Plateforme`, `Course / Conduite`).
+    2. Synonym normalization maps `Famicom`/`Nintendo Entertainment System` -> `nes` and `Platformer`/`Plateforme` -> `platform`.
+    3. When `systems=["nes"]`, `genres=["platform"]`, `lang="fr"` is requested:
+       - `adb.arcadeitalia.net` is NEVER queried (`0` HTTP calls to ArcadeItalia).
+       - Hardware consoles (`Nintendo Entertainment System`, `CIC`) and non-NES games (`Goof Troop`, `F-Zero`) are rejected.
+       - Verified Libretro `(France)` / `(Europe)` boxarts are prioritized over `(USA)`.
+    """
+    from app.domain.taxonomy import ReferentialConsolidator, resolve_canonical_genre, resolve_canonical_system
+    from app.infrastructure.scrapers.games.arcadeitalia_adapter import ArcadeItaliaAdapter
+    from app.infrastructure.scrapers.games.libretro_wikidata_adapter import LibretroWikidataAdapter
+    from app.infrastructure.scrapers.referential_store import LibretroWikidataReferentialStrategy
+
+    monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "nes_ref_data"))
+
+    assert resolve_canonical_system("Nintendo Entertainment System") == "nes"
+    assert resolve_canonical_system("Famicom") == "nes"
+    assert resolve_canonical_genre("games", "Platformer") == "platform"
+    assert resolve_canonical_genre("games", "Plateforme") == "platform"
+    assert not ReferentialConsolidator.source_supports_criteria(
+        "arcadeitalia", FilterCriteria(domain="games", systems=["nes"], genres=["platform"])
+    )
+    assert "[vcodec!*=av01]" in HD_YTDLP_FORMAT
+
+    class _MockResp:
+        def __init__(self, status_code: int, json_data=None):
+            self.status_code = status_code
+            self._json = json_data or {}
+
+        def json(self):
+            return self._json
+
+    class _MockHttpClient:
+        def __init__(self) -> None:
+            self.urls: List[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url: str, params=None, headers=None, timeout=None):
+            self.urls.append(url)
+            if "adb.arcadeitalia.net" in url:
+                raise AssertionError("ArcadeItalia must NEVER be queried when systems=['nes']!")
+            if "query.wikidata.org/sparql" in url:
+                return _MockResp(
+                    200,
+                    json_data={
+                        "results": {
+                            "bindings": [
+                                # Should be rejected (hardware console title)
+                                {
+                                    "game": {"value": "http://www.wikidata.org/entity/Q172742"},
+                                    "titleEn": {"value": "Nintendo Entertainment System"},
+                                    "titleFr": {"value": "Nintendo Entertainment System"},
+                                    "year": {"value": "1985"},
+                                },
+                                # Should be rejected (SNES-only game not in NES Libretro tree)
+                                {
+                                    "game": {"value": "http://www.wikidata.org/entity/Q2087654"},
+                                    "titleEn": {"value": "Goof Troop"},
+                                    "titleFr": {"value": "Goof Troop"},
+                                    "year": {"value": "1993"},
+                                },
+                                # Valid NES Platformer
+                                {
+                                    "game": {"value": "http://www.wikidata.org/entity/Q12345"},
+                                    "titleEn": {"value": "Super Mario Bros. 3"},
+                                    "titleFr": {"value": "Super Mario Bros. 3"},
+                                    "year": {"value": "1988"},
+                                    "frTitle": {"value": "Super Mario Bros. 3"},
+                                },
+                            ]
+                        }
+                    },
+                )
+            if "api.github.com/repos/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/git/trees/master" in url:
+                return _MockResp(
+                    200,
+                    json_data={
+                        "tree": [
+                            {"path": "Named_Boxarts", "sha": "sha_box"},
+                            {"path": "Named_Titles", "sha": "sha_tit"},
+                            {"path": "Named_Snaps", "sha": "sha_snp"},
+                        ]
+                    },
+                )
+            if "git/trees/sha_box" in url:
+                return _MockResp(
+                    200,
+                    json_data={
+                        "tree": [
+                            {"path": "Super Mario Bros. 3 (USA).png"},
+                            {"path": "Super Mario Bros. 3 (France).png"},
+                            {"path": "Super Mario Bros. 3 (Europe).png"},
+                        ]
+                    },
+                )
+            if "git/trees/sha_tit" in url or "git/trees/sha_snp" in url:
+                return _MockResp(
+                    200,
+                    json_data={"tree": [{"path": "Super Mario Bros. 3 (Europe).png"}]},
+                )
+            if "fr.wikipedia.org" in url:
+                return _MockResp(
+                    200,
+                    json_data={
+                        "extract": "Super Mario Bros. 3 est un jeu vidéo de plates-formes développé par Nintendo pour la NES."
+                    },
+                )
+            return _MockResp(404)
+
+    mock_client = _MockHttpClient()
+    monkeypatch.setattr(
+        "app.infrastructure.scrapers.games.libretro_wikidata_adapter.create_async_http_client",
+        lambda timeout=7.5, headers=None: mock_client,
+    )
+
+    strat = LibretroWikidataReferentialStrategy()
+    libretro_adapter = LibretroWikidataAdapter(referential_strategy=strat)
+    adb_adapter = ArcadeItaliaAdapter(console_adapter=libretro_adapter)
+
+    cands = await adb_adapter.fetch_random_unseen(
+        FilterCriteria(domain="games", systems=["nes"], genres=["platform"], lang="fr"),
+        seen_ids=set(),
+        count=2,
+    )
+    assert len(cands) == 1
+    cand = cands[0]
+    assert cand.title == "Super Mario Bros. 3"
+    assert "plates-formes développé par Nintendo" in cand.synopsis
+    assert "Super%20Mario%20Bros.%203%20%28France%29.png" in (cand.poster_url or "")
+    assert not any("adb.arcadeitalia.net" in u for u in mock_client.urls)
+
+
+@pytest.mark.asyncio
+async def test_retained_config_change_invalidation_and_docker_nat_client_ip(tmp_path: Path):
+    """
+    Verify:
+    1. When a DMD client updates its retained `config`, any stale prepared package is immediately
+       invalidated and deleted so new filters (`NES` + `Platform`) take effect right away.
+    2. Explicit `client_ip` (`192.168.1.55`) overrides Docker bridge `_peer_ip` (`172.18.0.1`) for UDP streaming.
+    3. Numeric `text_scroll_speed` (`"1".."10"`) is preserved end-to-end.
+    """
+    orch = ConsumeOnceOrchestrator()
+    await orch.handle_mqtt_client_config(
+        "rpi_living",
+        {
+            "width": 128,
+            "height": 32,
+            "lang": "fr",
+            "client_ip": "192.168.1.55",
+            "_peer_ip": "172.18.0.1",
+            "domains": {
+                "games": {
+                    "systems": "Famicom",
+                    "genres": "Plateforme",
+                    "text_scroll_speed": "8",
+                }
+            },
+        },
+    )
+    assert orch.client_udp_ips["rpi_living"] == "192.168.1.55"
+    _, criteria = orch.client_configs[("rpi_living", "games")]
+    assert criteria.systems == ["nes"]
+    assert criteria.genres == ["platform"]
+    assert criteria.text_scroll_speed == "8"
+    assert criteria.lang == "fr"
+
