@@ -154,8 +154,6 @@ class JikanAnimeThemesAdapter(IScraperSource):
             cand.add_unique_snapshot(str(max_img))
 
         await enrich_with_animethemes_webm(client, cand, video_type=video_type)
-        if not cand.video_url and not cand.youtube_url:
-            cand.youtube_url = f"ytsearch1:{title} anime {video_type if video_type != 'any' else 'opening'} HD"
         return cand
 
     async def fetch_random_unseen(

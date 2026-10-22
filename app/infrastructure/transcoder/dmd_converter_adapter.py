@@ -42,6 +42,7 @@ def merge_rgb565_streams(
     frame_bytes = width * height * 2
     payload_chunks: List[bytes] = []
     total_frames = 0
+    detected_fps: Optional[int] = None
 
     for sp in stream_paths:
         if not sp or not sp.exists():
@@ -52,13 +53,15 @@ def merge_rgb565_streams(
         hdr = read_rgb565_stream_header(raw[:16])
         if hdr["width"] != width or hdr["height"] != height:
             continue
+        if int(hdr.get("fps") or 0) > 0:
+            detected_fps = int(hdr["fps"])
         body = raw[16:]
         n_frames = len(body) // frame_bytes
         if n_frames > 0:
             payload_chunks.append(body[: n_frames * frame_bytes])
             total_frames += n_frames
 
-    eff_fps = max(1, min(60, int(fps)))
+    eff_fps = max(1, min(60, int(detected_fps or fps)))
     frame_dur_ms = max(16, int(round(1000.0 / eff_fps)))
     header = struct.pack(
         "<4sBBHHHHH",
@@ -175,6 +178,14 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
             criteria.video_fps,
         )
 
+        actual_fps = criteria.video_fps
+        if unified_stream_path.exists():
+            raw_hdr = unified_stream_path.read_bytes()[:16]
+            if len(raw_hdr) == 16:
+                parsed_hdr = read_rgb565_stream_header(raw_hdr)
+                if int(parsed_hdr.get("fps") or 0) > 0:
+                    actual_fps = int(parsed_hdr["fps"])
+
         files_map["poster_rgb565_b64"] = poster_b64
         files_map["has_panoramas"] = bool(files_map.get("panorama_streams_rgb565"))
         files_map["has_video"] = has_video
@@ -182,7 +193,7 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         files_map["video_stream_rgb565"] = video_stream_name
         files_map["unified_stream_path"] = str(unified_stream_path)
         files_map["stream_frames"] = total_frames
-        files_map["stream_fps"] = criteria.video_fps
+        files_map["stream_fps"] = actual_fps
         files_map["stream_duration_s"] = total_dur_s
         return files_map
 

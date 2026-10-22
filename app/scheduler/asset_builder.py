@@ -545,8 +545,8 @@ def build_video_assets_worker_task(
             "stream_file": "",
         }
 
-    scroll_on_video = video_mode in ("panorama", "pixel_art")
-    use_auto_action = video_mode == "auto_action"
+    scroll_on_video = video_mode == "panorama"
+    use_auto_action = video_mode not in ("panorama", "center_crop")
     preset_mode = video_mode if video_mode in ("pixel_art", "anime", "cinema") else "pixel_art"
 
     clip_cfg = DmdClipConfig(

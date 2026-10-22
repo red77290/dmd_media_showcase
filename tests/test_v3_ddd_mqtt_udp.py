@@ -842,4 +842,117 @@ async def test_dmd_reboot_mid_broadcast_recovers_and_cleans_abandoned_slot(tmp_p
     assert any(p[1].get("ready") is True and p[1].get("item_id") == "pkg_c" for p in published_topics)
 
 
+@pytest.mark.asyncio
+async def test_itunes_movies_fallback_and_client_offline_domain_switch(tmp_path: Path, monkeypatch):
+    """
+    Verify:
+    1. `ItunesMovieAdapter` discovers real films via Wikipedia + Apple iTunes / IMDb fallback
+       even when `country=FR` returns empty on raw English genre keywords.
+    2. When a DMD client switches domain on the same LAN IP (`rpi_games_128x32` -> `rpi_movies_128x32`)
+       or sends `client_offline`, stale background prep tasks are cancelled and never re-scheduled.
+    """
+    from app.infrastructure.scrapers.movies.itunes_movie_adapter import ItunesMovieAdapter
+
+    class _MockResp:
+        def __init__(self, status_code: int, json_data=None):
+            self.status_code = status_code
+            self._json = json_data or {}
+
+        def json(self):
+            return self._json
+
+    class _MockMovieClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url: str, params=None, timeout=None):
+            p = dict(params or {})
+            if "en.wikipedia.org/w/api.php" in url:
+                return _MockResp(
+                    200,
+                    json_data={
+                        "query": {
+                            "search": [
+                                {"title": "The NeverEnding Story (film)", "snippet": "1984 fantasy film"}
+                            ]
+                        }
+                    },
+                )
+            if "itunes.apple.com/search" in url:
+                # Simulate `country=FR` returning empty, and `country=US` returning the official track + .m4v trailer
+                if p.get("country") == "FR":
+                    return _MockResp(200, json_data={"resultCount": 0, "results": []})
+                return _MockResp(
+                    200,
+                    json_data={
+                        "resultCount": 1,
+                        "results": [
+                            {
+                                "trackId": 998877,
+                                "trackName": "The NeverEnding Story",
+                                "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Video/v4/poster/100x100bb.jpg",
+                                "releaseDate": "1984-04-06T08:00:00Z",
+                                "primaryGenreName": "Fantasy",
+                                "artistName": "Wolfgang Petersen",
+                                "longDescription": "A boy reads a magical book about Fantasia.",
+                                "previewUrl": "https://video-ssl.itunes.apple.com/itunes-assets/neverending.m4v",
+                            }
+                        ],
+                    },
+                )
+            if "fr.wikipedia.org/api/rest_v1/page/summary" in url:
+                return _MockResp(
+                    200,
+                    json_data={
+                        "extract": "L'Histoire sans fin est un film de fantasy réalisé par Wolfgang Petersen sorti en 1984."
+                    },
+                )
+            return _MockResp(404)
+
+    monkeypatch.setattr(
+        "app.infrastructure.scrapers.movies.itunes_movie_adapter.create_async_http_client",
+        lambda timeout=6.0, headers=None: _MockMovieClient(),
+    )
+
+    adapter = ItunesMovieAdapter()
+    cands = await adapter.fetch_random_unseen(
+        FilterCriteria(domain="movies", genres=["fantasy"], decades=["1980s"], lang="fr"),
+        seen_ids=set(),
+        count=1,
+    )
+    assert len(cands) == 1
+    assert cands[0].title == "The NeverEnding Story"
+    assert cands[0].year == "1984"
+    assert cands[0].video_url == "https://video-ssl.itunes.apple.com/itunes-assets/neverending.m4v"
+    assert "L'Histoire sans fin" in cands[0].synopsis
+
+    # Verify `client_offline` removes client_configs and does NOT re-trigger _schedule_preparation
+    scheduled_calls = []
+
+    class _NoopMqtt:
+        def set_handlers(self, **_kwargs):
+            pass
+
+        async def publish_json(self, topic: str, data: dict, retain: bool = False):
+            pass
+
+    class _NoopStreamer:
+        async def stop_stream(self, dmd_id: str):
+            pass
+
+    orch = ConsumeOnceOrchestrator(mqtt_gateway=_NoopMqtt(), streamer=_NoopStreamer())  # type: ignore[arg-type]
+    orch._schedule_preparation = lambda d, dom: scheduled_calls.append((d, dom))  # type: ignore[method-assign]
+    orch.client_configs[("rpi_games_128x32", "games")] = (
+        PanelGeometry(128, 32),
+        FilterCriteria(domain="games"),
+    )
+    await orch.handle_mqtt_client_event("rpi_games_128x32", {"event": "client_offline"})
+    assert ("rpi_games_128x32", "games") not in orch.client_configs
+    assert scheduled_calls == []
+
+
+
 

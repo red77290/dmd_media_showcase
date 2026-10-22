@@ -203,7 +203,7 @@ class LibretroWikidataAdapter(IScraperSource):
             poster_url=poster_url,
             jacket_url=poster_url,
             marquee_url=title_url or poster_url,
-            youtube_url=f"ytsearch1:{title_en or display_title} {smeta['badge']} gameplay",
+            youtube_url=None,
             source_id=self.source_id,
             theme_palette=tuple(smeta["palette"]),
             extra_meta={"system": canon_sys, "genre": canon_genre, "qid": entry.get("qid", "")},
@@ -236,7 +236,12 @@ class LibretroWikidataAdapter(IScraperSource):
         repo = smeta.get("libretro_repo") or "Nintendo_-_Nintendo_Entertainment_System"
 
         folders = await self.referential_strategy.sync_system_libretro_tree(client, canon_sys)
-        boxarts = list(folders.get("Named_Boxarts") or [])
+        boxarts = list(
+            folders.get("Named_Boxarts")
+            or folders.get("Named_Titles")
+            or folders.get("Named_Snaps")
+            or []
+        )
         if not boxarts:
             return []
 
@@ -302,7 +307,7 @@ class LibretroWikidataAdapter(IScraperSource):
                 poster_url=boxart_url,
                 jacket_url=boxart_url,
                 marquee_url=title_url or boxart_url,
-                youtube_url=f"ytsearch1:{clean_title} {smeta['badge']} gameplay",
+                youtube_url=None,
                 source_id=self.source_id,
                 theme_palette=tuple(smeta["palette"]),
                 extra_meta={"system": canon_sys, "genre": canon_genre},
@@ -344,7 +349,7 @@ class LibretroWikidataAdapter(IScraperSource):
                 harvested = await self.referential_strategy.harvest_wikidata_games(
                     client, sys_key=sys_key, genre_key=chosen_genre
                 )
-                if not harvested and not req_genres:
+                if not harvested:
                     harvested = await self.referential_strategy.harvest_wikidata_games(
                         client, sys_key=sys_key, genre_key=None
                     )

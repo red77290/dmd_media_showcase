@@ -30,6 +30,7 @@ COPY app ./app
 
 RUN pip install --upgrade pip && \
     pip install . && \
+    python3 -c "from src.plugins.detectors.detector import _ensure_yolo_model; _ensure_yolo_model()" && \
     mkdir -p /app/data /tmp/dmd_media_showcase_cache
 
 EXPOSE 8080 1883

@@ -126,3 +126,44 @@ async def fetch_wikipedia_localized_synopsis(
             except Exception:
                 continue
     return None, None
+
+
+async def fetch_imdb_suggestion_items(
+    client: httpx.AsyncClient,
+    query: str,
+    qid_filter: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Query IMDb's public keyless CDN suggestion endpoint (`v3.sg.media-imdb.com`).
+    Returns a list of raw IMDb suggestion dicts containing `id`, `l` (title),
+    `y` (year), `q`/`qid` (type), `s` (stars), and `i.imageUrl` (Amazon CloudFront poster).
+    """
+    clean_q = re.sub(r"[^a-zA-Z0-9 ]+", " ", query).strip().lower()
+    if not clean_q:
+        return []
+    first_char = clean_q[0] if clean_q[0].isalnum() else "x"
+    encoded = urllib.parse.quote(clean_q[:40])
+    url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{encoded}.json"
+    try:
+        resp = await client.get(url, timeout=3.5)
+        if resp.status_code != 200:
+            return []
+        entries = resp.json().get("d") or []
+        results: List[Dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            tid = str(entry.get("id") or "")
+            if not tid.startswith("tt"):
+                continue
+            qid = str(entry.get("qid") or entry.get("q") or "").lower()
+            if qid_filter and not any(f.lower() in qid for f in qid_filter):
+                continue
+            img_obj = entry.get("i")
+            if not isinstance(img_obj, dict) or not img_obj.get("imageUrl"):
+                continue
+            results.append(entry)
+        return results
+    except Exception as exc:
+        logger.debug("IMDb suggestion lookup failed for %s: %s", query, exc)
+        return []

@@ -147,7 +147,7 @@ class SessionRegisterRequest(BaseModel):
     video_max_duration_s: float = Field(
         default=6.0,
         ge=1.5,
-        le=30.0,
+        le=60.0,
         description="Maximum video duration in seconds requested by the DMD.",
     )
     video_fps: int = Field(default=15, ge=6, le=30, description="Target video frame rate.")

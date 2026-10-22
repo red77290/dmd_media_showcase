@@ -234,7 +234,9 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         tstore = self._get_tree_store(canon)
         cached = tstore.load()
         folders = (cached.get("metadata") or {}).get("folders")
-        if isinstance(folders, dict) and folders.get("Named_Boxarts"):
+        if isinstance(folders, dict) and (
+            folders.get("Named_Boxarts") or folders.get("Named_Titles") or folders.get("Named_Snaps")
+        ):
             return folders
 
         smeta = RETRO_SYSTEM_CATALOG.get(canon) or RETRO_SYSTEM_CATALOG["nes"]
@@ -264,8 +266,13 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                             result_folders[folder_name] = files
             total_files = sum(len(v) for v in result_folders.values())
             if total_files > 0:
+                primary_tokens = (
+                    result_folders["Named_Boxarts"]
+                    or result_folders["Named_Titles"]
+                    or result_folders["Named_Snaps"]
+                )[:500]
                 tstore.save(
-                    tokens=result_folders["Named_Boxarts"][:500],
+                    tokens=primary_tokens,
                     metadata={"repo": repo, "folders": result_folders},
                 )
                 logger.info(
@@ -584,6 +591,24 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
 
     source_id = "arcadeitalia"
 
+    _SYSTEM_SEARCH_STEMS: Dict[str, List[str]] = {
+        "neogeo": [
+            "kof", "samsho", "mslug", "garou", "fatal", "aof", "lastblad", "whp",
+            "svc", "shocktro", "sengoku", "pulstar", "blazstar", "windjamm", "spinmast",
+            "breakers", "kabukikl", "ninjamas", "rotd", "wakuwak7", "kizuna", "savagere",
+            "matrim", "rbff", "tophuntr", "mutnat", "cyberlip", "nam1975", "maglord", "viewpoin",
+        ],
+        "cps1": [
+            "sf2", "ffight", "dino", "punisher", "captcomm", "knights", "wof",
+            "1941", "strider", "ghouls", "varth", "cawing", "mercs", "forgottn",
+        ],
+        "cps2": [
+            "sfa", "msh", "vsav", "dstlk", "xmcota", "xmvsf", "mshvsf", "mvsc",
+            "1944", "gigawing", "progear", "marsmatr", "avsp", "ddtod", "ddsom", "cybots",
+        ],
+        "cps3": ["sfiii", "jojo", "redearth"],
+    }
+
     def __init__(self) -> None:
         self.store = LiveReferentialStore(self.source_id, ttl_seconds=43200)
 
@@ -671,6 +696,33 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
         count: int = 4,
     ) -> List[str]:
         ref_data = await self.sync_referential(client, force=False)
+        req_sys = [
+            resolve_canonical_system(s)
+            for s in (criteria.systems or [])
+            if s and s.lower() != "all"
+        ]
+        specific_sys = next((s for s in req_sys if s in self._SYSTEM_SEARCH_STEMS), None)
+        if specific_sys:
+            by_system = dict(((ref_data.get("metadata") or {}).get("by_system")) or {})
+            sys_tokens: List[str] = list(by_system.get(specific_sys) or [])
+            unseen_sys = [r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]
+            if len(unseen_sys) < count:
+                stems = list(self._SYSTEM_SEARCH_STEMS[specific_sys])
+                random.shuffle(stems)
+                for stem in stems[:2]:
+                    fresh = await self._harvest_from_lista_mame(client, stem)
+                    for rom in fresh:
+                        if rom not in sys_tokens:
+                            sys_tokens.append(rom)
+                    if len([r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]) >= count:
+                        break
+                by_system[specific_sys] = sys_tokens
+                self.store.save(tokens=sys_tokens, metadata={"by_system": by_system})
+                unseen_sys = [r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]
+            pool = unseen_sys if unseen_sys else sys_tokens
+            if pool:
+                return random.sample(pool, k=min(len(pool), max(1, count)))
+
         all_tokens: List[str] = list(ref_data.get("tokens") or [])
         unseen = [r for r in all_tokens if f"games_adb_{r}" not in seen_ids]
 
