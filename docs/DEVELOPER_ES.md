@@ -46,3 +46,4 @@ dmd_media_showcase/
 ```bash
 pytest -c pyproject.toml tests/
 ```
+

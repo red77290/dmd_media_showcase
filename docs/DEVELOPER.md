@@ -74,3 +74,4 @@ scraper_registry.register(CustomRetroAdapter())
 ```bash
 pytest -c pyproject.toml tests/
 ```
+

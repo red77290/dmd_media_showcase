@@ -196,6 +196,10 @@ class ConsumeOnceOrchestrator:
         if best_ip:
             self.client_udp_ips[dmd_id] = best_ip
 
+        # If the DMD rebooted or reconnected mid-broadcast, stop any orphaned UDP stream
+        # and purge any pre-reboot consumed package that was waiting for `start_stream`.
+        await self._cleanup_abandoned_active_packages(dmd_id)
+
         engines_map = payload.get("domains") or payload.get("engines")
         if isinstance(engines_map, dict):
             for dom_key, dom_cfg in engines_map.items():
@@ -209,6 +213,20 @@ class ConsumeOnceOrchestrator:
                 dom_single: DomainType = dom_raw  # type: ignore[assignment]
                 criteria = self._parse_domain_criteria(dom_single, payload, top_lang=top_lang)
                 await self.register_client_domain(dmd_id, dom_single, geometry, criteria)
+
+    async def _cleanup_abandoned_active_packages(self, dmd_id: str) -> None:
+        """
+        Stop any active `ffmpeg -re` UDP stream for `dmd_id` and purge any `consumed=True`
+        package in `self.active_packages` that was waiting for `start_stream` before a DMD reboot.
+        """
+        await self.streamer.stop_stream(dmd_id)
+        abandoned_ids = [
+            item_id
+            for item_id, pkg in list(self.active_packages.items())
+            if pkg.dmd_id == dmd_id and pkg.consumed
+        ]
+        for item_id in abandoned_ids:
+            await self.purge_consumed_package(item_id)
 
     async def register_client_domain(
         self,
@@ -248,6 +266,22 @@ class ConsumeOnceOrchestrator:
                     retain=True,
                 )
             self._schedule_preparation(dmd_id, domain)
+            return
+
+        existing_ready = self.ready_packages.get(key)
+        if existing_ready is not None and not existing_ready.consumed:
+            # Re-publish the retained `ready: true` message so a freshly rebooted DMD
+            # is guaranteed to receive the prepared card immediately upon re-registering.
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                {
+                    "ready": True,
+                    "item_id": existing_ready.item_id,
+                    "domain": domain,
+                    "card": existing_ready.card.to_dict(),
+                },
+                retain=True,
+            )
             return
 
         if key not in self.ready_packages and (key not in self._prep_tasks or self._prep_tasks[key].done()):
@@ -510,6 +544,10 @@ class ConsumeOnceOrchestrator:
             await self.streamer.stop_stream(dmd_id)
             if item_id:
                 await self.purge_consumed_package(item_id)
+
+        elif ev_type == "client_offline":
+            logger.info("[ORCHESTRATOR] DMD client '%s' went offline (LWT) -> cleaning up active streams", dmd_id)
+            await self._cleanup_abandoned_active_packages(dmd_id)
 
 
 consume_once_orchestrator = ConsumeOnceOrchestrator()

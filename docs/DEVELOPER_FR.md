@@ -49,3 +49,4 @@ Chaque adaptateur implémente `IScraperSource` (`app/domain/ports/scraper_source
 ```bash
 pytest -c pyproject.toml tests/
 ```
+

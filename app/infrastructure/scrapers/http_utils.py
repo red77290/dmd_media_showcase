@@ -50,12 +50,12 @@ def create_async_http_client(
     timeout: float = 6.0,
     headers: Optional[Dict[str, str]] = None,
 ) -> httpx.AsyncClient:
-    """Create an IPv4-first AsyncClient supporting both HTTP (insecure) and HTTPS."""
+    """Create an IPv4-first AsyncClient with a Wikimedia-compliant User-Agent."""
     default_headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 "
-            "DMDMediaShowcase/3.0"
+            "DMDMediaShowcase/3.0 "
+            "(https://github.com/red77290/dmd_media_showcase; contact@arcadematrix.org) "
+            "python-httpx/0.27"
         ),
         "Accept": "application/json, text/plain, */*",
     }

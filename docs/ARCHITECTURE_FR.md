@@ -111,3 +111,4 @@ sequenceDiagram
 | `7` | `uint8` | `total_chunks` | Nombre total de fragments composant la trame |
 | `8..11` | `uint32` | `byte_offset` | Offset en octets de ce fragment dans le framebuffer RGB565LE |
 | `10..N` | `uint8[]` | `payload` | Tranche de pixels bruts RGB565LE (`<= 1024` octets, compatible MTU Wi-Fi) |
+
