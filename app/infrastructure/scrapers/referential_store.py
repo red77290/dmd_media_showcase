@@ -428,6 +428,18 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         except Exception as exc:
             logger.debug("[REFERENTIAL:wikidata] SPARQL query skipped for %s/%s: %s", canon_sys, canon_genre, exc)
 
+        # Fallback to Wikidata MediaWiki CirrusSearch API (`www.wikidata.org/w/api.php`)
+        # when `query.wikidata.org/sparql` is blocked by a proxy/VPN (HTTP 403) or times out.
+        if not games_by_qid:
+            await self._harvest_via_wikidata_cirrus_api(
+                client,
+                canon_sys=canon_sys,
+                canon_genre=canon_genre,
+                platform_qid=platform_qid,
+                genre_qid=genre_qid,
+                games_by_qid=games_by_qid,
+            )
+
         harvested = list(games_by_qid.values())
         if harvested:
             by_bucket[cache_bucket] = harvested
@@ -440,6 +452,108 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                 canon_genre or "all",
             )
         return harvested
+
+    async def _harvest_via_wikidata_cirrus_api(
+        self,
+        client: Any,
+        canon_sys: str,
+        canon_genre: str,
+        platform_qid: str,
+        genre_qid: Optional[str],
+        games_by_qid: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """
+        Query `https://www.wikidata.org/w/api.php` using `haswbstatement` CirrusSearch
+        (`haswbstatement:P31=Q7889 haswbstatement:P400={platform_qid} haswbstatement:P136={genre_qid}`)
+        followed by `wbgetentities` to retrieve localized `fr`/`en` labels, release year (`P577`),
+        and `frwiki`/`enwiki` sitelinks without touching `query.wikidata.org/sparql`.
+        """
+        sr_parts = [
+            "haswbstatement:P31=Q7889",
+            f"haswbstatement:P400={platform_qid}",
+        ]
+        if genre_qid:
+            sr_parts.append(f"haswbstatement:P136={genre_qid}")
+        srsearch = " ".join(sr_parts)
+        try:
+            s_resp = await client.get(
+                "https://www.wikidata.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": srsearch,
+                    "srlimit": "50",
+                    "format": "json",
+                },
+                timeout=6.5,
+            )
+            if s_resp.status_code != 200:
+                return
+            search_hits = ((s_resp.json().get("query") or {}).get("search")) or []
+            qids = [
+                str(hit.get("title") or "").strip()
+                for hit in search_hits
+                if str(hit.get("title") or "").strip().startswith("Q")
+            ][:50]
+            if not qids:
+                return
+
+            e_resp = await client.get(
+                "https://www.wikidata.org/w/api.php",
+                params={
+                    "action": "wbgetentities",
+                    "ids": "|".join(qids),
+                    "props": "labels|claims|sitelinks",
+                    "languages": "fr|en",
+                    "sitefilter": "frwiki|enwiki",
+                    "format": "json",
+                },
+                timeout=6.5,
+            )
+            if e_resp.status_code != 200:
+                return
+            entities = (e_resp.json().get("entities")) or {}
+            for qid, ent in entities.items():
+                if not isinstance(ent, dict):
+                    continue
+                labels = ent.get("labels") or {}
+                title_fr = str(((labels.get("fr") or {}).get("value")) or "").strip()
+                title_en = str(((labels.get("en") or {}).get("value")) or "").strip()
+                if not title_en and not title_fr:
+                    continue
+                if re.fullmatch(r"Q\d+", title_en or title_fr):
+                    continue
+                sitelinks = ent.get("sitelinks") or {}
+                fr_wiki = str(((sitelinks.get("frwiki") or {}).get("title")) or "").strip()
+                en_wiki = str(((sitelinks.get("enwiki") or {}).get("title")) or "").strip()
+
+                yr = ""
+                p577 = (ent.get("claims") or {}).get("P577") or []
+                for claim in p577:
+                    tval = (
+                        (((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value") or {}).get("time")
+                        if isinstance(claim, dict)
+                        else None
+                    )
+                    if isinstance(tval, str):
+                        m = re.search(r"(\d{4})", tval)
+                        if m:
+                            cand_yr = m.group(1)
+                            if not yr or cand_yr < yr:
+                                yr = cand_yr
+
+                games_by_qid[qid] = {
+                    "qid": qid,
+                    "system": canon_sys,
+                    "genre": canon_genre or "action",
+                    "title_en": title_en or title_fr,
+                    "title_fr": title_fr or title_en,
+                    "year": yr,
+                    "fr_wiki": fr_wiki,
+                    "en_wiki": en_wiki,
+                }
+        except Exception as exc:
+            logger.debug("[REFERENTIAL:wikidata] Cirrus API fallback skipped for %s/%s: %s", canon_sys, canon_genre, exc)
 
     async def sync_referential(self, client: Any, force: bool = False) -> Dict[str, Any]:
         if not force and not self.store.is_expired():

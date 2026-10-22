@@ -102,6 +102,7 @@ class ShowcaseMqttGateway:
             try:
                 await self.external_client.connect()
                 await self.external_client.subscribe("dmd_showcase/clients/+/config", self._on_raw_msg)
+                await self.external_client.subscribe("dmd_showcase/clients/+/status", self._on_raw_msg)
                 await self.external_client.subscribe("dmd_showcase/clients/+/events", self._on_raw_msg)
                 await self.external_client.subscribe("dmd_showcase/clients/+/+/events", self._on_raw_msg)
                 await self.publish_json(
@@ -123,6 +124,7 @@ class ShowcaseMqttGateway:
 
         self.embedded_broker = EmbeddedMqttBroker(host="0.0.0.0", port=port)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/config", self._on_raw_msg)
+        self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/status", self._on_raw_msg)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/events", self._on_raw_msg)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/+/events", self._on_raw_msg)
         await self.embedded_broker.start()
@@ -205,6 +207,8 @@ class ShowcaseMqttGateway:
             await self._on_client_config(dmd_id, decoded)
         elif leaf == "events" and self._on_client_event is not None:
             await self._on_client_event(dmd_id, decoded)
+        elif leaf == "status" and not decoded.get("online", True) and self._on_client_event is not None:
+            await self._on_client_event(dmd_id, {"action": "client_offline"})
 
 
 showcase_mqtt_gateway = ShowcaseMqttGateway()

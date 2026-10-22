@@ -111,3 +111,4 @@ sequenceDiagram
 | `7` | `uint8` | `total_chunks` | Total chunks required to assemble the complete frame |
 | `8..11` | `uint32` | `byte_offset` | Byte offset of this chunk inside the RGB565LE frame buffer |
 | `10..N` | `uint8[]` | `payload` | Raw RGB565LE pixel slice (`<= 1024` bytes, MTU-safe) |
+

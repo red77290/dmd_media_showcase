@@ -32,7 +32,14 @@ from app.application.consume_once_orchestrator import (
     consume_once_orchestrator,
 )
 from app.application.source_chain_service import DomainSourceChainService
-from app.domain.entities import DomainType, FilterCriteria, MediaCandidate, PanelGeometry
+from app.domain.entities import (
+    DomainType,
+    FilterCriteria,
+    MediaCandidate,
+    PanelGeometry,
+    PreparedShowcasePackage,
+    ShowcaseCard,
+)
 from app.domain.ports.scraper_source import IScraperSource
 from app.infrastructure.mqtt.embedded_broker import (
     EmbeddedMqttBroker,
@@ -663,4 +670,137 @@ async def test_retained_config_change_invalidation_and_docker_nat_client_ip(tmp_
     assert criteria.genres == ["platform"]
     assert criteria.text_scroll_speed == "8"
     assert criteria.lang == "fr"
+
+
+@pytest.mark.asyncio
+async def test_dmd_reboot_mid_broadcast_recovers_and_cleans_abandoned_slot(tmp_path: Path):
+    """
+    Verify that when a DMD reboots while displaying a Card (after `start_card` was sent,
+    so the server popped `pkg_A` into `active_packages` with `consumed=True` and is waiting
+    for `start_stream`):
+    1. When the rebooted DMD reconnects and publishes `dmd_showcase/clients/{dmd_id}/config`,
+       the abandoned `pkg_A` in `active_packages` is immediately purged.
+    2. If `N+1` (`pkg_B`) is already in `ready_packages`, the server immediately re-publishes
+       `ready: true` (`retain=True`) so the rebooted DMD is never stuck waiting.
+    """
+    published_topics = []
+
+    class _MockMqtt:
+        def set_handlers(self, **_kwargs):
+            pass
+
+        async def publish_json(self, topic: str, data: dict, retain: bool = False):
+            published_topics.append((topic, data, retain))
+
+    class _MockStreamer:
+        def __init__(self):
+            self.stopped = []
+
+        async def stop_stream(self, dmd_id: str):
+            self.stopped.append(dmd_id)
+
+    mock_mqtt = _MockMqtt()
+    mock_streamer = _MockStreamer()
+    orch = ConsumeOnceOrchestrator(mqtt_gateway=mock_mqtt, streamer=mock_streamer)  # type: ignore[arg-type]
+
+    cand_a = MediaCandidate(
+        id="nes_castlevania",
+        domain="games",
+        title="Castlevania",
+        year="1986",
+        badge="NES",
+        badge_color="#D32F2F",
+        subtitle="Plateforme • NES",
+        rating="9.0",
+        synopsis="Simon Belmont...",
+    )
+    card_a = ShowcaseCard(
+        item_id="pkg_a",
+        domain="games",
+        title="Castlevania",
+        year="1986",
+        badge="NES",
+        badge_color="#D32F2F",
+        subtitle="Plateforme • NES",
+        rating="9.0",
+        synopsis="Simon Belmont...",
+        lang="fr",
+        source_used="libretro_wikidata",
+        poster_width=32,
+        poster_height=32,
+        poster_rgb565_b64="AAH/",
+        stream_frames=120,
+    )
+    dir_a = tmp_path / "pkg_a"
+    dir_a.mkdir(parents=True, exist_ok=True)
+    pkg_a = PreparedShowcasePackage(
+        item_id="pkg_a",
+        domain="games",
+        dmd_id="rpi_games_128x32",
+        candidate=cand_a,
+        card=card_a,
+        geometry=PanelGeometry(128, 32),
+        item_dir=dir_a,
+        consumed=True,  # Claimed by start_card before DMD rebooted!
+    )
+    orch.active_packages["pkg_a"] = pkg_a
+
+    # Suppose N+1 (`pkg_b`) finished preparing in `ready_packages`
+    card_b = ShowcaseCard(
+        item_id="pkg_b",
+        domain="games",
+        title="Mega Man 2",
+        year="1988",
+        badge="NES",
+        badge_color="#D32F2F",
+        subtitle="Plateforme • NES",
+        rating="9.4",
+        synopsis="Mega Man...",
+        lang="fr",
+        source_used="libretro_wikidata",
+        poster_width=32,
+        poster_height=32,
+        poster_rgb565_b64="AAH/",
+        stream_frames=150,
+    )
+    pkg_b = PreparedShowcasePackage(
+        item_id="pkg_b",
+        domain="games",
+        dmd_id="rpi_games_128x32",
+        candidate=cand_a,
+        card=card_b,
+        geometry=PanelGeometry(128, 32),
+        item_dir=tmp_path / "pkg_b",
+        consumed=False,
+    )
+    orch.ready_packages[("rpi_games_128x32", "games")] = pkg_b
+    orch._schedule_preparation = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+    # Pre-register same config so `old_pair == (geometry, criteria)` (simulating reboot with unchanged config)
+    cfg_payload = {
+        "dmd_id": "rpi_games_128x32",
+        "client_ip": "192.168.1.177",
+        "width": 128,
+        "height": 32,
+        "lang": "fr",
+        "domains": {"games": {"systems": ["nes"], "genres": ["platform"]}},
+    }
+    orch.client_configs[("rpi_games_128x32", "games")] = (
+        PanelGeometry(128, 32),
+        orch._parse_domain_criteria("games", cfg_payload["domains"]["games"], top_lang="fr"),
+    )
+
+    # DMD reboots and publishes its `config`
+    await orch.handle_mqtt_client_config("rpi_games_128x32", cfg_payload)
+
+    # 1. Abandoned pre-reboot package `pkg_a` was purged and any running stream stopped
+    assert "pkg_a" not in orch.active_packages
+    assert not dir_a.exists()
+    assert "rpi_games_128x32" in mock_streamer.stopped
+
+    # 2. Ready package `pkg_b` was immediately re-published to `dmd_showcase/clients/rpi_games_128x32/games/ready`
+    ready_pubs = [p for p in published_topics if p[0].endswith("/games/ready") and p[1].get("ready") is True]
+    assert len(ready_pubs) == 1
+    assert ready_pubs[0][1]["item_id"] == "pkg_b"
+
 

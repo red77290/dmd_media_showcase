@@ -66,3 +66,4 @@ Open `http://<server-ip>:8080/` in your browser to:
 3. Set `Showcase Server URL` to `http://<server-ip>:8080` and `MQTT Broker` to `mqtt://<server-ip>:1883`.
 4. The DMD WebUI automatically queries `GET /api/v1/{domain}/filters?lang={ui_lang}` from the Showcase server to populate the **Systems**, **Genres**, and **Decades** dropdowns dynamically (filtering available genres/decades when you select a system such as `NES` or `Neo-Geo`).
 5. Adjust **Synopsis Scroll Speed** (`1 = Slow` to `10 = Turbo`, up to `160 px/s`) and click **Save**.
+

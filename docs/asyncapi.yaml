@@ -309,3 +309,4 @@ components:
             type: string
           domain:
             type: string
+

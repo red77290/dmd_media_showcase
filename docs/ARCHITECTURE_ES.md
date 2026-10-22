@@ -76,3 +76,4 @@ En lugar de codificar categorías fijas en el firmware o en la WebUI del DMD:
 | `7` | `uint8` | `total_chunks` | Total de fragmentos del fotograma |
 | `8..11` | `uint32` | `byte_offset` | Desplazamiento en bytes dentro del búfer RGB565LE |
 | `10..N` | `uint8[]` | `payload` | Datos de píxeles RGB565LE (`<= 1024` bytes) |
+

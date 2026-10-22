@@ -344,7 +344,7 @@ class LibretroWikidataAdapter(IScraperSource):
                 harvested = await self.referential_strategy.harvest_wikidata_games(
                     client, sys_key=sys_key, genre_key=chosen_genre
                 )
-                if not harvested and chosen_genre:
+                if not harvested and not req_genres:
                     harvested = await self.referential_strategy.harvest_wikidata_games(
                         client, sys_key=sys_key, genre_key=None
                     )
@@ -415,3 +415,4 @@ class LibretroWikidataAdapter(IScraperSource):
         except Exception:
             pass
         return None
+

@@ -62,3 +62,4 @@ Abra `http://<ip-servidor>:8080/` en su navegador para:
 3. Configure `Showcase Server URL` (`http://<ip-servidor>:8080`) y `MQTT Broker` (`mqtt://<ip-servidor>:1883`).
 4. La WebUI del DMD consulta automáticamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar dinámicamente las listas de **Sistemas**, **Géneros** y **Décadas**.
 5. Ajuste la **Velocidad de desplazamiento de la sinopsis** (`1 = Lento` a `10 = Turbo`, hasta `160 px/s`) y guarde los cambios.
+
