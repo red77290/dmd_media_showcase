@@ -194,8 +194,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": True,
         "screenscraper_id": "142",
         "arcadeitalia_driver": "neogeo",
-        "wikidata_qid": "Q309201",
+        "wikidata_qid": "Q1054350",
         "libretro_repo": "SNK_-_Neo_Geo",
+        "archive_video_repo": "neogeosnaps_202302",
         "badge": "NEO-GEO",
         "color": "#E53935",
         "palette": (229, 57, 53),
@@ -214,8 +215,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": True,
         "screenscraper_id": "105",
         "arcadeitalia_driver": "cps1",
-        "wikidata_qid": "Q1034115",
+        "wikidata_qid": "Q1034233",
         "libretro_repo": "MAME",
+        "archive_video_repo": "CapcomCPS-1VideoSnaps",
         "badge": "CPS-1",
         "color": "#FFB300",
         "palette": (255, 179, 0),
@@ -234,8 +236,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": True,
         "screenscraper_id": "106",
         "arcadeitalia_driver": "cps2",
-        "wikidata_qid": "Q1034115",
+        "wikidata_qid": "Q2981666",
         "libretro_repo": "MAME",
+        "archive_video_repo": "CapcomCPS-2VideoSnaps_201804",
         "badge": "CPS-2",
         "color": "#FB8C00",
         "palette": (251, 140, 0),
@@ -254,8 +257,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": True,
         "screenscraper_id": "107",
         "arcadeitalia_driver": "cps3",
-        "wikidata_qid": "Q1034115",
+        "wikidata_qid": "Q2634041",
         "libretro_repo": "MAME",
+        "archive_video_repo": "CPSsnaps",
         "badge": "CPS-3",
         "color": "#F4511E",
         "palette": (244, 81, 30),
@@ -276,6 +280,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q172742",
         "libretro_repo": "Nintendo_-_Nintendo_Entertainment_System",
+        "archive_video_repo": "nintendo-entertainment-system-video-snaps",
         "badge": "NES",
         "color": "#D32F2F",
         "palette": (211, 47, 47),
@@ -303,6 +308,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q183259",
         "libretro_repo": "Nintendo_-_Super_Nintendo_Entertainment_System",
+        "archive_video_repo": "super-nintendo-entertainment-system-video-snaps",
         "badge": "SNES",
         "color": "#7B1FA2",
         "palette": (123, 31, 162),
@@ -330,6 +336,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q10677",
         "libretro_repo": "Sega_-_Mega_Drive_-_Genesis",
+        "archive_video_repo": "sega-genesis-video-snaps",
         "badge": "MD",
         "color": "#1976D2",
         "palette": (25, 118, 210),
@@ -357,6 +364,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q209868",
         "libretro_repo": "Sega_-_Master_System_-_Mark_III",
+        "archive_video_repo": "SegaMasterSystemVideoSnaps",
         "badge": "SMS",
         "color": "#1565C0",
         "palette": (21, 101, 192),
@@ -377,6 +385,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q1057377",
         "libretro_repo": "NEC_-_PC_Engine_-_TurboGrafx_16",
+        "archive_video_repo": "NECTurboGrafx16VideoSnaps",
         "badge": "PCE",
         "color": "#E64A19",
         "palette": (230, 74, 25),
@@ -397,6 +406,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q10680",
         "libretro_repo": "Sony_-_PlayStation",
+        "archive_video_repo": "SonyPlaystationVideoSnaps",
         "badge": "PS1",
         "color": "#0288D1",
         "palette": (2, 136, 209),
@@ -417,6 +427,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q184839",
         "libretro_repo": "Nintendo_-_Nintendo_64",
+        "archive_video_repo": "Nintendo64VideoSnaps",
         "badge": "N64",
         "color": "#388E3C",
         "palette": (56, 142, 60),
@@ -437,6 +448,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q200912",
         "libretro_repo": "Sega_-_Saturn",
+        "archive_video_repo": "sega-saturn_202111",
         "badge": "SATURN",
         "color": "#303F9F",
         "palette": (48, 63, 159),
@@ -457,6 +469,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q184198",
         "libretro_repo": "Sega_-_Dreamcast",
+        "archive_video_repo": "sega-dreamcast-video-snaps",
         "badge": "DC",
         "color": "#F57C00",
         "palette": (245, 124, 0),
@@ -477,6 +490,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q186437",
         "libretro_repo": "Nintendo_-_Game_Boy",
+        "archive_video_repo": "nintendo-game-boy-video-snaps",
         "badge": "GB",
         "color": "#689F38",
         "palette": (104, 159, 56),
@@ -497,6 +511,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q203992",
         "libretro_repo": "Nintendo_-_Game_Boy_Color",
+        "archive_video_repo": "tonka-raceway-usa",
         "badge": "GBC",
         "color": "#00ACC1",
         "palette": (0, 172, 193),
@@ -517,6 +532,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q188642",
         "libretro_repo": "Nintendo_-_Game_Boy_Advance",
+        "archive_video_repo": "nintendo-game-boy-advance-video-sanps-sq",
         "badge": "GBA",
         "color": "#512DA8",
         "palette": (81, 45, 168),
@@ -557,6 +573,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q751719",
         "libretro_repo": "Sega_-_Game_Gear",
+        "archive_video_repo": "SegaGameGearVideoSnaps",
         "badge": "GG",
         "color": "#039BE5",
         "palette": (3, 155, 229),
@@ -575,8 +592,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "28",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q753600",
+        "wikidata_qid": "Q753657",
         "libretro_repo": "Atari_-_Lynx",
+        "archive_video_repo": "atarilynx-lossless-video-snaps",
         "badge": "LYNX",
         "color": "#FBC02D",
         "palette": (251, 192, 45),
@@ -595,8 +613,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "82",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q1052379",
+        "wikidata_qid": "Q1977455",
         "libretro_repo": "SNK_-_Neo_Geo_Pocket_Color",
+        "archive_video_repo": "SNKNeoGeoPocketColorVideoSnaps",
         "badge": "NGPC",
         "color": "#E53935",
         "palette": (229, 57, 53),
@@ -617,6 +636,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q206261",
         "libretro_repo": "Atari_-_2600",
+        "archive_video_repo": "Atari2600VideoSnaps",
         "badge": "A2600",
         "color": "#D84315",
         "palette": (216, 67, 21),
@@ -635,8 +655,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "43",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q753608",
+        "wikidata_qid": "Q753600",
         "libretro_repo": "Atari_-_7800",
+        "archive_video_repo": "Atari7800VideoSnaps",
         "badge": "A7800",
         "color": "#C62828",
         "palette": (198, 40, 40),
@@ -695,8 +716,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "113",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q113866",
+        "wikidata_qid": "Q853547",
         "libretro_repo": "Microsoft_-_MSX",
+        "archive_video_repo": "MicrosoftMSX2CartsVideoSnaps_201804",
         "badge": "MSX",
         "color": "#283593",
         "palette": (40, 53, 147),
@@ -717,6 +739,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "arcadeitalia_driver": None,
         "wikidata_qid": "Q1046862",
         "libretro_repo": "Coleco_-_ColecoVision",
+        "archive_video_repo": "coleco-lossless-video-snaps",
         "badge": "COLECO",
         "color": "#00838F",
         "palette": (0, 131, 143),
@@ -735,7 +758,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "115",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q1061547",
+        "wikidata_qid": "Q1061441",
         "libretro_repo": "Mattel_-_Intellivision",
         "badge": "INTV",
         "color": "#9E9D24",
@@ -755,8 +778,9 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "102",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q1056758",
+        "wikidata_qid": "Q767631",
         "libretro_repo": "GCE_-_Vectrex",
+        "archive_video_repo": "GCEVectrexVideoSnaps",
         "badge": "VECTREX",
         "color": "#00E676",
         "palette": (0, 230, 118),
@@ -781,7 +805,8 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
 GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     "platform": {
         "wikidata_qid": "Q828322",
-        "adb_keywords": ["platform"],
+        "wikidata_qids": ["Q828322"],
+        "adb_keywords": ["platform / run jump", "platform / run jump scrolling", "platform"],
         "screenscraper_keywords": ["plateforme", "platform"],
         "synonyms": [
             "platform",
@@ -789,7 +814,6 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
             "plateforme",
             "platform_game",
             "platform_run_jump",
-            "platform_fighter_scrolling",
             "metroidvania",
         ],
         "labels": {
@@ -801,8 +825,9 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "action": {
-        "wikidata_qid": "Q279680",
-        "adb_keywords": ["action", "climbing", "shooter"],
+        "wikidata_qid": "Q270948",
+        "wikidata_qids": ["Q270948", "Q343568"],
+        "adb_keywords": ["action", "climbing", "platform / fighter scrolling"],
         "screenscraper_keywords": ["action"],
         "synonyms": ["action", "action_adventure", "action_game"],
         "labels": {
@@ -814,10 +839,18 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "fighting": {
-        "wikidata_qid": "Q1044473",
-        "adb_keywords": ["fighter / versus", "fighter / 2d", "fighter / 3d", "wrestling"],
+        "wikidata_qid": "Q846224",
+        "wikidata_qids": ["Q846224"],
+        "adb_keywords": [
+            "fighter / versus",
+            "fighter / versus co-op",
+            "fighter / 2d",
+            "fighter / 3d",
+            "sports / wrestling",
+            "wrestling",
+        ],
         "screenscraper_keywords": ["combat", "fighting"],
-        "synonyms": ["fighting", "fighter", "combat", "versus", "vs_fighting", "fighting_game"],
+        "synonyms": ["fighting", "fighter_versus", "combat", "versus", "vs_fighting", "fighting_game"],
         "labels": {
             "fr": "Combat (1v1 / Versus)",
             "en": "Fighting (1v1)",
@@ -827,8 +860,15 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "beatemup": {
-        "wikidata_qid": "Q4876963",
-        "adb_keywords": ["fighter / 2.5d", "fighter / misc", "beat"],
+        "wikidata_qid": "Q401831",
+        "wikidata_qids": ["Q401831"],
+        "adb_keywords": [
+            "fighter / 2.5d",
+            "fighter / field",
+            "fighter / misc",
+            "fighter / vertical",
+            "beat-'em-up",
+        ],
         "screenscraper_keywords": ["beat'em all", "beat em up"],
         "synonyms": ["beatemup", "beat_em_up", "beat_em_all", "brawler", "hack_and_slash"],
         "labels": {
@@ -841,7 +881,16 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     },
     "shootemup": {
         "wikidata_qid": "Q1044478",
-        "adb_keywords": ["shoot-'em-up", "shooter / flying"],
+        "wikidata_qids": ["Q1044478"],
+        "adb_keywords": [
+            "shoot-'em-up",
+            "shooter / flying",
+            "shooter / flying vertical",
+            "shooter / flying horizontal",
+            "shooter / flying 1st person",
+            "shooter / gallery",
+            "shooter / field",
+        ],
         "screenscraper_keywords": ["shoot'em up", "shoot em up", "shmup"],
         "synonyms": ["shootemup", "shoot_em_up", "shmup", "scrolling_shooter", "bullet_hell"],
         "labels": {
@@ -853,10 +902,16 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "runandgun": {
-        "wikidata_qid": "Q2709482",
-        "adb_keywords": ["shooter / walking", "run and gun", "platform / shooter"],
+        "wikidata_qid": "Q60480500",
+        "wikidata_qids": ["Q60480500", "Q1044478"],
+        "adb_keywords": [
+            "shooter / walking",
+            "run and gun",
+            "platform / shooter",
+            "platform / shooter scrolling",
+        ],
         "screenscraper_keywords": ["run & gun", "run and gun", "tir"],
-        "synonyms": ["runandgun", "run_and_gun", "run_gun"],
+        "synonyms": ["runandgun", "run_and_gun", "run_gun", "shooter_walking", "platform_shooter"],
         "labels": {
             "fr": "Run & Gun",
             "en": "Run & Gun",
@@ -867,7 +922,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     },
     "rpg": {
         "wikidata_qid": "Q744038",
-        "adb_keywords": ["role-playing", "adventure"],
+        "wikidata_qids": ["Q744038", "Q1422746", "Q1529437"],
+        "adb_keywords": ["role-playing"],
         "screenscraper_keywords": ["jeu de rôles", "rpg", "role playing"],
         "synonyms": ["rpg", "jrpg", "action_rpg", "role_playing", "role_playing_video_game", "jeu_de_roles"],
         "labels": {
@@ -879,7 +935,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "racing": {
-        "wikidata_qid": "Q868217",
+        "wikidata_qid": "Q860750",
+        "wikidata_qids": ["Q860750"],
         "adb_keywords": ["driving", "race", "motorcycle"],
         "screenscraper_keywords": ["course", "conduite", "racing", "driving"],
         "synonyms": ["racing", "driving", "course", "racing_video_game", "kart_racing"],
@@ -893,7 +950,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     },
     "puzzle": {
         "wikidata_qid": "Q54767",
-        "adb_keywords": ["puzzle"],
+        "wikidata_qids": ["Q54767"],
+        "adb_keywords": ["puzzle", "puzzle / drop", "puzzle / match", "puzzle / toss"],
         "screenscraper_keywords": ["puzzle", "réflexion"],
         "synonyms": ["puzzle", "reflexion", "puzzle_video_game", "falling_block"],
         "labels": {
@@ -905,8 +963,17 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "sports": {
-        "wikidata_qid": "Q838795",
-        "adb_keywords": ["sports"],
+        "wikidata_qid": "Q868217",
+        "wikidata_qids": ["Q868217"],
+        "adb_keywords": [
+            "sports",
+            "sports / soccer",
+            "sports / basketball",
+            "sports / baseball",
+            "sports / tennis",
+            "sports / golf",
+            "sports / dodgeball",
+        ],
         "screenscraper_keywords": ["sport", "sports"],
         "synonyms": ["sports", "sport", "sports_video_game", "soccer", "football", "basketball", "tennis", "golf"],
         "labels": {
@@ -918,7 +985,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "strategy": {
-        "wikidata_qid": "Q193606",
+        "wikidata_qid": "Q472055",
+        "wikidata_qids": ["Q472055", "Q1529437"],
         "adb_keywords": ["strategy", "tabletop"],
         "screenscraper_keywords": ["stratégie", "strategy", "tactic"],
         "synonyms": ["strategy", "tactical", "rts", "turn_based_strategy", "strategie"],
@@ -932,7 +1000,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     },
     "simulation": {
         "wikidata_qid": "Q1610017",
-        "adb_keywords": ["simulation", "flying"],
+        "wikidata_qids": ["Q1610017"],
+        "adb_keywords": ["simulation"],
         "screenscraper_keywords": ["simulation", "vol"],
         "synonyms": ["simulation", "flight_simulator", "space_combat"],
         "labels": {
@@ -944,7 +1013,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "maze": {
-        "wikidata_qid": "Q132311",
+        "wikidata_qid": "Q13717398",
+        "wikidata_qids": ["Q13717398"],
         "adb_keywords": ["maze"],
         "screenscraper_keywords": ["labyrinthe", "maze"],
         "synonyms": ["maze", "labyrinthe", "pac_man_clone"],
@@ -957,7 +1027,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "adventure": {
-        "wikidata_qid": "Q212949",
+        "wikidata_qid": "Q23916",
+        "wikidata_qids": ["Q23916", "Q343568"],
         "adb_keywords": ["adventure"],
         "screenscraper_keywords": ["aventure", "adventure"],
         "synonyms": ["adventure", "aventure", "point_and_click"],
@@ -970,7 +1041,8 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "pinball": {
-        "wikidata_qid": "Q653928",
+        "wikidata_qid": "Q3177954",
+        "wikidata_qids": ["Q3177954", "Q653928"],
         "adb_keywords": ["pinball"],
         "screenscraper_keywords": ["flipper", "pinball"],
         "synonyms": ["pinball", "flipper"],
@@ -983,10 +1055,11 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         },
     },
     "lightgun": {
-        "wikidata_qid": "Q1192490",
+        "wikidata_qid": "Q3965952",
+        "wikidata_qids": ["Q3965952"],
         "adb_keywords": ["shooter / gun", "lightgun"],
         "screenscraper_keywords": ["tir au pistolet", "lightgun", "gun"],
-        "synonyms": ["lightgun", "light_gun", "rail_shooter", "gun_shooter"],
+        "synonyms": ["lightgun", "light_gun", "rail_shooter", "gun_shooter", "shooter_gun"],
         "labels": {
             "fr": "Tir au pistolet (Lightgun)",
             "en": "Light Gun Shooter",
@@ -1497,6 +1570,10 @@ def _build_genre_synonym_index(catalog: Dict[str, Dict[str, Any]]) -> Dict[str, 
         idx[normalize_category_slug(gid)] = gid
         for syn in meta.get("synonyms", []):
             idx[normalize_category_slug(syn)] = gid
+        for kw in meta.get("adb_keywords", []):
+            idx[normalize_category_slug(kw)] = gid
+        for skw in meta.get("screenscraper_keywords", []):
+            idx[normalize_category_slug(skw)] = gid
         for lbl in (meta.get("labels") or {}).values():
             idx[normalize_category_slug(lbl)] = gid
     return idx
@@ -1517,12 +1594,12 @@ def resolve_canonical_system(raw_system: str) -> str:
 
 
 def resolve_canonical_genre(domain: DomainType, raw_genre: str) -> str:
-    """Resolve any scraper or user genre token (`Platformer`, `Plateforme`, `Platform / Run Jump`) to its canonical ID."""
+    """Resolve any scraper or user genre token (`Platformer`, `Plateforme`, `Fighter / Versus`, `Shooter / Walking`) to its canonical ID."""
     slug = normalize_category_slug(raw_genre)
     domain_idx = _GENRE_SYNONYM_BY_DOMAIN.get(domain, {})
     if slug in domain_idx:
         return domain_idx[slug]
-    for syn_slug, canonical_id in domain_idx.items():
+    for syn_slug, canonical_id in sorted(domain_idx.items(), key=lambda kv: len(kv[0]), reverse=True):
         if syn_slug and len(syn_slug) >= 4 and syn_slug in slug:
             return canonical_id
     return slug

@@ -80,6 +80,13 @@ def _download_bytes(url: Optional[str], timeout: float = 6.0) -> Optional[bytes]
         with urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = resp.read(20 * 1024 * 1024)
+                if len(data) < 128:
+                    logger.info(
+                        "[CONVERTER] Ignored empty/truncated payload (%d bytes) from %s",
+                        len(data),
+                        url,
+                    )
+                    return None
                 logger.info(
                     "[CONVERTER] Downloaded %.1f KB from %s",
                     len(data) / 1024.0,
@@ -288,6 +295,10 @@ def build_static_assets_sync(
     poster_png_name = f"poster_{poster_w}x{poster_h}.png"
     poster_rgb_name = f"poster_{poster_w}x{poster_h}.rgb565"
     poster_bytes = _download_bytes(poster_url or jacket_url, timeout=4.5)
+    if not poster_bytes and marquee_url and marquee_url != poster_url:
+        poster_bytes = _download_bytes(marquee_url, timeout=4.5)
+    if not poster_bytes and image_urls:
+        poster_bytes = _download_bytes(image_urls[0], timeout=4.5)
 
     poster_img: Optional[Image.Image] = None
     if poster_bytes:
@@ -512,12 +523,17 @@ def build_video_assets_worker_task(
 
     have_real_video = False
     if video_url:
-        if video_url.endswith(".webm") or "animethemes.moe" in video_url:
+        if (
+            video_url.endswith(".webm")
+            or "animethemes.moe" in video_url
+            or "archive.org/download/" in video_url
+        ):
+            offset_s = 4.0 if "archive.org/download/" in video_url else 12.0
             have_real_video = _slice_remote_video_ffmpeg(
-                video_url, src_video_path, max_duration_s=max_duration_s, start_offset_s=12.0
+                video_url, src_video_path, max_duration_s=max_duration_s, start_offset_s=offset_s
             )
         if not have_real_video:
-            vid_bytes = _download_bytes(video_url, timeout=8.0)
+            vid_bytes = _download_bytes(video_url, timeout=12.0)
             if vid_bytes and len(vid_bytes) > 8192:
                 src_video_path.write_bytes(vid_bytes)
                 have_real_video = True

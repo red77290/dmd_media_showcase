@@ -56,12 +56,15 @@ def random_search_syllable() -> str:
 def normalize_game_lookup_key(title: str) -> str:
     """
     Normalize a game title or No-Intro filename into a canonical lookup key:
-    - Strip `.png` and all parenthetical tags `(Europe)`, `(France)`, `(USA)`, `(Rev A)`
+    - Strip `.png`, `.ia.mp4`, `.mp4` and all parenthetical tags `(Europe)`, `(France)`, `(USA)`, `(Rev A)`
     - Handle trailing `, The` or leading `The `
     - Strip punctuation/subtitles as needed
     """
     s = (title or "").strip()
-    if s.lower().endswith(".png"):
+    low_ext = s.lower()
+    if low_ext.endswith(".ia.mp4"):
+        s = s[:-7]
+    elif low_ext.endswith((".png", ".mp4")):
         s = s[:-4]
     s = _REGION_TAG_RE.sub("", s).strip()
     lower = s.lower()
@@ -228,42 +231,62 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
     async def sync_system_libretro_tree(self, client: Any, sys_key: str) -> Dict[str, List[str]]:
         """
         Fetch and cache the exact `.png` filenames in `Named_Boxarts`, `Named_Titles`, and `Named_Snaps`
-        for `sys_key` from `api.github.com/repos/libretro-thumbnails/{repo}/git/trees/master`.
+        for `sys_key` from `api.github.com/repos/libretro-thumbnails/{repo}/git/trees/master`, plus
+        official EmuMovies `.mp4` gameplay snaps in `Video_Snaps` from `archive.org/metadata/{archive_video_repo}/files`.
         """
         canon = resolve_canonical_system(sys_key)
+        smeta = RETRO_SYSTEM_CATALOG.get(canon) or RETRO_SYSTEM_CATALOG["nes"]
+        repo = smeta.get("libretro_repo") or "Nintendo_-_Nintendo_Entertainment_System"
+        archive_video_repo = str(smeta.get("archive_video_repo") or "").strip()
+
         tstore = self._get_tree_store(canon)
         cached = tstore.load()
         folders = (cached.get("metadata") or {}).get("folders")
-        if isinstance(folders, dict) and (
+        has_pngs = isinstance(folders, dict) and bool(
             folders.get("Named_Boxarts") or folders.get("Named_Titles") or folders.get("Named_Snaps")
-        ):
-            return folders
+        )
+        has_videos = isinstance(folders, dict) and ("Video_Snaps" in folders or not archive_video_repo)
+        if has_pngs and has_videos:
+            return folders  # type: ignore[return-value]
 
-        smeta = RETRO_SYSTEM_CATALOG.get(canon) or RETRO_SYSTEM_CATALOG["nes"]
-        repo = smeta.get("libretro_repo") or "Nintendo_-_Nintendo_Entertainment_System"
         result_folders: Dict[str, List[str]] = {
-            "Named_Boxarts": [],
-            "Named_Titles": [],
-            "Named_Snaps": [],
+            "Named_Boxarts": list((folders or {}).get("Named_Boxarts") or []) if isinstance(folders, dict) else [],
+            "Named_Titles": list((folders or {}).get("Named_Titles") or []) if isinstance(folders, dict) else [],
+            "Named_Snaps": list((folders or {}).get("Named_Snaps") or []) if isinstance(folders, dict) else [],
+            "Video_Snaps": list((folders or {}).get("Video_Snaps") or []) if isinstance(folders, dict) else [],
         }
         try:
-            root_url = f"https://api.github.com/repos/libretro-thumbnails/{repo}/git/trees/master"
-            resp = await client.get(root_url, timeout=6.0)
-            if resp.status_code == 200:
-                tree_nodes = resp.json().get("tree") or []
-                for node in tree_nodes:
-                    folder_name = str(node.get("path") or "")
-                    sha = str(node.get("sha") or "")
-                    if folder_name in result_folders and sha:
-                        sub_url = f"https://api.github.com/repos/libretro-thumbnails/{repo}/git/trees/{sha}"
-                        sub_resp = await client.get(sub_url, timeout=7.0)
-                        if sub_resp.status_code == 200:
-                            files = [
-                                str(item.get("path"))
-                                for item in (sub_resp.json().get("tree") or [])
-                                if str(item.get("path") or "").endswith(".png")
-                            ]
-                            result_folders[folder_name] = files
+            if not has_pngs:
+                root_url = f"https://api.github.com/repos/libretro-thumbnails/{repo}/git/trees/master"
+                resp = await client.get(root_url, timeout=6.0)
+                if resp.status_code == 200:
+                    tree_nodes = resp.json().get("tree") or []
+                    for node in tree_nodes:
+                        folder_name = str(node.get("path") or "")
+                        sha = str(node.get("sha") or "")
+                        if folder_name in ("Named_Boxarts", "Named_Titles", "Named_Snaps") and sha:
+                            sub_url = f"https://api.github.com/repos/libretro-thumbnails/{repo}/git/trees/{sha}"
+                            sub_resp = await client.get(sub_url, timeout=7.0)
+                            if sub_resp.status_code == 200:
+                                files = [
+                                    str(item.get("path"))
+                                    for item in (sub_resp.json().get("tree") or [])
+                                    if str(item.get("path") or "").endswith(".png")
+                                ]
+                                result_folders[folder_name] = files
+
+            if archive_video_repo and not result_folders["Video_Snaps"]:
+                ia_url = f"https://archive.org/metadata/{archive_video_repo}/files"
+                ia_resp = await client.get(ia_url, timeout=7.5)
+                if ia_resp.status_code == 200:
+                    ia_files = ia_resp.json().get("result") or []
+                    mp4_files = [
+                        str(item.get("name"))
+                        for item in ia_files
+                        if isinstance(item, dict) and str(item.get("name") or "").endswith(".mp4")
+                    ]
+                    result_folders["Video_Snaps"] = mp4_files
+
             total_files = sum(len(v) for v in result_folders.values())
             if total_files > 0:
                 primary_tokens = (
@@ -273,11 +296,12 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                 )[:500]
                 tstore.save(
                     tokens=primary_tokens,
-                    metadata={"repo": repo, "folders": result_folders},
+                    metadata={"repo": repo, "archive_video_repo": archive_video_repo, "folders": result_folders},
                 )
                 logger.info(
-                    "[REFERENTIAL:libretro] Indexed %d verified PNG assets for system '%s' (%s)",
+                    "[REFERENTIAL:libretro] Indexed %d verified assets (%d video snaps) for system '%s' (%s)",
                     total_files,
+                    len(result_folders["Video_Snaps"]),
                     canon,
                     repo,
                 )
@@ -294,22 +318,23 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
     ) -> Dict[str, Optional[str]]:
         """
         Match `game_title` against the cached Libretro file tree for `sys_key` and return
-        verified HTTP 200 URLs for `boxart`, `title`, and `snap` with regional priority
-        `(France) -> (Europe) -> (World) -> (USA)`.
+        verified HTTP 200 URLs for `boxart`, `title`, `snap`, and `video` (EmuMovies gameplay MP4)
+        with regional priority `(France) -> (Europe) -> (World) -> (USA)`.
         """
         canon = resolve_canonical_system(sys_key)
         smeta = RETRO_SYSTEM_CATALOG.get(canon) or RETRO_SYSTEM_CATALOG["nes"]
         repo = smeta.get("libretro_repo") or "Nintendo_-_Nintendo_Entertainment_System"
+        archive_video_repo = str(smeta.get("archive_video_repo") or "").strip()
         folders = await self.sync_system_libretro_tree(client, canon)
         target_key = normalize_game_lookup_key(game_title)
         if not target_key:
-            return {"boxart": None, "title": None, "snap": None}
+            return {"boxart": None, "title": None, "snap": None, "video": None}
 
         # Also prepare base key without subtitle (before ':' or ' - ')
         short_title = re.split(r"[:\-–]", game_title)[0].strip()
         short_key = normalize_game_lookup_key(short_title) if len(short_title) >= 4 else target_key
 
-        out: Dict[str, Optional[str]] = {"boxart": None, "title": None, "snap": None}
+        out: Dict[str, Optional[str]] = {"boxart": None, "title": None, "snap": None, "video": None}
         folder_map = {
             "boxart": "Named_Boxarts",
             "title": "Named_Titles",
@@ -323,6 +348,8 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
             exact_matches: List[Tuple[int, str]] = []
             prefix_matches: List[Tuple[int, str]] = []
             for fname in file_list:
+                if "virtual console" in fname.lower():
+                    continue
                 fkey = normalize_game_lookup_key(fname)
                 if not fkey:
                     continue
@@ -340,6 +367,29 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                     f"https://raw.githubusercontent.com/libretro-thumbnails/{repo}/master/"
                     f"{folder_name}/{encoded}"
                 )
+
+        video_list = folders.get("Video_Snaps") or []
+        if archive_video_repo and video_list:
+            v_exact: List[Tuple[int, str]] = []
+            v_prefix: List[Tuple[int, str]] = []
+            for vname in video_list:
+                vkey = normalize_game_lookup_key(vname)
+                if not vkey:
+                    continue
+                ia_bonus = 5 if vname.lower().endswith(".ia.mp4") else 0
+                base_score = score_libretro_filename_for_lang(vname, lang) + ia_bonus
+                if vkey == target_key or (short_key and vkey == short_key):
+                    v_exact.append((base_score, vname))
+                elif len(target_key) >= 5 and (vkey.startswith(target_key) or target_key.startswith(vkey)):
+                    v_prefix.append((base_score - 15, vname))
+            v_pool = v_exact if v_exact else v_prefix
+            if v_pool:
+                v_pool.sort(key=lambda item: item[0], reverse=True)
+                best_vname = v_pool[0][1]
+                out["video"] = (
+                    f"https://archive.org/download/{archive_video_repo}/{urllib.parse.quote(best_vname)}"
+                )
+
         return out
 
     async def harvest_wikidata_games(
@@ -349,8 +399,8 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         genre_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Query Wikidata SPARQL for strictly verified Video Games (`wd:Q7889`) released on
-        platform `sys_key` (`wdt:P400`) and matching `genre_key` (`wdt:P136/wdt:P279*`),
+        Query Wikidata SPARQL (or CirrusSearch fallback) for strictly verified Video Games (`wd:Q7889`)
+        released on platform `sys_key` (`wdt:P400`) and matching `genre_key` (`wdt:P136/wdt:P279*`),
         returning localized titles (`fr`, `en`, `es`), year, and Wikipedia sitelinks.
         """
         canon_sys = resolve_canonical_system(sys_key)
@@ -358,7 +408,8 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         cache_bucket = f"{canon_sys}:{canon_genre or 'all'}"
 
         data = self.store.load()
-        by_bucket = (data.get("metadata") or {}).get("by_system_genre") or {}
+        meta = data.get("metadata") or {}
+        by_bucket = (meta.get("by_system_genre") or {}) if meta.get("schema_version") == 2 else {}
         cached_list = by_bucket.get(cache_bucket)
         if isinstance(cached_list, list) and len(cached_list) >= 5:
             return cached_list
@@ -367,12 +418,17 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         platform_qid = smeta.get("wikidata_qid") or "Q172742"
         gmeta = GAME_GENRE_CATALOG.get(canon_genre) if canon_genre else None
         genre_qid = gmeta.get("wikidata_qid") if gmeta else None
-
-        genre_clause = (
-            f"?game wdt:P136/wdt:P279* wd:{genre_qid} . "
-            if genre_qid
-            else ""
+        genre_qids: List[str] = (
+            list(gmeta.get("wikidata_qids") or ([genre_qid] if genre_qid else []))
+            if gmeta
+            else []
         )
+
+        if genre_qids:
+            values_str = " ".join(f"wd:{q}" for q in genre_qids if q)
+            genre_clause = f"VALUES ?targetGenre {{ {values_str} }} ?game wdt:P136/wdt:P279* ?targetGenre . "
+        else:
+            genre_clause = ""
 
         sparql = (
             "SELECT DISTINCT ?game ?titleFr ?titleEn ?year ?frTitle ?enTitle WHERE { "
@@ -438,20 +494,27 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         # Fallback to Wikidata MediaWiki CirrusSearch API (`www.wikidata.org/w/api.php`)
         # when `query.wikidata.org/sparql` is blocked by a proxy/VPN (HTTP 403) or times out.
         if not games_by_qid:
-            await self._harvest_via_wikidata_cirrus_api(
-                client,
-                canon_sys=canon_sys,
-                canon_genre=canon_genre,
-                platform_qid=platform_qid,
-                genre_qid=genre_qid,
-                games_by_qid=games_by_qid,
-            )
+            target_qids = genre_qids if genre_qids else [None]
+            for g_qid in target_qids:
+                await self._harvest_via_wikidata_cirrus_api(
+                    client,
+                    canon_sys=canon_sys,
+                    canon_genre=canon_genre,
+                    platform_qid=platform_qid,
+                    genre_qid=g_qid,
+                    games_by_qid=games_by_qid,
+                )
+                if len(games_by_qid) >= 40:
+                    break
 
         harvested = list(games_by_qid.values())
         if harvested:
             by_bucket[cache_bucket] = harvested
             tokens = [f"{canon_sys}:{g['qid']}" for g in harvested]
-            self.store.save(tokens=tokens, metadata={"by_system_genre": by_bucket})
+            self.store.save(
+                tokens=tokens,
+                metadata={"schema_version": 2, "by_system_genre": by_bucket},
+            )
             logger.info(
                 "[REFERENTIAL:wikidata] Harvested %d verified '%s' games for genre '%s'",
                 len(harvested),
@@ -609,6 +672,61 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
         "cps3": ["sfiii", "jojo", "redearth"],
     }
 
+    _GENRE_SEARCH_STEMS: Dict[str, Dict[str, List[str]]] = {
+        "fighting": {
+            "neogeo": [
+                "kof", "samsho", "garou", "fatal", "aof", "lastblad", "whp", "svc",
+                "breakers", "kabukikl", "ninjamas", "rotd", "wakuwak7", "kizuna",
+                "savagere", "matrim", "rbff",
+            ],
+            "cps1": ["sf2", "slammast"],
+            "cps2": ["sfa", "msh", "vsav", "dstlk", "xmcota", "xmvsf", "mshvsf", "mvsc", "cybots", "ringdest"],
+            "cps3": ["sfiii", "jojo", "redearth"],
+            "all": ["sf2", "sfa", "kof", "samsho", "mk", "tekken", "vsav", "garou", "fatal", "soulcal"],
+        },
+        "beatemup": {
+            "neogeo": ["sengoku", "mutnat", "burningf", "roboarmy", "eightman"],
+            "cps1": ["ffight", "dino", "punisher", "captcomm", "knights", "wof", "kod"],
+            "cps2": ["avsp", "ddtod", "ddsom", "batcir", "armwar"],
+            "all": ["ffight", "ddonpach", "dino", "punisher", "captcomm", "tmnt", "simpsons", "xmen", "avsp", "sengoku"],
+        },
+        "runandgun": {
+            "neogeo": ["mslug", "shocktro", "cyberlip", "nam1975", "spinmast", "tophuntr"],
+            "cps1": ["mercs", "strider", "ghouls", "willow"],
+            "cps2": ["progear"],
+            "all": ["mslug", "contra", "sunset", "shocktro", "gunforce", "mercs", "greenber"],
+        },
+        "shootemup": {
+            "neogeo": ["pulstar", "blazstar", "viewpoin", "lastreso", "twinspri", "aerofgt", "strikers", "preisle2"],
+            "cps1": ["1941", "varth", "cawing", "forgottn", "unsquad"],
+            "cps2": ["1944", "gigawing", "marsmatr", "19xx", "EcoFight"],
+            "all": ["1942", "1943", "raiden", "rtypes", "gradius", "dodonpach", "pulstar", "blazstar", "gigawing"],
+        },
+        "platform": {
+            "neogeo": ["tophuntr", "spinmast", "maglord", "bjourney", "zuon"],
+            "cps1": ["ghouls", "strider", "megaman", "nemo", "mtwins", " Willow"],
+            "cps2": ["megaman2"],
+            "all": ["snowbros", "bublbobl", "rainbow", "newzeal", "ghouls", "toki", "rastan", "shinobi"],
+        },
+        "puzzle": {
+            "neogeo": ["pbobble", "magicald", "joyjoy", "moneyid", "puzzledp", "gururin", "panicbom"],
+            "cps1": ["pnickj", "qad"],
+            "cps2": ["spf2t", "spuzzle", "puzzloop"],
+            "all": ["pbobble", "tetris", "columns", "klax", "spf2t", "puyo", "pang"],
+        },
+        "sports": {
+            "neogeo": ["windjamm", "ssideki", "turfmast", "neocup98", "2020bb", "strhoop", "stakwin"],
+            "all": ["windjamm", "nbajam", "ssideki", "turfmast", "trackfld", "archrivl", "blitz"],
+        },
+        "racing": {
+            "neogeo": ["overtop", "neodrift", "thrashr", "ridhero"],
+            "all": ["outrun", "daytona", "segarally", "chashq", "hangon", "cruisnu", "overtop", "neodrift"],
+        },
+        "maze": {
+            "all": ["pacman", "mspacman", "galaga", "digdug", "pengo", "bomberman", "frogger"],
+        },
+    }
+
     def __init__(self) -> None:
         self.store = LiveReferentialStore(self.source_id, ttl_seconds=43200)
 
@@ -701,7 +819,38 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             for s in (criteria.systems or [])
             if s and s.lower() != "all"
         ]
+        req_genres = [
+            resolve_canonical_genre("games", g)
+            for g in (criteria.genres or [])
+            if g and g.lower() != "all"
+        ]
         specific_sys = next((s for s in req_sys if s in self._SYSTEM_SEARCH_STEMS), None)
+        chosen_genre = random.choice(req_genres) if req_genres else None
+
+        if chosen_genre and chosen_genre in self._GENRE_SEARCH_STEMS:
+            g_map = self._GENRE_SEARCH_STEMS[chosen_genre]
+            stems_pool = list(g_map.get(specific_sys or "all") or g_map.get("all") or [])
+            if stems_pool:
+                bucket_key = f"{specific_sys or 'arcade'}:{chosen_genre}"
+                by_sg = dict(((ref_data.get("metadata") or {}).get("by_system_genre")) or {})
+                sg_tokens: List[str] = list(by_sg.get(bucket_key) or [])
+                unseen_sg = [r for r in sg_tokens if f"games_adb_{r}" not in seen_ids]
+                if len(unseen_sg) < max(6, count):
+                    random.shuffle(stems_pool)
+                    for stem in stems_pool[:3]:
+                        fresh = await self._harvest_from_lista_mame(client, stem.strip())
+                        for rom in fresh:
+                            if rom not in sg_tokens:
+                                sg_tokens.append(rom)
+                        if len([r for r in sg_tokens if f"games_adb_{r}" not in seen_ids]) >= max(8, count * 2):
+                            break
+                    by_sg[bucket_key] = sg_tokens
+                    self.store.save(tokens=sg_tokens, metadata={"by_system_genre": by_sg})
+                    unseen_sg = [r for r in sg_tokens if f"games_adb_{r}" not in seen_ids]
+                pool = unseen_sg if unseen_sg else sg_tokens
+                if pool:
+                    return random.sample(pool, k=min(len(pool), max(6, count)))
+
         if specific_sys:
             by_system = dict(((ref_data.get("metadata") or {}).get("by_system")) or {})
             sys_tokens: List[str] = list(by_system.get(specific_sys) or [])

@@ -167,3 +167,49 @@ async def fetch_imdb_suggestion_items(
     except Exception as exc:
         logger.debug("IMDb suggestion lookup failed for %s: %s", query, exc)
         return []
+
+
+async def fetch_dailymotion_trailer_and_stills(
+    client: httpx.AsyncClient,
+    query: str,
+    max_snapshots: int = 4,
+) -> Tuple[Optional[str], List[str]]:
+    """
+    Query Dailymotion's public keyless REST API (`https://api.dailymotion.com/videos`)
+    to retrieve a clean HD trailer page URL (`url`, supported by `yt-dlp`) and up to
+    `max_snapshots` distinct 720p widescreen video stills (`thumbnail_720_url`).
+    """
+    clean_q = (query or "").strip()
+    if not clean_q:
+        return None, []
+    try:
+        resp = await client.get(
+            "https://api.dailymotion.com/videos",
+            params={
+                "search": clean_q,
+                "fields": "id,title,url,duration,thumbnail_720_url",
+                "limit": str(max(4, max_snapshots + 2)),
+                "longer_than": "1",
+                "shorter_than": "6",
+            },
+            timeout=3.8,
+        )
+        if resp.status_code != 200:
+            return None, []
+        items = resp.json().get("list") or []
+        trailer_url: Optional[str] = None
+        stills: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            v_url = str(item.get("url") or "").strip()
+            if v_url.startswith("http") and trailer_url is None:
+                trailer_url = v_url
+            thumb = str(item.get("thumbnail_720_url") or "").strip()
+            if thumb.startswith("http") and thumb not in stills and len(stills) < max_snapshots:
+                stills.append(thumb)
+        return trailer_url, stills
+    except Exception as exc:
+        logger.debug("Dailymotion trailer lookup failed for %s: %s", clean_q, exc)
+        return None, []
+
