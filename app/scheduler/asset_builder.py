@@ -41,6 +41,7 @@ from dmd_gif_converter import (
 )
 from src.engine.conversion.core import DEFAULT_PARAMS, process_file
 
+DEFAULT_PARAMS["font_name"] = None
 install_ipv4_preference()
 
 logger = logging.getLogger("dmd_showcase.converter")

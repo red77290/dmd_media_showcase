@@ -39,6 +39,7 @@ from app.infrastructure.scrapers.referential_store import (
     anilist_referential_strategy,
     arcadeitalia_referential_strategy,
     jikan_referential_strategy,
+    libretro_wikidata_referential_strategy,
     tvmaze_referential_strategy,
 )
 from app.infrastructure.scrapers.registry import scraper_registry
@@ -249,6 +250,7 @@ async def sync_live_referentials() -> Dict[str, Any]:
     """Force real-time synchronization of live upstream scraper referentials (`./data/referentials/*.json`)."""
     strategies = (
         arcadeitalia_referential_strategy,
+        libretro_wikidata_referential_strategy,
         jikan_referential_strategy,
         anilist_referential_strategy,
         tvmaze_referential_strategy,
@@ -258,20 +260,23 @@ async def sync_live_referentials() -> Dict[str, Any]:
         for strat in strategies:
             ref = await strat.sync_referential(client, force=True)
             summary[strat.source_id] = len(ref.get("tokens") or [])
+    default_lang = str(server_config_store.get_all().get("default_lang") or "fr")
+    await showcase_mqtt_gateway.publish_catalog_referentials(lang=default_lang)
     return {"status": "synced", "referential_counts": summary}
 
 
 @app.get("/api/v1/{domain}/filters", tags=["Discovery"])
+@app.get("/api/v1/{domain}/referential", tags=["Discovery"])
 async def get_domain_filters(
     domain: DomainType,
     lang: str = Query(default="fr", description="Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"),
 ) -> Dict[str, object]:
-    """Return live filter categories, systems, genres, decades, and `[Primary, Fallback]` DDD sources."""
+    """Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources."""
     filters = scraper_registry.available_filters(domain=domain, lang=lang)
     return {
         "domain": domain,
         "languages": ["fr", "en", "es", "de", "it", "ja"],
-        "text_scroll_speeds": ["slow", "normal", "fast"],
+        "text_scroll_speeds": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "slow", "normal", "fast", "turbo"],
         "video_modes": ["auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"],
         "video_types": ["any", "opening", "ending", "pv", "trailer"],
         **filters,

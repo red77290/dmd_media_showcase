@@ -1,70 +1,71 @@
-# 🎬🎮 DMD Media Showcase Server (`dmd-media-showcase`)
+# DMD Media Showcase Server (V3.0)
 
-> **[🇫🇷 Lire la documentation en Français (README_FR.md)](README_FR.md)**
+🇬🇧 English | 🇫🇷 [Français](README_FR.md) | 🇪🇸 [Español](README_ES.md)
 
-**`dmd-media-showcase`** is an open-source, self-hosted, stateless Dockerized server that transforms promotional video trailers, openings, and artwork from **Retro Games**, **Movies**, **TV Series**, and **Anime** into ultra-vibrant, zero-latency LED matrix animations for **[ArcadeMatrix (ESP32 / ESP32-S3)](https://github.com/red77290/ArcadeMatrix)** and **[ArcadeMatrix_RPi (Raspberry Pi)](https://github.com/red77290/ArcadeMatrix_RPi)**.
+[![Telegram Community](https://img.shields.io/badge/Telegram-Join%20Community-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/+DrSdAO8UMUViNmE0)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Project-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/red1l)
 
-Powered by **[`dmd-gif-converter` v8.0](https://github.com/red77290/dmd_gif_converter)**, it performs AI highlight detection (`MomentDetector`), automatic action-crop (`AutoActionCrop`), and LED colorimetric boost (`SmartColorBoost`) inside a strictly bounded CPU worker pool.
+💬 **Telegram Community:** [https://t.me/+DrSdAO8UMUViNmE0](https://t.me/+DrSdAO8UMUViNmE0)  
+☕ **Support the Project on Ko-fi:** [https://ko-fi.com/red1l](https://ko-fi.com/red1l)
 
----
-
-## ✨ Key Architectural Highlights
-
-1. **4 Dedicated Multilingual Domains (`FR`, `EN`, `ES`, `DE`, `IT`):**
-   - 🕹️ **Retro & Arcade Games (`/api/v1/games`):** ScreenScraper.fr (FR/EN/ES/DE/IT) + Steam Store Public API + Built-in Arcade Classics Catalog.
-   - 🎬 **Cinema & Blockbusters (`/api/v1/movies`):** TMDB API v3 (`fr-FR`, `en-US`, `es-ES`, etc.) + Built-in Cult Cinema Catalog.
-   - 📺 **TV Series (`/api/v1/series`):** TMDB TV + TheTVDB v4 + TVMaze Public API + Built-in Cult Series Catalog.
-   - ⛩️ **Anime & Manga (`/api/v1/anime`):** AnimeThemes.moe (Openings/Endings) + Jikan (MyAnimeList v4) + TMDB Localized Synopses + Built-in Anime Catalog.
-2. **100% Zero-Config Out-of-the-Box:**
-   - Even with **zero API keys configured**, all 4 domains work immediately using free keyless APIs (Steam, TVMaze, AnimeThemes, Jikan) and rich built-in multilingual curated catalogs.
-3. **Engine-Encapsulated 2-Step LAN Protocol (Zero Webhook Leakage):**
-   - DMD engines never expose HTTP server webhooks. Instead, each engine uses 2 outgoing LAN calls:
-     1. **Proactive Session Registration (`POST /api/v1/{domain}/session`):** Sent on DMD boot or WebUI save with the exact `count = items_per_rotation` (e.g. `10` items).
-     2. **Fast Pre-Rotation Check (`GET /api/v1/{domain}/batch?session_id=...`):** `< 2 ms` LAN check (*"Are you ready?"*) right before the engine's rotation turn.
-4. **Bounded CPU Worker Pool & Elastic Queue (`MAX_CONCURRENT_JOBS`):**
-   - Video encoding runs in isolated sub-processes (`ProcessPoolExecutor`, `os.nice(10)`, `FFMPEG_THREADS_PER_JOB=1`) while the FastAPI event loop stays 100% responsive (`< 2 ms`).
-   - If many DMDs request videos on a modest VM/Raspberry Pi, jobs queue peacefully in FIFO order without ever overheating or crashing the host: DMDs simply skip a rotation turn if their batch is still `"warming"`.
-5. **Stateless `tmpfs` Cache & Dynamic $O(1)$ Duration Truncation:**
-   - No database, no persistent disk bloat. When `CurrentBatch` is served, `NextBatch` (`N` new items) is prepared one step ahead and expired batches are purged automatically.
-   - Changing the video duration slider on a DMD (`?max_duration_s=5`) truncates the `.rgb565.stream` or `.gif` payload on the fly in $O(1)$ **without re-running FFmpeg**.
-6. **Future-Ready On-Demand & Voice Assistant Priority Queue:**
-   - Built-in `POST /api/v1/{domain}/on-demand` endpoint with `HIGH_ON_DEMAND` priority to support upcoming Google Home / Home Assistant / Webhook voice triggers.
+**DMD Media Showcase Server** is a self-hosted, zero-repetition media discovery, transcoding, and real-time UDP/MQTT streaming microservice designed for **[ArcadeMatrix (ESP32 / ESP32-S3)](https://github.com/red77290/ArcadeMatrix)** and **ArcadeMatrix_RPi** HUB75 LED matrix displays.
 
 ---
 
-## 🚀 Quick Start (Docker Compose)
+## ✨ Key Features
+
+- **4 Showcase Domains (`games`, `movies`, `series`, `anime`)**:
+  - **Retro Games**: 30 Arcade, Console, Handheld, and Home Computer systems (`ScreenScraper` Primary $\to$ `ArcadeItalia` MAME HTTPS + `Libretro+Wikidata` Console SPARQL Fallback).
+  - **Movies**: Classic & Blockbuster Cinema (`TMDB` Primary $\to$ `Apple iTunes` Fallback).
+  - **TV Series**: Cult & Modern TV Shows (`TMDB` Primary $\to$ `TVMaze` Fallback).
+  - **Anime / Manga**: Creditless Openings (`OP`), Endings (`ED`), and Trailers (`Jikan + AnimeThemes` Primary $\to$ `AniList` Fallback).
+- **Dynamic Consolidated Referentials**: Exposes localized (`fr`, `en`, `es`, `de`, `it`), source-agnostic category referentials (`GET /api/v1/{domain}/filters?lang=fr` & MQTT `dmd_showcase/catalog/{domain}/referential`) with relational `System -> Supported Genres & Decades` mapping so DMD WebUIs never hardcode scraper categories.
+- **Real-Time MQTT Control Plane (`:1883`) + `ffmpeg -re` UDP `DMDF` Streaming**:
+  - Zero-config embedded MQTT 3.1.1 broker (`retain=True` + `Last Will and Testament`).
+  - Hardware-timed `ffmpeg -re` UDP `DMDF` chunk streaming directly to the DMD's LAN IP (`client_ip` / `udp_ip`, bypassing Docker bridge NAT).
+- **Strict Consume-Once & `N+1` Background Pipelining**:
+  - Tracks every presented title in `./data/seen_history.json` (zero repetition until catalog exhaustion).
+  - Pre-builds item `N+1` in the background as soon as item `N` starts displaying its Info Card (`start_card`), and purges item `N` from disk immediately on `stream_eof`.
+- **Powered by `dmd_gif_converter`**: Full `Auto-Action` motion saliency, `Smart Color Boost`, Lanczos + unsharp downscaling, and top-to-bottom sub-pixel scrolling panoramas (`Jacket`, `Marquee`, `Snapshots`) across all Landscape (`128x32`, `128x64`, `256x64`), Square (`64x64`), and TATE (`64x128`, `32x128`) resolutions.
+
+---
+
+## 🚀 Quick Installation & Short Example
+
+### Option 1: Docker Compose (Recommended for Raspberry Pi / NAS / Home-Lab)
 
 ```bash
 git clone https://github.com/red77290/dmd_media_showcase.git
 cd dmd_media_showcase
-cp .env.example .env   # Optional: add free TMDB_API_KEY or SCREENSCRAPER credentials
-docker compose up -d
+docker compose up -d --build
 ```
 
-Verify the server is running:
+- **Web Admin Dashboard**: `http://<server-ip>:8080/` (configure optional TMDB / ScreenScraper credentials & reset `seen_history.json`)
+- **Interactive Swagger UI**: `http://<server-ip>:8080/docs`
+- **Embedded MQTT Broker**: `mqtt://<server-ip>:1883`
+
+### Option 2: Portable Standalone Bundle (Windows / macOS)
+
+Download the latest portable archive (`DMD_Media_Showcase_Windows_x64.zip` or `DMD_Media_Showcase_macOS.zip`) from **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)**, extract it anywhere, and launch `dmd-media-showcase` (`0` host Python or FFmpeg installation required).
+
+### Quick Verification Example
+
 ```bash
-curl http://localhost:8080/api/v1/health
+# 1. Check server health, active worker pool, and MQTT broker port
+curl -s http://localhost:8080/api/v1/health | jq .
+
+# 2. Fetch consolidated French referential for Retro Games (Systems -> Genres & Decades)
+curl -s "http://localhost:8080/api/v1/games/filters?lang=fr" | jq '.systems[0], .genres[:3]'
 ```
 
 ---
 
-## 📚 Detailed Documentation
+## 📚 Documentation & API Specifications
 
-| Guide | English | Français |
-| :--- | :--- | :--- |
-| **Scrapers & Free API Keys Guide** | [`docs/SCRAPERS_GUIDE.md`](docs/SCRAPERS_GUIDE.md) | [`docs/SCRAPERS_GUIDE_FR.md`](docs/SCRAPERS_GUIDE_FR.md) |
-| **Deployment, CPU Sizing & Multi-DMD Scaling** | [`docs/DEPLOYMENT_AND_SIZING.md`](docs/DEPLOYMENT_AND_SIZING.md) | [`docs/DEPLOYMENT_AND_SIZING_FR.md`](docs/DEPLOYMENT_AND_SIZING_FR.md) |
-| **REST API, Rotation Protocol & Binary `.rgb565.stream` Spec** | [`docs/API_AND_PROTOCOL.md`](docs/API_AND_PROTOCOL.md) | [`docs/API_AND_PROTOCOL_FR.md`](docs/API_AND_PROTOCOL_FR.md) |
-
----
-
-## 🧪 Local Development & Testing
-
-```bash
-pip install -e ".[dev]"
-pytest
-```
-
-## 📄 License
-
-MIT License — Part of the **ArcadeMatrix** open-source ecosystem.
+| Document | 🇬🇧 English | 🇫🇷 Français | 🇪🇸 Español |
+| :--- | :--- | :--- | :--- |
+| **QuickStart & Deployment Guide** | [docs/QUICKSTART.md](docs/QUICKSTART.md) | [docs/QUICKSTART_FR.md](docs/QUICKSTART_FR.md) | [docs/QUICKSTART_ES.md](docs/QUICKSTART_ES.md) |
+| **DDD Architecture & Streaming Pipeline** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE_FR.md](docs/ARCHITECTURE_FR.md) | [docs/ARCHITECTURE_ES.md](docs/ARCHITECTURE_ES.md) |
+| **Developer & Scraper Strategy Guide** | [docs/DEVELOPER.md](docs/DEVELOPER.md) | [docs/DEVELOPER_FR.md](docs/DEVELOPER_FR.md) | [docs/DEVELOPER_ES.md](docs/DEVELOPER_ES.md) |
+| **OpenAPI 3.1 REST Specification** | [docs/openapi.yaml](docs/openapi.yaml) / [docs/openapi.json](docs/openapi.json) | — | — |
+| **AsyncAPI 2.6 MQTT & UDP Specification** | [docs/asyncapi.yaml](docs/asyncapi.yaml) | — | — |

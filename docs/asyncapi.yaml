@@ -1,0 +1,311 @@
+asyncapi: 2.6.0
+info:
+  title: DMD Media Showcase Server — MQTT 3.1.1 & UDP DMDF Streaming Protocol
+  version: 3.0.0
+  description: |
+    Asynchronous Control & Data Plane specification for **DMD Media Showcase Server (V3.0)**,
+    powering **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** HUB75 LED panels.
+
+    ### Protocol Highlights
+    - **MQTT 3.1.1 Control Plane (`:1883`)**: Uses `retain=True` for server availability, consolidated
+      scraper referentials, DMD client configuration, and per-domain prepared card slots, plus `LWT`
+      (Last Will and Testament) for instant crash detection.
+    - **Docker Bridge NAT Bypass (`client_ip` / `udp_ip`)**: DMD clients probe and declare their real
+      LAN IPv4 address so `ffmpeg -re` streams UDP `DMDF` packets directly to the physical panel.
+    - **`N+1` Background Pipelining**: Publishing `start_card` immediately marks item `N` consumed in
+      `seen_history.json` and starts preparing item `N+1` in the background while item `N` plays.
+  contact:
+    name: ArcadeMatrix Community
+    url: https://t.me/+DrSdAO8UMUViNmE0
+  license:
+    name: MIT
+
+servers:
+  embeddedMqttBroker:
+    url: mqtt://{host}:1883
+    protocol: mqtt
+    description: Zero-config Embedded MQTT 3.1.1 Broker hosted inside `dmd-media-showcase` (or External Mosquitto).
+    variables:
+      host:
+        default: localhost
+  udpDmdfStreamer:
+    url: udp://{client_ip}:{udp_port}
+    protocol: udp
+    description: Real-time `ffmpeg -re` UDP `DMDF` RGB565LE frame chunk stream sent to the DMD client.
+    variables:
+      client_ip:
+        default: 192.168.1.50
+      udp_port:
+        default: "4210"
+
+channels:
+  dmd_showcase/server/status:
+    description: Server availability status (`retain=True`) with automatic `LWT` (`online: false`) on ungraceful disconnect.
+    subscribe:
+      summary: Receive server online/offline status
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/ServerStatusMessage'
+
+  dmd_showcase/catalog/{domain}/referential:
+    description: Consolidated localized scraper referential (`systems`, `genres`, `decades`, `sources`) for a domain (`retain=True`).
+    parameters:
+      domain:
+        $ref: '#/components/parameters/DomainParam'
+    subscribe:
+      summary: Receive consolidated domain referential
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/CatalogReferentialMessage'
+
+  dmd_showcase/clients/{dmd_id}/config:
+    description: Retained DMD client geometry, LAN IP (`client_ip`), and per-domain filter criteria (`retain=True`).
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    publish:
+      summary: Publish DMD client configuration (`retain=True`)
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/ClientConfigMessage'
+
+  dmd_showcase/clients/{dmd_id}/{domain}/ready:
+    description: Retained Consume-Once slot state and pre-rendered Info Card (`poster_rgb565_b64` + localized synopsis) for `(dmd_id, domain)`.
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+      domain:
+        $ref: '#/components/parameters/DomainParam'
+    subscribe:
+      summary: Receive prepared showcase card when `ready: true`
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/SlotReadyMessage'
+
+  dmd_showcase/clients/{dmd_id}/events:
+    description: Real-time lifecycle commands sent by the DMD (`start_card`, `start_stream`, `stop_stream`).
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    publish:
+      summary: Trigger `start_card` (Consume-Once lock + `N+1` prep) or `start_stream` (`ffmpeg -re` UDP stream)
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+      message:
+        $ref: '#/components/messages/ClientEventMessage'
+
+  dmd_showcase/clients/{dmd_id}/stream_state:
+    description: Server-to-DMD stream lifecycle notifications (`stream_started`, `stream_eof`).
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    subscribe:
+      summary: Receive `stream_started` and `stream_eof` events
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+      message:
+        $ref: '#/components/messages/StreamStateMessage'
+
+components:
+  parameters:
+    DmdIdParam:
+      description: Unique DMD client identifier (e.g. `rpi_games`, `esp32_games`).
+      schema:
+        type: string
+    DomainParam:
+      description: Showcase media domain.
+      schema:
+        type: string
+        enum: [games, movies, series, anime]
+
+  messages:
+    ServerStatusMessage:
+      name: ServerStatusMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [online, version]
+        properties:
+          online:
+            type: boolean
+          version:
+            type: string
+          mode:
+            type: string
+            enum: [embedded, external]
+          port:
+            type: integer
+
+    CatalogReferentialMessage:
+      name: CatalogReferentialMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [domain, lang, genres, decades]
+        properties:
+          domain:
+            type: string
+            enum: [games, movies, series, anime]
+          lang:
+            type: string
+          systems:
+            type: array
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+                badge: { type: string }
+                is_arcade: { type: boolean }
+                genres:
+                  type: array
+                  items: { type: string }
+                decades:
+                  type: array
+                  items: { type: string }
+                sources:
+                  type: array
+                  items: { type: string }
+          genres:
+            type: array
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+          decades:
+            type: array
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+
+    ClientConfigMessage:
+      name: ClientConfigMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [width, height, lang]
+        properties:
+          dmd_id: { type: string }
+          client_ip:
+            type: string
+            description: Real LAN IPv4 of the DMD client (bypasses Docker bridge NAT `172.18.0.1`).
+          udp_ip:
+            type: string
+            description: Explicit target IPv4 for UDP `DMDF` packets.
+          width: { type: integer, example: 128 }
+          height: { type: integer, example: 32 }
+          lang: { type: string, example: fr }
+          domains:
+            type: object
+            additionalProperties:
+              type: object
+              properties:
+                systems: { type: string, example: "nes,snes" }
+                genres: { type: string, example: "platform" }
+                decades: { type: string, example: "1980s,1990s" }
+                text_scroll_speed:
+                  type: string
+                  description: "'1' (Slow) to '10' (Turbo, 160 px/s) or 'slow'|'normal'|'fast'|'turbo'."
+                  example: "5"
+                show_poster: { type: boolean, default: true }
+                show_synopsis: { type: boolean, default: true }
+                jacket_panorama: { type: boolean, default: true }
+                marquee_panorama: { type: boolean, default: false }
+                snapshot_panorama_count: { type: integer, default: 0 }
+                show_video: { type: boolean, default: true }
+                video_max_duration_s: { type: number, default: 8.0 }
+                video_fps: { type: integer, default: 15 }
+                video_mode: { type: string, default: auto_action }
+                color_boost: { type: boolean, default: true }
+
+    SlotReadyMessage:
+      name: SlotReadyMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [ready, item_id, domain]
+        properties:
+          ready: { type: boolean }
+          item_id: { type: string }
+          domain: { type: string }
+          card:
+            type: object
+            properties:
+              item_id: { type: string }
+              domain: { type: string }
+              title: { type: string }
+              year: { type: string }
+              badge: { type: string }
+              badge_color: { type: string }
+              subtitle: { type: string }
+              rating: { type: string }
+              synopsis: { type: string }
+              lang: { type: string }
+              poster_width: { type: integer }
+              poster_height: { type: integer }
+              poster_rgb565_b64: { type: string }
+              text_scroll_speed: { type: string }
+              has_panoramas: { type: boolean }
+              has_video: { type: boolean }
+              stream_frames: { type: integer }
+              stream_fps: { type: integer }
+              stream_duration_s: { type: number }
+
+    ClientEventMessage:
+      name: ClientEventMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [event, domain, item_id]
+        properties:
+          event:
+            type: string
+            enum: [start_card, start_stream, stop_stream]
+          domain:
+            type: string
+            enum: [games, movies, series, anime]
+          item_id:
+            type: string
+          client_ip:
+            type: string
+            description: Real LAN IPv4 of the DMD client for UDP streaming.
+          udp_ip:
+            type: string
+            description: Target IPv4 for UDP `DMDF` packets.
+          udp_port:
+            type: integer
+            description: UDP port bound by the DMD client receiver thread.
+
+    StreamStateMessage:
+      name: StreamStateMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [event, item_id, domain]
+        properties:
+          event:
+            type: string
+            enum: [stream_started, stream_eof]
+          item_id:
+            type: string
+          domain:
+            type: string

@@ -19,14 +19,15 @@ from app.portable_env import get_ffmpeg_binary
 
 logger = logging.getLogger("dmd_showcase.scrapers.youtube")
 
-# Always prefer clean 720p/1080p H.264/MP4 streams before falling back to lower resolutions
+# Always prefer clean 720p/1080p H.264/MP4 (`avc1`) streams and strictly exclude AV1 (`av01`)
+# so ARM64 / Docker containers without hardware AV1 decoders never fail on OpenCV/FFmpeg decode.
 HD_YTDLP_FORMAT = (
-    "bestvideo[ext=mp4][height<=1080][height>=720]+"
-    "bestaudio[ext=m4a]/"
-    "best[ext=mp4][height<=1080][height>=720]/"
-    "bestvideo[height<=1080][height>=720]/"
-    "best[ext=mp4][height<=1080]/"
-    "best"
+    "bestvideo[vcodec^=avc1][ext=mp4][height<=1080][height>=720]+bestaudio[ext=m4a]/"
+    "best[vcodec^=avc1][ext=mp4][height<=1080][height>=720]/"
+    "bestvideo[vcodec!*=av01][ext=mp4][height<=1080][height>=720]+bestaudio[ext=m4a]/"
+    "best[vcodec!*=av01][ext=mp4][height<=1080][height>=720]/"
+    "best[vcodec!*=av01][ext=mp4][height<=1080]/"
+    "best[vcodec!*=av01]"
 )
 
 
@@ -115,6 +116,8 @@ def extract_hd_youtube_clip_ytdlp(
         "60M",
         "--ffmpeg-location",
         ffmpeg_bin,
+        "-S",
+        "vcodec:h264,res:720,ext:mp4:m4a",
         "-f",
         HD_YTDLP_FORMAT,
         "--merge-output-format",
@@ -151,8 +154,10 @@ def extract_hd_youtube_clip_ytdlp(
             "45M",
             "--ffmpeg-location",
             ffmpeg_bin,
+            "-S",
+            "vcodec:h264,res:720,ext:mp4:m4a",
             "-f",
-            "best[ext=mp4][height<=1080][height>=720]/best[ext=mp4][height<=720]/best[ext=mp4]/best",
+            "best[vcodec^=avc1][ext=mp4][height<=1080][height>=720]/best[vcodec!*=av01][ext=mp4][height<=720]/best[vcodec!*=av01][ext=mp4]/best[vcodec!*=av01]",
             "-o",
             str(out_mp4),
             video_page_url,
