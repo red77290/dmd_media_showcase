@@ -49,6 +49,7 @@ class ServerConfigStore:
             "mqtt_port": int(os.environ.get("MQTT_PORT", "1883")),
             "mqtt_external_url": os.environ.get("MQTT_EXTERNAL_URL", ""),
             "default_lang": settings.default_lang or "fr",
+            "showcase_api_key": settings.showcase_api_key or "",
         }
 
     def _ensure_loaded(self) -> None:
@@ -100,6 +101,7 @@ class ServerConfigStore:
                 "mqtt_port",
                 "mqtt_external_url",
                 "default_lang",
+                "showcase_api_key",
             ):
                 if key in updates and updates[key] is not None:
                     self._data[key] = updates[key]

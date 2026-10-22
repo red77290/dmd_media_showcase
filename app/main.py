@@ -34,6 +34,13 @@ from app.config import settings
 from app.domain.entities import PanelGeometry
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
 from app.infrastructure.persistence import seen_repository, server_config_store
+from app.infrastructure.scrapers.http_utils import create_async_http_client
+from app.infrastructure.scrapers.referential_store import (
+    anilist_referential_strategy,
+    arcadeitalia_referential_strategy,
+    jikan_referential_strategy,
+    tvmaze_referential_strategy,
+)
 from app.infrastructure.scrapers.registry import scraper_registry
 from app.infrastructure.web_admin import ADMIN_DASHBOARD_HTML
 from app.models import (
@@ -129,6 +136,34 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def optional_api_key_security_middleware(request: Request, call_next):
+    """
+    Hybrid Home-Lab HTTP (insecure, zero-config for ESP32/RPi) & Scalable Online HTTPS/Token Guard:
+    - When `showcase_api_key` is empty (default Home-Lab mode): all HTTP/HTTPS requests are allowed.
+    - When `showcase_api_key` is configured (Online/Cloud deployment): `/api/v1/*` requests
+      (except `/api/v1/health`) must supply a matching `X-Showcase-Key` header,
+      `Authorization: Bearer <key>` header, or `?api_key=<key>` query parameter.
+    """
+    path = request.url.path
+    if path.startswith("/api/v1/") and path != "/api/v1/health":
+        expected_key = str(
+            server_config_store.get_all().get("showcase_api_key") or settings.showcase_api_key or ""
+        ).strip()
+        if expected_key:
+            hdr_key = (request.headers.get("x-showcase-key") or "").strip()
+            auth_hdr = (request.headers.get("authorization") or "").strip()
+            bearer_key = auth_hdr[7:].strip() if auth_hdr.lower().startswith("bearer ") else ""
+            q_key = (request.query_params.get("api_key") or "").strip()
+            if expected_key not in (hdr_key, bearer_key, q_key):
+                return Response(
+                    content='{"detail":"Unauthorized: valid X-Showcase-Key or Bearer token required."}',
+                    status_code=401,
+                    media_type="application/json",
+                )
+    return await call_next(request)
+
+
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def web_admin_dashboard() -> HTMLResponse:
@@ -209,6 +244,23 @@ async def reset_seen_history(
     }
 
 
+@app.post("/api/v1/admin/referentials/sync", tags=["System & Admin"])
+async def sync_live_referentials() -> Dict[str, Any]:
+    """Force real-time synchronization of live upstream scraper referentials (`./data/referentials/*.json`)."""
+    strategies = (
+        arcadeitalia_referential_strategy,
+        jikan_referential_strategy,
+        anilist_referential_strategy,
+        tvmaze_referential_strategy,
+    )
+    summary: Dict[str, int] = {}
+    async with create_async_http_client(timeout=6.0) as client:
+        for strat in strategies:
+            ref = await strat.sync_referential(client, force=True)
+            summary[strat.source_id] = len(ref.get("tokens") or [])
+    return {"status": "synced", "referential_counts": summary}
+
+
 @app.get("/api/v1/{domain}/filters", tags=["Discovery"])
 async def get_domain_filters(
     domain: DomainType,
@@ -263,6 +315,7 @@ async def claim_next_consume_once_item(
     domain: DomainType,
     background_tasks: BackgroundTasks,
     dmd_id: str = Query(default="default_dmd", description="DMD client identifier"),
+    client_id: Optional[str] = Query(default=None, description="Alias for dmd_id"),
     width: int = Query(default=128, ge=32, le=512),
     height: int = Query(default=32, ge=16, le=256),
     lang: str = Query(default="fr"),
@@ -273,19 +326,21 @@ async def claim_next_consume_once_item(
     - If ready: marks the item consumed in `seen_history.json`, invalidates the ready slot,
       and returns the JSON Card + `stream_url` (`/api/v1/{domain}/stream/{item_id}.rgb565.stream`).
     """
-    key = (dmd_id, domain)
+    effective_id = (client_id or "").strip() or dmd_id
+    key = (effective_id, domain)
     if key not in consume_once_orchestrator.client_configs:
         geometry = PanelGeometry(width=width, height=height)
         criteria = consume_once_orchestrator._parse_domain_criteria(domain, {"lang": lang}, top_lang=lang)
-        await consume_once_orchestrator.register_client_domain(dmd_id, domain, geometry, criteria)
+        await consume_once_orchestrator.register_client_domain(effective_id, domain, geometry, criteria)
 
-    pkg = await consume_once_orchestrator.claim_next_package(dmd_id, domain)
+    pkg = await consume_once_orchestrator.claim_next_package(effective_id, domain)
     if pkg is None:
         return {
             "ready": False,
             "status": "preparing",
-            "dmd_id": dmd_id,
+            "dmd_id": effective_id,
             "domain": domain,
+            "item": None,
         }
 
     stream_url = ""
@@ -294,15 +349,41 @@ async def claim_next_consume_once_item(
     else:
         background_tasks.add_task(consume_once_orchestrator.purge_consumed_package, pkg.item_id)
 
+    card_dict = pkg.card.to_dict()
     return {
         "ready": True,
         "status": "ready",
-        "dmd_id": dmd_id,
+        "dmd_id": effective_id,
         "domain": domain,
         "item_id": pkg.item_id,
-        "card": pkg.card.to_dict(),
+        "card": card_dict,
+        "item": card_dict,
         "stream_url": stream_url,
     }
+
+
+@app.get("/api/v1/{domain}/poster/{item_id}.rgb565", tags=["Consume-Once Protocol (V3.0)"])
+async def stream_consume_once_poster(
+    domain: DomainType,
+    item_id: str,
+) -> Response:
+    """Serve the binary RGB565 mini-jacket for `item_id` over HTTP/HTTPS."""
+    pkg = consume_once_orchestrator.active_packages.get(item_id)
+    if pkg is None:
+        raise HTTPException(status_code=404, detail=f"Poster for '{item_id}' not found or already purged.")
+    poster_fname = str(pkg.files_map.get("poster_rgb565") or "")
+    poster_path = (pkg.item_dir / poster_fname) if poster_fname else None
+    if poster_path is None or not poster_path.exists():
+        raise HTTPException(status_code=404, detail=f"Poster file for '{item_id}' is unavailable.")
+    raw = poster_path.read_bytes()
+    return Response(
+        content=raw,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(raw)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        },
+    )
 
 
 @app.get("/api/v1/{domain}/stream/{item_id}.rgb565.stream", tags=["Consume-Once Protocol (V3.0)"])
@@ -508,14 +589,22 @@ async def stream_media_asset(
 
 
 def run() -> None:
-    """CLI entrypoint (`dmd-media-showcase`)."""
+    """CLI entrypoint (`dmd-media-showcase`) supporting both HTTP (Home-Lab) and HTTPS (TLS / Reverse Proxy)."""
     import uvicorn
+
+    ssl_kwargs: Dict[str, Any] = {}
+    if settings.ssl_certfile and settings.ssl_keyfile:
+        ssl_kwargs["ssl_certfile"] = settings.ssl_certfile
+        ssl_kwargs["ssl_keyfile"] = settings.ssl_keyfile
 
     uvicorn.run(
         "app.main:app",
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level.lower(),
+        proxy_headers=settings.trust_proxy_headers,
+        forwarded_allow_ips="*",
+        **ssl_kwargs,
     )
 
 

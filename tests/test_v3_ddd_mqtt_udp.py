@@ -378,6 +378,23 @@ async def test_consume_once_http_and_admin_endpoints(tmp_path: Path, monkeypatch
         r_stream_again = await client.get(claimed["stream_url"])
         assert r_stream_again.status_code == 404, "Consumed stream must be purged immediately after first playback!"
 
+        # 4. Verify optional Online API Key Security (`showcase_api_key`) vs Home-Lab open mode
+        await client.post("/api/v1/admin/config", json={"showcase_api_key": "secret-cloud-token"})
+        r_unauth = await client.get("/api/v1/games/filters")
+        assert r_unauth.status_code == 401
+        r_auth_hdr = await client.get("/api/v1/games/filters", headers={"X-Showcase-Key": "secret-cloud-token"})
+        assert r_auth_hdr.status_code == 200
+        r_auth_bearer = await client.get(
+            "/api/v1/games/filters", headers={"Authorization": "Bearer secret-cloud-token"}
+        )
+        assert r_auth_bearer.status_code == 200
+        # Restore Home-Lab open mode
+        await client.post(
+            "/api/v1/admin/config",
+            json={"showcase_api_key": ""},
+            headers={"X-Showcase-Key": "secret-cloud-token"},
+        )
+
 
 def test_hermetic_portable_environment_isolation(tmp_path: Path, monkeypatch):
     """Verify `enforce_hermetic_environment()` strips host PYTHONPATH/PYTHONHOME and isolates PATH in portable mode."""
@@ -392,3 +409,81 @@ def test_hermetic_portable_environment_isolation(tmp_path: Path, monkeypatch):
     assert "PYTHONPATH" not in os.environ
     assert "PYTHONHOME" not in os.environ
     assert os.environ.get("PYTHONNOUSERSITE") == "1"
+
+
+@pytest.mark.asyncio
+async def test_live_referential_strategy_zero_hardcoded_roms(tmp_path: Path, monkeypatch):
+    """Verify `ArcadeItaliaReferentialStrategy` dynamically harvests MAME ROMs from live search without hardcoded lists."""
+    from app.infrastructure.scrapers.games.arcadeitalia_adapter import ArcadeItaliaAdapter
+    from app.infrastructure.scrapers.referential_store import ArcadeItaliaReferentialStrategy
+
+    monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "ref_data"))
+    strategy = ArcadeItaliaReferentialStrategy()
+    adapter = ArcadeItaliaAdapter(referential_strategy=strategy)
+
+    class _MockResp:
+        def __init__(self, status_code: int, text: str = "", json_data=None):
+            self.status_code = status_code
+            self.text = text
+            self._json = json_data or {}
+
+        def json(self):
+            return self._json
+
+    class _MockHttpClient:
+        def __init__(self) -> None:
+            self.calls: List[tuple] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url: str, params=None, headers=None, timeout=None):
+            self.calls.append((url, dict(params or {})))
+            if "lista_mame.php" in url:
+                return _MockResp(
+                    200,
+                    text='<a href="dettaglio_mame.php?game_name=mslug">Metal Slug</a>'
+                    '<a href="dettaglio_mame.php?game_name=garou">Garou</a>',
+                )
+            if "service_scraper.php" in url:
+                # Must ALWAYS include `game_name` parameter (never `title` without `game_name`)
+                assert "game_name" in (params or {}), "query_mame must always specify game_name!"
+                return _MockResp(
+                    200,
+                    json_data={
+                        "result": [
+                            {
+                                "game_name": "mslug",
+                                "title": "Metal Slug - Super Vehicle-001",
+                                "year": "1996",
+                                "genre": "Platform / ShooterScrolling",
+                                "manufacturer": "Nazca",
+                                "history": "Run and gun masterpiece.",
+                                "url_image_flyer": "https://adb.arcadeitalia.net/media/mslug_flyer.png",
+                                "url_image_ingame": "https://adb.arcadeitalia.net/media/mslug_snap.png",
+                                "url_video_shortplay": "https://adb.arcadeitalia.net/media/mslug.mp4",
+                            }
+                        ]
+                    },
+                )
+            return _MockResp(404)
+
+    mock_client = _MockHttpClient()
+    monkeypatch.setattr(
+        "app.infrastructure.scrapers.games.arcadeitalia_adapter.create_async_http_client",
+        lambda timeout=6.0, headers=None: mock_client,
+    )
+
+    seen: Set[str] = set()
+    cands = await adapter.fetch_random_unseen(FilterCriteria(domain="games", systems=["neogeo"]), seen, count=1)
+    assert len(cands) == 1
+    assert cands[0].id == "games_adb_mslug"
+    assert cands[0].title == "Metal Slug - Super Vehicle-001"
+    # Referential file must be persisted on disk
+    assert strategy.store.file_path.exists()
+    persisted = json.loads(strategy.store.file_path.read_text(encoding="utf-8"))
+    assert "mslug" in persisted["tokens"]
+    assert "garou" in persisted["tokens"]

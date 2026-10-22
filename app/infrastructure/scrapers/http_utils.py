@@ -50,7 +50,7 @@ def create_async_http_client(
     timeout: float = 6.0,
     headers: Optional[Dict[str, str]] = None,
 ) -> httpx.AsyncClient:
-    """Create an IPv4-first AsyncClient with standard User-Agent headers."""
+    """Create an IPv4-first AsyncClient supporting both HTTP (insecure) and HTTPS."""
     default_headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -62,10 +62,11 @@ def create_async_http_client(
     if headers:
         default_headers.update(headers)
     try:
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=1)
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", verify=False, retries=1)
         return httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
+            verify=False,
             headers=default_headers,
             transport=transport,
         )
@@ -73,6 +74,7 @@ def create_async_http_client(
         return httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
+            verify=False,
             headers=default_headers,
         )
 

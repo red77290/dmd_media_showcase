@@ -63,7 +63,7 @@ class BatchSlot:
 
     @property
     def is_ready(self) -> bool:
-        return self.ready_count >= len(self.items)
+        return len(self.items) > 0 and self.ready_count >= len(self.items)
 
 
 @dataclass
@@ -631,6 +631,19 @@ class SessionBatchManager:
         now = time.monotonic()
         state.last_accessed = now
         cur = state.current_batch
+
+        # If a previous batch build yielded 0 candidates (e.g. temporary network hiccup), retry after 5s cooldown
+        if len(cur.items) == 0 and (now - cur.created_at) >= 5.0:
+            rebuilt = await self._create_batch_slot(
+                session_id,
+                domain,
+                state.request,
+                exclude_ids=state.seen_ids,
+            )
+            for cand in rebuilt.candidates.values():
+                state.seen_ids.add(cand.id)
+            state.current_batch = rebuilt
+            cur = state.current_batch
 
         # Rotate immediately to NextBatch on any subsequent turn poll once NextBatch is ready
         if (

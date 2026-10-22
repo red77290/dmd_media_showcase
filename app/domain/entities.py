@@ -136,7 +136,14 @@ class ShowcaseCard:
     stream_duration_s: float = 0.0
 
     def to_dict(self) -> Dict[str, object]:
+        poster_url = f"/api/v1/{self.domain}/poster/{self.item_id}.rgb565"
+        stream_url = (
+            f"/api/v1/{self.domain}/stream/{self.item_id}.rgb565.stream"
+            if self.stream_frames > 0
+            else ""
+        )
         return {
+            "id": self.item_id,
             "item_id": self.item_id,
             "domain": self.domain,
             "title": self.title,
@@ -151,12 +158,19 @@ class ShowcaseCard:
             "poster_width": self.poster_width,
             "poster_height": self.poster_height,
             "poster_rgb565_b64": self.poster_rgb565_b64,
+            "poster_rgb565_url": poster_url,
             "text_scroll_speed": self.text_scroll_speed,
             "has_panoramas": self.has_panoramas,
             "has_video": self.has_video,
             "stream_frames": self.stream_frames,
             "stream_fps": self.stream_fps,
+            "fps": self.stream_fps,
             "stream_duration_s": self.stream_duration_s,
+            "total_stream_duration_s": self.stream_duration_s,
+            "assets": {
+                "poster_rgb565": poster_url,
+                "unified_stream_rgb565": stream_url,
+            },
         }
 
 
