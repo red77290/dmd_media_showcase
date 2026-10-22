@@ -97,10 +97,11 @@ class ConsumeOnceOrchestrator:
         self.streamer = streamer or udp_clock_streamer
         self.mqtt = mqtt_gateway or showcase_mqtt_gateway
 
-        # Per `(dmd_id, domain)` configuration, ready slot, active playing slot, and prep task
+        # Per `(dmd_id, domain)` configuration, ready slot (N), standby slot (N+1), active playing slot, and prep task
         self.client_configs: Dict[Tuple[str, DomainType], Tuple[PanelGeometry, FilterCriteria]] = {}
         self.client_udp_ips: Dict[str, str] = {}
         self.ready_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
+        self.standby_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
         self.active_packages: Dict[str, PreparedShowcasePackage] = {}
         self._prep_tasks: Dict[Tuple[str, DomainType], asyncio.Task[None]] = {}
         self.mqtt.set_handlers(
@@ -256,6 +257,10 @@ class ConsumeOnceOrchestrator:
             old_task = self._prep_tasks.pop(key, None)
             if old_task and not old_task.done():
                 old_task.cancel()
+            stale_standby = self.standby_packages.pop(key, None)
+            if stale_standby is not None:
+                self.active_packages.pop(stale_standby.item_id, None)
+                shutil.rmtree(stale_standby.item_dir, ignore_errors=True)
             stale_pkg = self.ready_packages.pop(key, None)
             if stale_pkg is not None:
                 self.active_packages.pop(stale_pkg.item_id, None)
@@ -282,9 +287,12 @@ class ConsumeOnceOrchestrator:
                 },
                 retain=True,
             )
+            self._schedule_preparation(dmd_id, domain)
             return
 
-        if key not in self.ready_packages and (key not in self._prep_tasks or self._prep_tasks[key].done()):
+        if (key not in self.ready_packages or key not in self.standby_packages) and (
+            key not in self._prep_tasks or self._prep_tasks[key].done()
+        ):
             logger.info(
                 "[ORCHESTRATOR] Registered dmd='%s' domain='%s' (%dx%d, lang=%s, systems=%s, genres=%s, decades=%s, speed=%s)",
                 dmd_id,
@@ -301,7 +309,7 @@ class ConsumeOnceOrchestrator:
 
     def _schedule_preparation(self, dmd_id: str, domain: DomainType) -> None:
         key = (dmd_id, domain)
-        if key in self.ready_packages:
+        if key in self.ready_packages and key in self.standby_packages:
             return
         existing = self._prep_tasks.get(key)
         if existing and not existing.done():
@@ -311,90 +319,136 @@ class ConsumeOnceOrchestrator:
 
     async def _prepare_slot_task(self, dmd_id: str, domain: DomainType) -> None:
         key = (dmd_id, domain)
-        cfg_pair = self.client_configs.get(key)
-        if not cfg_pair:
-            return
-        geometry, criteria = cfg_pair
         try:
-            # Exclude any currently active/in-flight candidate IDs so N+1 is guaranteed distinct from N
-            active_exclude = {
-                pkg.candidate.id
-                for pkg in self.active_packages.values()
-                if pkg.domain == domain
-            }
-            candidates = await self.chain_service.acquire_unseen_candidates(
-                criteria, count=1, extra_exclude_ids=active_exclude
-            )
-            if not candidates:
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-                    {"ready": False, "item_id": "", "status": "empty_catalog"},
-                    retain=True,
-                )
-                return
+            while key in self.client_configs and (
+                key not in self.ready_packages or key not in self.standby_packages
+            ):
+                cfg_pair = self.client_configs.get(key)
+                if not cfg_pair:
+                    return
+                geometry, criteria = cfg_pair
 
-            cand = candidates[0]
-            item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
-            item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
-            files_map = await self.transcoder.transcode_candidate(cand, criteria, geometry, item_dir)
-            poster_w, poster_h = geometry.resolved_poster_dims()
+                # Exclude any currently active/in-flight/standby candidate IDs so N+1 is guaranteed distinct from N
+                active_exclude = {
+                    pkg.candidate.id
+                    for pkg in self.active_packages.values()
+                    if pkg.domain == domain
+                }
+                for slot_pkg in list(self.ready_packages.values()) + list(self.standby_packages.values()):
+                    if slot_pkg.domain == domain:
+                        active_exclude.add(slot_pkg.candidate.id)
 
-            card = ShowcaseCard(
-                item_id=item_id,
-                domain=domain,
-                title=cand.title,
-                year=cand.year,
-                badge=cand.badge,
-                badge_color=cand.badge_color,
-                subtitle=cand.subtitle,
-                rating=cand.rating,
-                synopsis=cand.synopsis if criteria.include_synopsis else "",
-                lang=criteria.lang,
-                source_used=cand.source_id,
-                poster_width=poster_w,
-                poster_height=poster_h,
-                poster_rgb565_b64=str(files_map.get("poster_rgb565_b64") or ""),
-                text_scroll_speed=criteria.text_scroll_speed,
-                has_panoramas=bool(files_map.get("has_panoramas")),
-                has_video=bool(files_map.get("has_video")),
-                stream_frames=int(files_map.get("stream_frames") or 0),
-                stream_fps=int(files_map.get("stream_fps") or criteria.video_fps),
-                stream_duration_s=float(files_map.get("stream_duration_s") or 0.0),
-            )
-            unified_path_str = str(files_map.get("unified_stream_path") or "")
-            pkg = PreparedShowcasePackage(
-                item_id=item_id,
-                domain=domain,
-                dmd_id=dmd_id,
-                candidate=cand,
-                card=card,
-                geometry=geometry,
-                item_dir=item_dir,
-                unified_stream_path=Path(unified_path_str) if unified_path_str else None,
-                files_map=files_map,
-            )
-            self.ready_packages[key] = pkg
-            self.active_packages[item_id] = pkg
+                max_attempts = 2 if criteria.include_video else 1
+                chosen_pkg: Optional[PreparedShowcasePackage] = None
 
-            await self.mqtt.publish_json(
-                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-                {
-                    "ready": True,
-                    "item_id": item_id,
-                    "domain": domain,
-                    "card": card.to_dict(),
-                },
-                retain=True,
-            )
-            logger.info(
-                "[ORCHESTRATOR] Prepared Consume-Once slot for dmd='%s' domain='%s' -> '%s' (source=%s, has_video=%s, frames=%d)",
-                dmd_id,
-                domain,
-                cand.title,
-                cand.source_id,
-                card.has_video,
-                card.stream_frames,
-            )
+                for attempt in range(max_attempts):
+                    candidates = await self.chain_service.acquire_unseen_candidates(
+                        criteria, count=1, extra_exclude_ids=active_exclude
+                    )
+                    if not candidates:
+                        break
+                    if chosen_pkg is not None:
+                        shutil.rmtree(chosen_pkg.item_dir, ignore_errors=True)
+                    cand = candidates[0]
+                    active_exclude.add(cand.id)
+                    item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
+                    item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
+                    files_map = await self.transcoder.transcode_candidate(
+                        cand, criteria, geometry, item_dir
+                    )
+                    poster_w, poster_h = geometry.resolved_poster_dims()
+
+                    card = ShowcaseCard(
+                        item_id=item_id,
+                        domain=domain,
+                        title=cand.title,
+                        year=cand.year,
+                        badge=cand.badge,
+                        badge_color=cand.badge_color,
+                        subtitle=cand.subtitle,
+                        rating=cand.rating,
+                        synopsis=cand.synopsis if criteria.include_synopsis else "",
+                        lang=criteria.lang,
+                        source_used=cand.source_id,
+                        poster_width=poster_w,
+                        poster_height=poster_h,
+                        poster_rgb565_b64=str(files_map.get("poster_rgb565_b64") or ""),
+                        text_scroll_speed=criteria.text_scroll_speed,
+                        has_panoramas=bool(files_map.get("has_panoramas")),
+                        has_video=bool(files_map.get("has_video")),
+                        stream_frames=int(files_map.get("stream_frames") or 0),
+                        stream_fps=int(files_map.get("stream_fps") or criteria.video_fps),
+                        stream_duration_s=float(files_map.get("stream_duration_s") or 0.0),
+                    )
+                    unified_path_str = str(files_map.get("unified_stream_path") or "")
+                    pkg = PreparedShowcasePackage(
+                        item_id=item_id,
+                        domain=domain,
+                        dmd_id=dmd_id,
+                        candidate=cand,
+                        card=card,
+                        geometry=geometry,
+                        item_dir=item_dir,
+                        unified_stream_path=Path(unified_path_str) if unified_path_str else None,
+                        files_map=files_map,
+                    )
+                    chosen_pkg = pkg
+                    if criteria.include_video and not card.has_video and (attempt + 1) < max_attempts:
+                        logger.info(
+                            "[ORCHESTRATOR] Candidate '%s' had no video clip -> trying next candidate for %s/%s",
+                            cand.title,
+                            dmd_id,
+                            domain,
+                        )
+                        continue
+                    break
+
+                if chosen_pkg is None:
+                    if key not in self.ready_packages:
+                        await self.mqtt.publish_json(
+                            f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                            {"ready": False, "item_id": "", "status": "empty_catalog"},
+                            retain=True,
+                        )
+                    return
+
+                # Ensure item_dir still exists in case the last fallback candidate was kept
+                if not chosen_pkg.item_dir.exists():
+                    return
+
+                self.active_packages[chosen_pkg.item_id] = chosen_pkg
+                if key not in self.ready_packages:
+                    self.ready_packages[key] = chosen_pkg
+                    await self.mqtt.publish_json(
+                        f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                        {
+                            "ready": True,
+                            "item_id": chosen_pkg.item_id,
+                            "domain": domain,
+                            "card": chosen_pkg.card.to_dict(),
+                        },
+                        retain=True,
+                    )
+                    logger.info(
+                        "[ORCHESTRATOR] Prepared Consume-Once slot for dmd='%s' domain='%s' -> '%s' (source=%s, has_video=%s, frames=%d)",
+                        dmd_id,
+                        domain,
+                        chosen_pkg.candidate.title,
+                        chosen_pkg.candidate.source_id,
+                        chosen_pkg.card.has_video,
+                        chosen_pkg.card.stream_frames,
+                    )
+                else:
+                    self.standby_packages[key] = chosen_pkg
+                    logger.info(
+                        "[ORCHESTRATOR] Prepared N+1 standby slot for dmd='%s' domain='%s' -> '%s' (source=%s, has_video=%s, frames=%d)",
+                        dmd_id,
+                        domain,
+                        chosen_pkg.candidate.title,
+                        chosen_pkg.candidate.source_id,
+                        chosen_pkg.card.has_video,
+                        chosen_pkg.card.stream_frames,
+                    )
         except asyncio.CancelledError:
             logger.info("[ORCHESTRATOR] Cancelled outdated preparation task for %s/%s", dmd_id, domain)
         except Exception as exc:
@@ -406,9 +460,10 @@ class ConsumeOnceOrchestrator:
         """
         Atomically claim and lock the prepared package for `(dmd_id, domain)`:
         1. Marks the candidate ID as consumed in `seen_history.json`.
-        2. Publishes `ready: false` (`retain=True`) on MQTT.
-        3. Immediately schedules background `N+1` preparation for the next turn while keeping
-           item `N` in `self.active_packages[item_id]` until its stream finishes (`stream_eof`).
+        2. If a pre-encoded N+1 standby package (`self.standby_packages`) is already available,
+           promotes it immediately to `self.ready_packages` and publishes `ready: true` (`retain=True`)
+           so there is zero waiting between items; otherwise publishes `ready: false` (`retain=True`).
+        3. Immediately schedules background preparation to keep the 2-slot pipeline full.
         """
         key = (dmd_id, domain)
         pkg = self.ready_packages.pop(key, None)
@@ -422,12 +477,34 @@ class ConsumeOnceOrchestrator:
 
         pkg.consumed = True
         self.seen_repo.mark_consumed(domain, pkg.candidate.id)
-        await self.mqtt.publish_json(
-            f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-            {"ready": False, "item_id": pkg.item_id, "domain": domain},
-            retain=True,
-        )
-        # N+1 Background Pipelining: start preparing the next unseen item right away!
+
+        standby_pkg = self.standby_packages.pop(key, None)
+        if standby_pkg is not None and not standby_pkg.consumed:
+            self.ready_packages[key] = standby_pkg
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                {
+                    "ready": True,
+                    "item_id": standby_pkg.item_id,
+                    "domain": domain,
+                    "card": standby_pkg.card.to_dict(),
+                },
+                retain=True,
+            )
+            logger.info(
+                "[ORCHESTRATOR] Promoted N+1 standby slot '%s' ('%s') to ready for dmd='%s' domain='%s'",
+                standby_pkg.item_id,
+                standby_pkg.candidate.title,
+                dmd_id,
+                domain,
+            )
+        else:
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                {"ready": False, "item_id": pkg.item_id, "domain": domain},
+                retain=True,
+            )
+        # Keep the 2-slot (ready + standby) background pipeline full!
         self._schedule_preparation(dmd_id, domain)
         return pkg
 

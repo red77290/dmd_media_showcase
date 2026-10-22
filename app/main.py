@@ -396,17 +396,23 @@ async def stream_consume_once_sequence(
     domain: DomainType,
     item_id: str,
     background_tasks: BackgroundTasks,
+    purge: bool = Query(
+        default=True,
+        description="Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)",
+    ),
 ) -> Response:
     """
     Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
-    for `item_id` and immediately purge the consumed files from disk once the HTTP response completes.
+    for `item_id` and immediately purge the consumed files from disk once the HTTP response completes
+    (unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).
     """
     pkg = consume_once_orchestrator.active_packages.get(item_id)
     if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
         raise HTTPException(status_code=404, detail=f"Stream '{item_id}' not found or already consumed and purged.")
 
     raw_bytes = pkg.unified_stream_path.read_bytes()
-    background_tasks.add_task(consume_once_orchestrator.purge_consumed_package, item_id)
+    if purge:
+        background_tasks.add_task(consume_once_orchestrator.purge_consumed_package, item_id)
     return StreamingResponse(
         _iter_aligned_chunks(raw_bytes, chunk_size=8192),
         media_type="application/octet-stream",
@@ -415,7 +421,7 @@ async def stream_consume_once_sequence(
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "X-DMD-Consume-Once": "1",
         },
-        background=background_tasks,
+        background=background_tasks if purge else None,
     )
 
 

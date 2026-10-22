@@ -803,4 +803,43 @@ async def test_dmd_reboot_mid_broadcast_recovers_and_cleans_abandoned_slot(tmp_p
     assert len(ready_pubs) == 1
     assert ready_pubs[0][1]["item_id"] == "pkg_b"
 
+    # 3. Verify 2-slot standby promotion: if `pkg_c` is in `standby_packages`, claiming `pkg_b`
+    # immediately promotes `pkg_c` to `ready_packages` and publishes `ready: true` with zero wait!
+    card_c = ShowcaseCard(
+        item_id="pkg_c",
+        domain="games",
+        title="Contra",
+        year="1988",
+        badge="NES",
+        badge_color="#D32F2F",
+        subtitle="Run and gun • NES",
+        rating="9.2",
+        synopsis="Contra...",
+        lang="fr",
+        source_used="libretro_wikidata",
+        poster_width=32,
+        poster_height=32,
+        poster_rgb565_b64="AAH/",
+        stream_frames=160,
+    )
+    pkg_c = PreparedShowcasePackage(
+        item_id="pkg_c",
+        domain="games",
+        dmd_id="rpi_games_128x32",
+        candidate=cand_a,
+        card=card_c,
+        geometry=PanelGeometry(128, 32),
+        item_dir=tmp_path / "pkg_c",
+        consumed=False,
+    )
+    orch.standby_packages[("rpi_games_128x32", "games")] = pkg_c
+    published_topics.clear()
+
+    claimed_b = await orch.claim_next_package("rpi_games_128x32", "games", item_id="pkg_b")
+    assert claimed_b is not None and claimed_b.item_id == "pkg_b"
+    assert orch.ready_packages[("rpi_games_128x32", "games")].item_id == "pkg_c"
+    assert ("rpi_games_128x32", "games") not in orch.standby_packages
+    assert any(p[1].get("ready") is True and p[1].get("item_id") == "pkg_c" for p in published_topics)
+
+
 
