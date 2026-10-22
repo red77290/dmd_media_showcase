@@ -67,8 +67,26 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install static FFmpeg & FFprobe for portable bundling
-        uses: AnimMouse/setup-ffmpeg@v2
+      - name: Ensure FFmpeg & FFprobe are available (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Ensure FFmpeg & FFprobe are available (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          which ffmpeg && which ffprobe || brew install ffmpeg
+
+      - name: Ensure FFmpeg & FFprobe are available (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+          }
+          ffmpeg -version
+          ffprobe -version
 
       - name: Build hermetic portable bundle (PyInstaller + bundled FFmpeg + MQTT broker)
         run: |
