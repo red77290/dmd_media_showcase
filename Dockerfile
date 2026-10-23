@@ -28,6 +28,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY app ./app
 
+ARG DMD_GIF_CONVERTER_REV=56cdc9c
+
 RUN pip install --upgrade pip && \
     pip install . && \
     python3 -c "from src.plugins.detectors.detector import _ensure_yolo_model; _ensure_yolo_model()" && \
