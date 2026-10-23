@@ -28,7 +28,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-ARG DMD_GIF_CONVERTER_REV=56cdc9c
+ARG DMD_GIF_CONVERTER_REV=1d80df7
 
 RUN pip install --upgrade pip && \
     pip install . && \
