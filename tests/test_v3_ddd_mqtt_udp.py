@@ -1446,6 +1446,150 @@ async def test_four_showcase_engines_rotation_preserves_prep_and_delivers_retain
         await broker.stop()
 
 
+def test_resolution_256x64_propagates_across_mqtt_rest_transcoder_and_udp_chunks(tmp_path, monkeypatch):
+    """
+    End-to-end verification that switching hardware geometry from 128x32 to 256x64:
+    1. Resolves adaptive poster dimensions to 48x64 (vs 32x32 on 128x32 and 40x40 on 64x256 TATE).
+    2. Propagates `PanelGeometry(width=256, height=64)` through MQTT `config` / REST `/config`
+       down to `transcode_candidate` (`DmdClipConfig(width=256, height=64)`), invalidating stale 128x32 packages.
+    3. Slices 256x64 RGB565LE frames (`32,768` bytes) into 32 MTU-safe `DMDF` UDP chunks.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache_256")
+
+    g128 = PanelGeometry(width=128, height=32)
+    g256 = PanelGeometry(width=256, height=64)
+    g_tate = PanelGeometry(width=64, height=256)
+    assert g128.resolved_poster_dims() == (32, 32)
+    assert g256.resolved_poster_dims() == (48, 64)
+    assert g_tate.resolved_poster_dims() == (40, 40)
+
+    # Verify 256x64 DMDF UDP chunking math (32,768 bytes -> 32 chunks of 1,024 bytes)
+    frame_256x64 = bytes([0xAA, 0x55]) * (256 * 64)
+    chunks = pack_dmdf_frame_chunks(frame_256x64, frame_seq=7)
+    assert len(chunks) == 32
+    reassembled = bytearray(len(frame_256x64))
+    for idx, pkt in enumerate(chunks):
+        magic, seq, c_idx, tot_c, b_off = struct.unpack("<4sHBBH", pkt[:10])
+        assert magic == b"DMDF"
+        assert seq == 7
+        assert c_idx == idx
+        assert tot_c == 32
+        payload = pkt[10:]
+        assert len(payload) == 1024
+        reassembled[b_off : b_off + len(payload)] = payload
+    assert bytes(reassembled) == frame_256x64
+
+    recorded_geometries: list[tuple[int, int, tuple[int, int]]] = []
+
+    class _FakeChain:
+        def __init__(self) -> None:
+            self.seq = 0
+
+        async def acquire_unseen_candidates(self, criteria, count=1, extra_exclude_ids=None):
+            self.seq += 1
+            return [
+                MediaCandidate(
+                    id=f"movie_{self.seq}",
+                    domain=criteria.domain,
+                    title=f"Movie #{self.seq}",
+                    year="2020",
+                    badge="SCIFI",
+                    badge_color="#00D2FF",
+                    subtitle="Sci-Fi",
+                    rating="8.2",
+                    synopsis="Test synopsis",
+                    source_id="mock_src",
+                )
+            ]
+
+    class _RecordingTranscoder:
+        async def transcode_candidate(self, cand, criteria, geometry, item_dir: Path):
+            recorded_geometries.append(
+                (geometry.width, geometry.height, geometry.resolved_poster_dims())
+            )
+            item_dir.mkdir(parents=True, exist_ok=True)
+            stream_p = item_dir / f"unified_{geometry.width}x{geometry.height}.rgb565.stream"
+            stream_p.write_bytes(b"DMDS" + b"\x00" * 28)
+            pw, ph = geometry.resolved_poster_dims()
+            return {
+                "poster_width": pw,
+                "poster_height": ph,
+                "poster_rgb565_b64": "AA==",
+                "has_panoramas": True,
+                "has_video": True,
+                "unified_stream_path": str(stream_p),
+                "stream_frames": 30,
+                "stream_fps": 15,
+                "stream_duration_s": 2.0,
+            }
+
+    class _FakeStreamer:
+        async def stop_stream(self, dmd_id: str):
+            pass
+
+        async def start_udp_clock_stream(self, **_kwargs):
+            pass
+
+    async def _run_switch() -> None:
+        orch = ConsumeOnceOrchestrator(
+            chain_service=_FakeChain(),  # type: ignore[arg-type]
+            seen_repo=JsonSeenHistoryRepository(file_path=tmp_path / "seen_256.json"),
+            transcoder=_RecordingTranscoder(),  # type: ignore[arg-type]
+            streamer=_FakeStreamer(),  # type: ignore[arg-type]
+        )
+        # 1. Initial 128x32 MQTT config
+        await orch.handle_mqtt_client_config(
+            "rpi_movies_panel",
+            {
+                "dmd_id": "rpi_movies_panel",
+                "width": 128,
+                "height": 32,
+                "udp_ip": "127.0.0.1",
+                "udp_port": 5569,
+                "lang": "fr",
+                "domains": {"movies": {"lang": "fr"}},
+            },
+        )
+        for _ in range(30):
+            if ("rpi_movies_panel", "movies") in orch.ready_packages:
+                break
+            await asyncio.sleep(0.02)
+        pkg_128 = orch.ready_packages[("rpi_movies_panel", "movies")]
+        assert (pkg_128.geometry.width, pkg_128.geometry.height) == (128, 32)
+        assert (pkg_128.card.poster_width, pkg_128.card.poster_height) == (32, 32)
+
+        # 2. Switch same DMD to 256x64 -> must purge 128x32 slot and transcode 256x64 (poster 48x64)
+        await orch.handle_mqtt_client_config(
+            "rpi_movies_panel",
+            {
+                "dmd_id": "rpi_movies_panel",
+                "width": 256,
+                "height": 64,
+                "udp_ip": "127.0.0.1",
+                "udp_port": 5569,
+                "lang": "fr",
+                "domains": {"movies": {"lang": "fr"}},
+            },
+        )
+        for _ in range(30):
+            pkg_cur = orch.ready_packages.get(("rpi_movies_panel", "movies"))
+            if pkg_cur is not None and (pkg_cur.geometry.width, pkg_cur.geometry.height) == (256, 64):
+                break
+            await asyncio.sleep(0.02)
+        pkg_256 = orch.ready_packages[("rpi_movies_panel", "movies")]
+        assert (pkg_256.geometry.width, pkg_256.geometry.height) == (256, 64)
+        assert (pkg_256.card.poster_width, pkg_256.card.poster_height) == (48, 64)
+        assert (128, 32, (32, 32)) in recorded_geometries
+        assert (256, 64, (48, 64)) in recorded_geometries
+        for task in list(orch._prep_tasks.values()):
+            task.cancel()
+
+    asyncio.run(_run_switch())
+
+
+
 
 
 
