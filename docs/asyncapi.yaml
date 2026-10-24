@@ -234,8 +234,8 @@ components:
                 show_video: { type: boolean, default: true }
                 video_max_duration_s: { type: number, default: 8.0 }
                 video_fps: { type: integer, default: 15 }
-                video_mode: { type: string, default: auto_action }
-                color_boost: { type: boolean, default: true }
+                video_mode: { type: string, enum: [auto_action, panorama, center_crop], default: auto_action }
+                color_boost: { type: string, enum: [auto, pixel_art, anime, cinema], default: auto }
 
     SlotReadyMessage:
       name: SlotReadyMessage

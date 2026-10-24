@@ -243,7 +243,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "color": "#FB8C00",
         "palette": (251, 140, 0),
         "decades": ["1990s", "2000s"],
-        "genres": ["fighting", "beatemup", "shootemup", "runandgun", "puzzle", "action"],
+        "genres": ["fighting", "beatemup", "shootemup", "runandgun", "platform", "puzzle", "action"],
         "synonyms": ["cps2", "cps_2", "capcom_play_system_2"],
         "labels": {
             "fr": "Capcom CPS-2",
@@ -814,6 +814,7 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
             "plateforme",
             "platform_game",
             "platform_run_jump",
+            "platform_run_jump_scrolling",
             "metroidvania",
         ],
         "labels": {
@@ -829,7 +830,7 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
         "wikidata_qids": ["Q270948", "Q343568"],
         "adb_keywords": ["action", "climbing", "platform / fighter scrolling"],
         "screenscraper_keywords": ["action"],
-        "synonyms": ["action", "action_adventure", "action_game"],
+        "synonyms": ["action", "action_adventure", "action_game", "platform_fighter_scrolling"],
         "labels": {
             "fr": "Action / Aventure",
             "en": "Action / Adventure",
@@ -909,9 +910,18 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
             "run and gun",
             "platform / shooter",
             "platform / shooter scrolling",
+            "platform / shooterscrolling",
         ],
         "screenscraper_keywords": ["run & gun", "run and gun", "tir"],
-        "synonyms": ["runandgun", "run_and_gun", "run_gun", "shooter_walking", "platform_shooter"],
+        "synonyms": [
+            "runandgun",
+            "run_and_gun",
+            "run_gun",
+            "shooter_walking",
+            "platform_shooter",
+            "platform_shooter_scrolling",
+            "platform_shooterscrolling",
+        ],
         "labels": {
             "fr": "Run & Gun",
             "en": "Run & Gun",
@@ -1599,6 +1609,15 @@ def resolve_canonical_genre(domain: DomainType, raw_genre: str) -> str:
     domain_idx = _GENRE_SYNONYM_BY_DOMAIN.get(domain, {})
     if slug in domain_idx:
         return domain_idx[slug]
+    if domain == "games" and slug:
+        if "lightgun" in slug or "shooter_gun" in slug or "rail_shooter" in slug or "gun_shooter" in slug:
+            return "lightgun"
+        if ("shoot" in slug or "shmup" in slug or "flying" in slug) and ("platform" in slug or "walking" in slug):
+            return "runandgun"
+        if "shoot" in slug or "shmup" in slug or "flying" in slug or "gallery" in slug:
+            return "shootemup"
+        if "fighter" in slug and "platform" in slug:
+            return "action"
     for syn_slug, canonical_id in sorted(domain_idx.items(), key=lambda kv: len(kv[0]), reverse=True):
         if syn_slug and len(syn_slug) >= 4 and syn_slug in slug:
             return canonical_id

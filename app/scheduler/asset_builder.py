@@ -20,7 +20,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Union
 from urllib.request import Request, urlopen
 
 import cv2
@@ -257,6 +257,49 @@ def _convert_image_to_panorama_gif_and_stream(
         return None
 
 
+def resolve_framing_and_color_params(
+    video_mode: str = "auto_action",
+    color_boost: Union[str, bool] = "auto",
+) -> Tuple[bool, bool, bool, Literal["pixel_art", "anime", "cinema"]]:
+    """
+    Resolve orthogonal framing (`video_mode`) and LED colorimetry (`color_boost`) settings:
+      Returns `(use_auto_action, scroll_on_video, use_smart_color_boost, preset_mode)`:
+      - `video_mode` controls framing:
+        * `'auto_action'` (default): Let Me Handle It AI (`use_auto_action=True`, `scroll_on_video=False`)
+        * `'panorama'`: top-to-bottom vertical scan (`use_auto_action=False`, `scroll_on_video=True`)
+        * `'center_crop'`: static center crop (`use_auto_action=False`, `scroll_on_video=False`)
+      - `color_boost` controls LED colorimetry:
+        * `'auto'` / `True` (default): Smart Auto-Color AI (`use_smart_color_boost=True`)
+        * `'pixel_art'`: fixed Pixel Art preset (`use_smart_color_boost=False`, `preset_mode='pixel_art'`)
+        * `'anime'`: fixed Anime preset (`use_smart_color_boost=False`, `preset_mode='anime'`)
+        * `'cinema'`: fixed Cinema preset (`use_smart_color_boost=False`, `preset_mode='cinema'`)
+    """
+    vm = str(video_mode or "auto_action").strip().lower()
+    scroll_on_video = vm == "panorama"
+    use_auto_action = vm not in ("panorama", "center_crop")
+
+    if isinstance(color_boost, bool):
+        cb = "auto" if color_boost else "cinema"
+    else:
+        cb = str(color_boost or "auto").strip().lower()
+
+    if cb in ("pixel_art", "anime", "cinema"):
+        preset_mode: Literal["pixel_art", "anime", "cinema"] = cb  # type: ignore[assignment]
+        use_smart_color_boost = False
+    elif cb in ("false", "0", "no", "off", "none"):
+        preset_mode = "cinema"
+        use_smart_color_boost = False
+    else:
+        # 'auto' / 'true' / default: Smart Auto-Color AI
+        if vm in ("pixel_art", "anime", "cinema"):
+            preset_mode = vm  # type: ignore[assignment]
+        else:
+            preset_mode = "pixel_art"
+        use_smart_color_boost = True
+
+    return use_auto_action, scroll_on_video, use_smart_color_boost, preset_mode
+
+
 def build_static_assets_sync(
     item_dir: str,
     title: str,
@@ -270,7 +313,7 @@ def build_static_assets_sync(
     width: int = 128,
     height: int = 32,
     fps: int = 20,
-    color_boost: bool = True,
+    color_boost: Union[str, bool] = "auto",
     poster_w: int = 32,
     poster_h: int = 32,
     jacket_url: Optional[str] = None,
@@ -290,6 +333,10 @@ def build_static_assets_sync(
     out_dir = Path(item_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     processor = DmdMediaProcessor()
+    color_boost_bool = not (
+        color_boost is False
+        or str(color_boost).strip().lower() in ("false", "0", "no", "off", "none")
+    )
 
     # 1. Mini-Jacket on Info Card (`poster_w x poster_h`)
     poster_png_name = f"poster_{poster_w}x{poster_h}.png"
@@ -305,7 +352,7 @@ def build_static_assets_sync(
         try:
             with Image.open(io.BytesIO(poster_bytes)) as src_p:
                 poster_img = _fit_poster_preserving_cover(
-                    src_p, poster_w, poster_h, palette, color_boost=color_boost
+                    src_p, poster_w, poster_h, palette, color_boost=color_boost_bool
                 )
         except Exception as exc:
             logger.info("[CONVERTER] Poster decode failed for '%s': %s", title, exc)
@@ -336,7 +383,7 @@ def build_static_assets_sync(
             out_dir,
             width=width,
             height=height,
-            smart_color_boost=color_boost,
+            smart_color_boost=color_boost_bool,
             stem="marquee",
         )
     except Exception:
@@ -346,7 +393,7 @@ def build_static_assets_sync(
             out_dir,
             width=width,
             height=height,
-            smart_color_boost=color_boost,
+            smart_color_boost=color_boost_bool,
             stem="marquee",
         )
     raw_marquee.unlink(missing_ok=True)
@@ -376,7 +423,7 @@ def build_static_assets_sync(
                 height=height,
                 fps=max(15, fps),
                 duration_s=3.8,
-                color_boost=color_boost,
+                color_boost=color_boost_bool,
             )
             if j_res:
                 jacket_gif_name, jacket_stream_name, j_static_rgb = j_res
@@ -396,7 +443,7 @@ def build_static_assets_sync(
                 height=height,
                 fps=max(15, fps),
                 duration_s=3.6,
-                color_boost=color_boost,
+                color_boost=color_boost_bool,
             )
             if m_res:
                 marquee_gif_name, marquee_stream_name, m_static_rgb = m_res
@@ -429,7 +476,7 @@ def build_static_assets_sync(
                 height=height,
                 fps=max(15, fps),
                 duration_s=3.8,
-                color_boost=color_boost,
+                color_boost=color_boost_bool,
             )
             if pan_res:
                 gif_f, stream_f, static_rgb_f = pan_res
@@ -457,7 +504,7 @@ def build_static_assets_sync(
             out_dir,
             width=width,
             height=pan_h,
-            smart_color_boost=color_boost,
+            smart_color_boost=color_boost_bool,
             stem="snap",
         )
         raw_snap.unlink(missing_ok=True)
@@ -505,7 +552,7 @@ def build_video_assets_worker_task(
     fps: int = 15,
     max_duration_s: float = 8.0,
     video_mode: str = "auto_action",
-    color_boost: bool = True,
+    color_boost: Union[str, bool] = "auto",
     nice_inc: int = 10,
 ) -> Dict[str, object]:
     """
@@ -572,9 +619,9 @@ def build_video_assets_worker_task(
             "stream_file": "",
         }
 
-    scroll_on_video = video_mode == "panorama"
-    use_auto_action = video_mode not in ("panorama", "center_crop")
-    preset_mode = video_mode if video_mode in ("pixel_art", "anime", "cinema") else "pixel_art"
+    use_auto_action, scroll_on_video, use_smart_color_boost, preset_mode = (
+        resolve_framing_and_color_params(video_mode=video_mode, color_boost=color_boost)
+    )
 
     clip_cfg = DmdClipConfig(
         width=width,
@@ -584,7 +631,7 @@ def build_video_assets_worker_task(
         mode=preset_mode,
         use_ai_moments=True,
         use_auto_action=use_auto_action,
-        use_smart_color_boost=color_boost,
+        use_smart_color_boost=use_smart_color_boost,
         scroll_enabled=scroll_on_video,
     )
 

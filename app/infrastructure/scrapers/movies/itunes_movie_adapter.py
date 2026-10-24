@@ -103,6 +103,33 @@ class ItunesMovieAdapter(IScraperSource):
         cand.add_unique_snapshot(wide_art)
         return cand
 
+    @staticmethod
+    def _is_itunes_genre_compatible(primary_genre: str, g_meta: Dict[str, Any]) -> bool:
+        pg = (primary_genre or "").strip().lower()
+        if not pg:
+            return True
+        label = str(g_meta.get("label") or "").lower()
+        query = str(g_meta.get("query") or "").lower()
+        if label in pg or pg in label or query in pg or pg in query:
+            return True
+        # Map Apple iTunes primaryGenreName categories to subgenres
+        compat_map = {
+            "sci-fi": ("sci-fi", "science fiction", "action", "fantasy", "thriller"),
+            "cyberpunk": ("sci-fi", "science fiction", "action", "thriller", "animation"),
+            "kaiju / monster": ("sci-fi", "science fiction", "action", "horror", "adventure"),
+            "martial arts": ("action", "adventure", "drama", "foreign"),
+            "superhero": ("action", "adventure", "sci-fi", "fantasy", "animation"),
+            "film noir": ("crime", "thriller", "mystery", "drama", "classics"),
+            "mystery": ("mystery", "thriller", "crime", "drama"),
+            "family": ("kids", "family", "animation", "comedy", "adventure", "fantasy"),
+            "fantasy": ("fantasy", "sci-fi", "adventure", "kids", "family", "animation"),
+            "animation": ("animation", "kids", "family", "anime"),
+            "war": ("war", "action", "drama", "history"),
+            "history": ("history", "drama", "documentary", "biography", "war"),
+        }
+        allowed = compat_map.get(label, ())
+        return any(tok in pg for tok in allowed) if allowed else True
+
     async def _lookup_itunes_movie(
         self,
         client: Any,
@@ -112,8 +139,10 @@ class ItunesMovieAdapter(IScraperSource):
         short_lang: str,
         seen_ids: Set[str],
         decade_bounds: Optional[ tuple[int, int] ] = None,
+        require_genre_match: bool = False,
     ) -> Optional[MediaCandidate]:
         countries = [country] if country == "US" else [country, "US"]
+        q_low = query_term.strip().lower()
         for ctry in countries:
             try:
                 resp = await client.get(
@@ -123,14 +152,22 @@ class ItunesMovieAdapter(IScraperSource):
                         "media": "movie",
                         "entity": "movie",
                         "country": ctry,
-                        "limit": "15",
+                        "limit": "25",
                     },
                 )
                 if resp.status_code != 200:
                     continue
-                rows = resp.json().get("results") or []
+                rows = [r for r in (resp.json().get("results") or []) if isinstance(r, dict)]
+                random.shuffle(rows)
+                rows.sort(
+                    key=lambda r: 0
+                    if str(r.get("trackName") or "").strip().lower() == q_low
+                    else 1
+                )
                 for row in rows:
-                    if not isinstance(row, dict):
+                    if require_genre_match and not self._is_itunes_genre_compatible(
+                        str(row.get("primaryGenreName") or ""), g_meta
+                    ):
                         continue
                     cand = self._parse_itunes_track(row, g_meta, short_lang)
                     if not cand or cand.id in seen_ids:
@@ -223,7 +260,14 @@ class ItunesMovieAdapter(IScraperSource):
 
                 # Try Apple iTunes Movie Search for this exact film title (gives HD poster + direct .m4v trailer)
                 itunes_cand = await self._lookup_itunes_movie(
-                    client, clean_title, country, g_meta, short_lang, seen_ids, decade_bounds=decade_bounds
+                    client,
+                    clean_title,
+                    country,
+                    g_meta,
+                    short_lang,
+                    seen_ids,
+                    decade_bounds=decade_bounds,
+                    require_genre_match=bool(genre_keys),
                 )
                 if itunes_cand is not None:
                     if not itunes_cand.video_url and not itunes_cand.youtube_url:
@@ -309,8 +353,26 @@ class ItunesMovieAdapter(IScraperSource):
                     if len(results) >= count:
                         break
                     cand = await self._lookup_itunes_movie(
-                        client, term, country, g_meta, short_lang, seen_ids, decade_bounds=None
+                        client,
+                        term,
+                        country,
+                        g_meta,
+                        short_lang,
+                        seen_ids,
+                        decade_bounds=decade_bounds,
+                        require_genre_match=bool(genre_keys),
                     )
+                    if cand is None and decade_bounds is not None:
+                        cand = await self._lookup_itunes_movie(
+                            client,
+                            term,
+                            country,
+                            g_meta,
+                            short_lang,
+                            seen_ids,
+                            decade_bounds=None,
+                            require_genre_match=bool(genre_keys),
+                        )
                     if cand is not None:
                         seen_ids.add(cand.id)
                         results.append(cand)

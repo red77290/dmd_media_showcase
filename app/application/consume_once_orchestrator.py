@@ -160,6 +160,20 @@ class ConsumeOnceOrchestrator:
         if speed not in VALID_SCROLL_SPEEDS:
             speed = "normal"
 
+        raw_cb = raw_cfg.get("color_boost", "auto")
+        if isinstance(raw_cb, bool):
+            color_boost_val = "auto" if raw_cb else "cinema"
+        else:
+            cb_str = str(raw_cb or "auto").strip().lower()
+            if cb_str in ("true", "1", "yes", "on", "auto", ""):
+                color_boost_val = "auto"
+            elif cb_str in ("false", "0", "no", "off", "none"):
+                color_boost_val = "cinema"
+            elif cb_str in ("pixel_art", "anime", "cinema"):
+                color_boost_val = cb_str
+            else:
+                color_boost_val = "auto"
+
         return FilterCriteria(
             domain=domain,
             lang=lang,
@@ -178,7 +192,7 @@ class ConsumeOnceOrchestrator:
             video_max_duration_s=float(raw_cfg.get("video_max_duration_s") or 8.0),
             video_fps=int(raw_cfg.get("video_fps") or 15),
             video_mode=str(raw_cfg.get("video_mode") or "auto_action"),
-            color_boost=bool(raw_cfg.get("color_boost", True)),
+            color_boost=color_boost_val,
         )
 
     async def handle_mqtt_client_config(self, dmd_id: str, payload: Dict[str, Any]) -> None:

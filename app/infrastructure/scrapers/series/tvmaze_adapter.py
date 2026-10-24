@@ -25,6 +25,16 @@ from app.infrastructure.scrapers.http_utils import (
 
 logger = logging.getLogger("dmd_showcase.scrapers.series.tvmaze")
 
+_EXCLUDED_TVMAZE_SHOW_TYPES = {
+    "talk show",
+    "game show",
+    "news",
+    "reality",
+    "variety",
+    "award show",
+    "panel show",
+}
+
 _SERIES_DECADES: Dict[str, Tuple[int, int]] = {
     "1970s": (1970, 1979),
     "1980s": (1980, 1989),
@@ -174,12 +184,16 @@ class TvMazeAdapter(IScraperSource):
         chosen_genre_key = random.choice(req_genres) if req_genres else "scifi"
         g_meta = SERIES_GENRES.get(chosen_genre_key, SERIES_GENRES["scifi"])
         target_tvmaze_genres = {SERIES_GENRES[g]["tvmaze"].lower() for g in req_genres}
+        if "anime" in req_genres or "animation" in req_genres:
+            target_tvmaze_genres.update({"anime", "animation"})
+        if "nature" in req_genres:
+            target_tvmaze_genres.update({"nature", "documentary"})
 
         req_decades = [d for d in criteria.decades if d in _SERIES_DECADES]
         results: List[MediaCandidate] = []
 
         async with create_async_http_client(timeout=5.5) as client:
-            pages = random.sample(range(0, 180), k=4)
+            pages = random.sample(range(0, 180), k=6)
             matching_shows: List[Dict[str, Any]] = []
             fallback_shows: List[Dict[str, Any]] = []
 
@@ -194,6 +208,13 @@ class TvMazeAdapter(IScraperSource):
                         sid = f"series_tvmaze_{sh.get('id')}"
                         if sid in seen_ids:
                             continue
+                        sh_type = str(sh.get("type") or "").strip().lower()
+                        if sh_type in _EXCLUDED_TVMAZE_SHOW_TYPES:
+                            seen_ids.add(sid)
+                            continue
+                        if sh_type == "sports" and "sports" not in req_genres:
+                            seen_ids.add(sid)
+                            continue
                         if not (sh.get("image") or {}).get("original") and not (sh.get("image") or {}).get("medium"):
                             continue
                         avg_rate = float((sh.get("rating") or {}).get("average") or 7.5)
@@ -201,6 +222,8 @@ class TvMazeAdapter(IScraperSource):
                             continue
 
                         sh_genres = {str(x).lower() for x in (sh.get("genres") or [])}
+                        if sh_type in ("animation", "documentary", "sports"):
+                            sh_genres.add(sh_type)
                         prem = str(sh.get("premiered") or "2010")
                         yr = int(prem[:4]) if len(prem) >= 4 and prem[:4].isdigit() else 2010
 

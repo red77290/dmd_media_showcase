@@ -654,95 +654,179 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
 
     source_id = "arcadeitalia"
 
-    _SYSTEM_SEARCH_STEMS: Dict[str, List[str]] = {
-        "neogeo": [
-            "kof", "samsho", "mslug", "garou", "fatal", "aof", "lastblad", "whp",
-            "svc", "shocktro", "sengoku", "pulstar", "blazstar", "windjamm", "spinmast",
-            "breakers", "kabukikl", "ninjamas", "rotd", "wakuwak7", "kizuna", "savagere",
-            "matrim", "rbff", "tophuntr", "mutnat", "cyberlip", "nam1975", "maglord", "viewpoin",
-        ],
+    _AUTHORITATIVE_SYSTEM_ROMS: Dict[str, List[str]] = {
         "cps1": [
-            "sf2", "ffight", "dino", "punisher", "captcomm", "knights", "wof",
-            "1941", "strider", "ghouls", "varth", "cawing", "mercs", "forgottn",
+            "sf2", "sf2ce", "sf2hf", "ffight", "dino", "punisher", "captcomm",
+            "knights", "wof", "kod", "strider", "ghouls", "1941", "varth",
+            "cawing", "mercs", "forgottn", "unsquad", "willow", "mtwins",
+            "nemo", "megaman", "slammast", "mbombrd", "pnickj", "qad",
+            "qtono2", "pang3", "3wonders",
         ],
         "cps2": [
-            "sfa", "msh", "vsav", "dstlk", "xmcota", "xmvsf", "mshvsf", "mvsc",
-            "1944", "gigawing", "progear", "marsmatr", "avsp", "ddtod", "ddsom", "cybots",
+            "ssf2", "ssf2t", "ssf2xj", "hsf2", "sfa", "sfa2", "sfa3",
+            "msh", "vsav", "vhunt2", "vsav2", "nwarr", "dstlk", "xmcota",
+            "xmvsf", "mshvsf", "mvsc", "cybots", "ringdest", "sgemf",
+            "spf2t", "pzloop2", "mpang", "1944", "19xx", "gigawing",
+            "progear", "marsmatr", "dimahoo", "ecofghtr", "avsp", "ddtod",
+            "ddsom", "batcir", "armwar", "csclub", "megaman2", "qndream", "choko",
         ],
-        "cps3": ["sfiii", "jojo", "redearth"],
+        "cps3": [
+            "sfiii", "sfiii2", "sfiii3", "jojo", "jojoba", "redearth",
+        ],
+        "neogeo": [
+            "kof94", "kof95", "kof96", "kof97", "kof98", "kof99", "kof2000",
+            "kof2001", "kof2002", "kof2003", "samsho", "samsho2", "samsho3",
+            "samsho4", "samsho5", "samsho5sp", "mslug", "mslug2", "mslug3",
+            "mslug4", "mslug5", "mslugx", "garou", "fatfury1", "fatfury2",
+            "fatfury3", "rbff1", "rbff2", "rbffspec", "aof", "aof2", "aof3",
+            "lastblad", "lastbld2", "wh1", "wh2", "wh2jet", "whp", "svc",
+            "rotd", "matrim", "wakuwak7", "kabukikl", "breakers", "breakrev",
+            "ninjamas", "kizuna", "savagere", "karnovr", "shocktro", "shocktr2",
+            "sengoku", "sengoku2", "sengoku3", "pulstar", "blazstar", "viewpoin",
+            "lastreso", "twinspri", "aerofig2", "aerofig3", "strik1945p", "preisle2",
+            "zedblade", "androdu", "alpham2", "windjamm", "ssideki", "ssideki2",
+            "ssideki3", "ssideki4", "turfmast", "neocup98", "2020bb", "strhoop",
+            "tophuntr", "spinmast", "maglord", "bjourney", "cyberlip", "nam1975",
+            "mutnat", "roboarmy", "burningf", "eightman", "pbobble", "pbobble2",
+            "magicald", "magdrop2", "magdrop3", "puzzledp", "joyjoy", "moneyid",
+            "gururin", "panicbom", "overtop", "neodrift", "thrashr",
+        ],
+    }
+
+    _FORBIDDEN_ROMS_BY_SYSTEM: Dict[str, Set[str]] = {
+        "cps1": {
+            "mvsc", "mvsc2", "sfa", "sfa2", "sfa3", "ssf2", "ssf2t", "ssf2xj", "hsf2",
+            "msh", "vsav", "vhunt2", "vsav2", "nwarr", "dstlk", "xmcota", "xmvsf", "mshvsf",
+            "sfiii", "sfiii2", "sfiii3", "jojo", "jojoba", "redearth", "cvs", "cvs2",
+        },
+        "cps2": {
+            "mvsc2", "mvsc2u", "mvsc2j", "cvs", "cvs2", "cvsgd", "capcom_vs_snk",
+            "sf2", "sf2ce", "sf2hf", "ffight", "dino", "punisher", "captcomm",
+            "sfiii", "sfiii2", "sfiii3", "jojo", "jojoba", "redearth",
+            "sfex", "sfex2", "sfex2p", "sftm", "pstone", "pstone2", "techromn",
+            "rvschola", "pjfghtr", "kof94", "kof95", "kof98", "mslug", "samsho",
+        },
+        "cps3": {
+            "mvsc", "mvsc2", "sfa", "sfa2", "sfa3", "ssf2", "ssf2t", "sf2", "sf2ce",
+            "cvs", "cvs2", "sfex", "sfex2",
+        },
+        "neogeo": {
+            "sf2", "ssf2", "ssf2t", "sfa", "sfa2", "sfa3", "mvsc", "mvsc2", "sfiii",
+        },
+    }
+
+    _SYSTEM_SEARCH_STEMS: Dict[str, List[str]] = {
+        "neogeo": _AUTHORITATIVE_SYSTEM_ROMS["neogeo"],
+        "cps1": _AUTHORITATIVE_SYSTEM_ROMS["cps1"],
+        "cps2": _AUTHORITATIVE_SYSTEM_ROMS["cps2"],
+        "cps3": _AUTHORITATIVE_SYSTEM_ROMS["cps3"],
     }
 
     _GENRE_SEARCH_STEMS: Dict[str, Dict[str, List[str]]] = {
         "fighting": {
             "neogeo": [
-                "kof", "samsho", "garou", "fatal", "aof", "lastblad", "whp", "svc",
-                "breakers", "kabukikl", "ninjamas", "rotd", "wakuwak7", "kizuna",
-                "savagere", "matrim", "rbff",
+                "kof94", "kof95", "kof96", "kof97", "kof98", "kof99", "kof2000", "kof2001",
+                "kof2002", "kof2003", "samsho", "samsho2", "samsho3", "samsho4", "samsho5",
+                "samsho5sp", "garou", "fatfury1", "fatfury2", "fatfury3", "rbff1", "rbff2",
+                "rbffspec", "aof", "aof2", "aof3", "lastblad", "lastbld2", "wh1", "wh2",
+                "wh2jet", "whp", "svc", "rotd", "matrim", "wakuwak7", "kabukikl", "breakers",
+                "breakrev", "ninjamas", "kizuna", "savagere", "karnovr",
             ],
-            "cps1": ["sf2", "slammast"],
-            "cps2": ["sfa", "msh", "vsav", "dstlk", "xmcota", "xmvsf", "mshvsf", "mvsc", "cybots", "ringdest"],
-            "cps3": ["sfiii", "jojo", "redearth"],
-            "all": ["sf2", "sfa", "kof", "samsho", "mk", "tekken", "vsav", "garou", "fatal", "soulcal"],
+            "cps1": ["sf2", "sf2ce", "sf2hf", "slammast", "mbombrd"],
+            "cps2": [
+                "ssf2", "ssf2t", "ssf2xj", "hsf2", "sfa", "sfa2", "sfa3",
+                "msh", "vsav", "vhunt2", "vsav2", "nwarr", "dstlk",
+                "xmcota", "xmvsf", "mshvsf", "mvsc", "cybots", "ringdest", "sgemf",
+            ],
+            "cps3": ["sfiii", "sfiii2", "sfiii3", "jojo", "jojoba", "redearth"],
+            "all": [
+                "sf2", "ssf2t", "sfa2", "sfa3", "kof98", "kof2002", "samsho2", "mk",
+                "tekken3", "vsav", "garou", "rbffspec", "soulclbr", "mvsc", "sfiii3",
+            ],
         },
         "beatemup": {
-            "neogeo": ["sengoku", "mutnat", "burningf", "roboarmy", "eightman"],
+            "neogeo": ["sengoku", "sengoku2", "sengoku3", "mutnat", "burningf", "roboarmy", "eightman"],
             "cps1": ["ffight", "dino", "punisher", "captcomm", "knights", "wof", "kod"],
             "cps2": ["avsp", "ddtod", "ddsom", "batcir", "armwar"],
-            "all": ["ffight", "ddonpach", "dino", "punisher", "captcomm", "tmnt", "simpsons", "xmen", "avsp", "sengoku"],
+            "all": ["ffight", "dino", "punisher", "captcomm", "tmnt", "simpsons", "xmen", "avsp", "ddsom", "sengoku3"],
         },
         "runandgun": {
-            "neogeo": ["mslug", "shocktro", "cyberlip", "nam1975", "spinmast", "tophuntr"],
-            "cps1": ["mercs", "strider", "ghouls", "willow"],
-            "cps2": ["progear"],
-            "all": ["mslug", "contra", "sunset", "shocktro", "gunforce", "mercs", "greenber"],
+            "neogeo": ["mslug", "mslug2", "mslug3", "mslug4", "mslug5", "mslugx", "shocktro", "shocktr2", "cyberlip", "nam1975"],
+            "cps1": ["mercs", "cawing", "forgottn", "varth"],
+            "cps2": ["progear", "ecofghtr"],
+            "all": ["mslug", "mslugx", "mslug3", "contra", "ssriders", "shocktro", "gunforce", "mercs", "gberet"],
         },
         "shootemup": {
-            "neogeo": ["pulstar", "blazstar", "viewpoin", "lastreso", "twinspri", "aerofgt", "strikers", "preisle2"],
+            "neogeo": [
+                "pulstar", "blazstar", "viewpoin", "lastreso", "twinspri",
+                "aerofig2", "aerofig3", "strik1945p", "preisle2", "zedblade", "androdu", "alpham2",
+            ],
             "cps1": ["1941", "varth", "cawing", "forgottn", "unsquad"],
-            "cps2": ["1944", "gigawing", "marsmatr", "19xx", "EcoFight"],
-            "all": ["1942", "1943", "raiden", "rtypes", "gradius", "dodonpach", "pulstar", "blazstar", "gigawing"],
+            "cps2": ["1944", "19xx", "gigawing", "progear", "marsmatr", "dimahoo", "ecofghtr"],
+            "all": ["1942", "1943", "19xx", "raiden", "rtype", "gradius", "ddonpach", "pulstar", "blazstar", "gigawing", "marsmatr"],
         },
         "platform": {
-            "neogeo": ["tophuntr", "spinmast", "maglord", "bjourney", "zuon"],
-            "cps1": ["ghouls", "strider", "megaman", "nemo", "mtwins", " Willow"],
+            "neogeo": ["tophuntr", "spinmast", "maglord", "bjourney"],
+            "cps1": ["ghouls", "strider", "megaman", "nemo", "mtwins", "willow", "3wonders"],
             "cps2": ["megaman2"],
-            "all": ["snowbros", "bublbobl", "rainbow", "newzeal", "ghouls", "toki", "rastan", "shinobi"],
+            "all": ["snowbros", "bublbobl", "rainbow", "newzeal", "ghouls", "strider", "toki", "rastan", "shinobi", "willow"],
         },
         "puzzle": {
-            "neogeo": ["pbobble", "magicald", "joyjoy", "moneyid", "puzzledp", "gururin", "panicbom"],
-            "cps1": ["pnickj", "qad"],
-            "cps2": ["spf2t", "spuzzle", "puzzloop"],
-            "all": ["pbobble", "tetris", "columns", "klax", "spf2t", "puyo", "pang"],
+            "neogeo": ["pbobble", "pbobble2", "magicald", "magdrop2", "magdrop3", "puzzledp", "joyjoy", "moneyid", "gururin", "panicbom"],
+            "cps1": ["pnickj", "qad", "qtono2", "pang3"],
+            "cps2": ["spf2t", "pzloop2", "mpang", "qndream", "choko"],
+            "all": ["pbobble", "atetris", "columns", "klax", "spf2t", "puyopuy2", "pang", "mpang", "magdrop3"],
         },
         "sports": {
-            "neogeo": ["windjamm", "ssideki", "turfmast", "neocup98", "2020bb", "strhoop", "stakwin"],
-            "all": ["windjamm", "nbajam", "ssideki", "turfmast", "trackfld", "archrivl", "blitz"],
+            "neogeo": ["windjamm", "ssideki", "ssideki2", "ssideki3", "ssideki4", "turfmast", "neocup98", "2020bb", "strhoop"],
+            "cps2": ["csclub"],
+            "all": ["windjamm", "nbajam", "ssideki2", "turfmast", "trackfld", "archrivl", "csclub"],
         },
         "racing": {
-            "neogeo": ["overtop", "neodrift", "thrashr", "ridhero"],
-            "all": ["outrun", "daytona", "segarally", "chashq", "hangon", "cruisnu", "overtop", "neodrift"],
+            "neogeo": ["overtop", "neodrift", "thrashr"],
+            "all": ["outrun", "daytona", "srally", "chasehq", "hangon", "overtop", "neodrift"],
         },
         "maze": {
-            "all": ["pacman", "mspacman", "galaga", "digdug", "pengo", "bomberman", "frogger"],
+            "all": ["pacman", "mspacman", "galaga", "digdug", "pengo", "bbmanw", "frogger"],
         },
     }
 
     def __init__(self) -> None:
         self.store = LiveReferentialStore(self.source_id, ttl_seconds=43200)
 
-    async def _harvest_from_lista_mame(self, client: Any, token: str) -> List[str]:
-        """Scrape valid MAME `game_name` identifiers from ArcadeItalia's HTTPS `lista_mame.php` search."""
+    @classmethod
+    def is_rom_allowed_for_system(cls, rom: str, sys_key: Optional[str]) -> bool:
+        """Return True if `rom` is permitted on `sys_key` (rejects Naomi `mvsc2` on `cps2`, etc.)."""
+        r = (rom or "").strip().lower()
+        if not r or r.startswith(_IGNORED_MAME_PREFIXES):
+            return False
+        if not sys_key:
+            return True
+        canon_sys = resolve_canonical_system(sys_key)
+        forbidden = cls._FORBIDDEN_ROMS_BY_SYSTEM.get(canon_sys)
+        if forbidden and r in forbidden:
+            return False
+        return True
+
+    async def _harvest_from_lista_mame(
+        self, client: Any, token: str, sys_key: Optional[str] = None
+    ) -> List[str]:
+        """Scrape valid parent MAME `game_name` identifiers from ArcadeItalia's HTTPS `lista_mame.php` search."""
         discovered: List[str] = []
         try:
             resp = await client.get(
                 "https://adb.arcadeitalia.net/lista_mame.php",
-                params={"ricerca": token, "arcade_only": "1", "lang": "en"},
+                params={"ricerca": token, "arcade_only": "1", "cloni": "0", "lang": "en"},
                 timeout=5.0,
             )
             if resp.status_code == 200 and resp.text:
                 for match in _ADB_ROM_LINK_RE.finditer(resp.text):
                     rom = match.group(1).lower().strip()
-                    if rom and not rom.startswith(_IGNORED_MAME_PREFIXES) and rom not in discovered:
+                    if (
+                        rom
+                        and self.is_rom_allowed_for_system(rom, sys_key)
+                        and rom not in discovered
+                    ):
                         discovered.append(rom)
         except Exception as exc:
             logger.debug("[REFERENTIAL:arcadeitalia] lista_mame harvest for '%s' failed: %s", token, exc)
@@ -829,19 +913,32 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
 
         if chosen_genre and chosen_genre in self._GENRE_SEARCH_STEMS:
             g_map = self._GENRE_SEARCH_STEMS[chosen_genre]
-            stems_pool = list(g_map.get(specific_sys or "all") or g_map.get("all") or [])
+            stems_pool = [
+                s.strip().lower()
+                for s in (g_map.get(specific_sys or "all") or g_map.get("all") or [])
+                if s and self.is_rom_allowed_for_system(s, specific_sys)
+            ]
             if stems_pool:
                 bucket_key = f"{specific_sys or 'arcade'}:{chosen_genre}"
                 by_sg = dict(((ref_data.get("metadata") or {}).get("by_system_genre")) or {})
-                sg_tokens: List[str] = list(by_sg.get(bucket_key) or [])
+                sg_tokens: List[str] = [
+                    r
+                    for r in (by_sg.get(bucket_key) or [])
+                    if self.is_rom_allowed_for_system(r, specific_sys)
+                ]
                 unseen_sg = [r for r in sg_tokens if f"games_adb_{r}" not in seen_ids]
                 if len(unseen_sg) < max(6, count):
-                    random.shuffle(stems_pool)
-                    for stem in stems_pool[:3]:
-                        fresh = await self._harvest_from_lista_mame(client, stem.strip())
+                    unseen_stems = [
+                        s for s in stems_pool if s not in sg_tokens and f"games_adb_{s}" not in seen_ids
+                    ] or list(stems_pool)
+                    random.shuffle(unseen_stems)
+                    for stem in unseen_stems[:4]:
+                        fresh = await self._harvest_from_lista_mame(client, stem, sys_key=specific_sys)
                         for rom in fresh:
-                            if rom not in sg_tokens:
+                            if rom not in sg_tokens and self.is_rom_allowed_for_system(rom, specific_sys):
                                 sg_tokens.append(rom)
+                        if stem not in sg_tokens and self.is_rom_allowed_for_system(stem, specific_sys):
+                            sg_tokens.append(stem)
                         if len([r for r in sg_tokens if f"games_adb_{r}" not in seen_ids]) >= max(8, count * 2):
                             break
                     by_sg[bucket_key] = sg_tokens
@@ -853,17 +950,25 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
 
         if specific_sys:
             by_system = dict(((ref_data.get("metadata") or {}).get("by_system")) or {})
-            sys_tokens: List[str] = list(by_system.get(specific_sys) or [])
+            sys_tokens: List[str] = [
+                r
+                for r in (by_system.get(specific_sys) or [])
+                if self.is_rom_allowed_for_system(r, specific_sys)
+            ]
             unseen_sys = [r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]
             if len(unseen_sys) < count:
-                stems = list(self._SYSTEM_SEARCH_STEMS[specific_sys])
+                stems = [
+                    s
+                    for s in self._SYSTEM_SEARCH_STEMS[specific_sys]
+                    if s not in sys_tokens and f"games_adb_{s}" not in seen_ids
+                ] or list(self._SYSTEM_SEARCH_STEMS[specific_sys])
                 random.shuffle(stems)
-                for stem in stems[:2]:
-                    fresh = await self._harvest_from_lista_mame(client, stem)
+                for stem in stems[:4]:
+                    fresh = await self._harvest_from_lista_mame(client, stem, sys_key=specific_sys)
                     for rom in fresh:
-                        if rom not in sys_tokens:
+                        if rom not in sys_tokens and self.is_rom_allowed_for_system(rom, specific_sys):
                             sys_tokens.append(rom)
-                    if len([r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]) >= count:
+                    if len([r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]) >= max(6, count):
                         break
                 by_system[specific_sys] = sys_tokens
                 self.store.save(tokens=sys_tokens, metadata={"by_system": by_system})

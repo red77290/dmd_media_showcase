@@ -74,13 +74,21 @@ class TmdbSeriesAdapter(IScraperSource):
                 headers=auth_headers,
             )
             if v_resp.status_code == 200:
-                for v in v_resp.json().get("results") or []:
+                vids = list(v_resp.json().get("results") or [])
+                vids.sort(
+                    key=lambda v: (
+                        0
+                        if str(v.get("type") or "").lower() in ("trailer", "opening credits")
+                        else (1 if str(v.get("type") or "").lower() == "teaser" else 2),
+                        0 if v.get("official") else 1,
+                    )
+                )
+                for v in vids:
                     site = str(v.get("site") or "")
                     key = str(v.get("key") or "").strip()
                     if site == "YouTube" and key:
                         cand.youtube_url = f"https://www.youtube.com/watch?v={key}"
-                        if str(v.get("type", "")).lower() == "trailer":
-                            break
+                        break
                     elif site == "Vimeo" and key and not cand.youtube_url:
                         cand.youtube_url = f"https://vimeo.com/{key}"
         except Exception:
@@ -115,7 +123,7 @@ class TmdbSeriesAdapter(IScraperSource):
         try:
             i_resp = await client.get(
                 f"https://api.themoviedb.org/3/tv/{tv_id}/images",
-                params=auth_params,
+                params={**auth_params, "include_image_language": f"{short_lang},en,null"},
                 headers=auth_headers,
             )
             if i_resp.status_code == 200:
@@ -163,9 +171,12 @@ class TmdbSeriesAdapter(IScraperSource):
             "sort_by": "popularity.desc",
             "vote_count.gte": "60",
             "vote_average.gte": str(max(5.0, criteria.min_rating)),
+            "without_genres": "10763,10767",
         }
         if genre_keys:
-            base_params["with_genres"] = "|".join({str(SERIES_GENRES[g]["tmdb_id"]) for g in genre_keys})
+            base_params["with_genres"] = str(g_meta["tmdb_id"])
+            if g_meta.get("tmdb_keyword_id"):
+                base_params["with_keywords"] = str(g_meta["tmdb_keyword_id"])
 
         valid_decades = [d for d in criteria.decades if d in DECADE_BOUNDS]
         if valid_decades:
@@ -174,12 +185,17 @@ class TmdbSeriesAdapter(IScraperSource):
             base_params["first_air_date.lte"] = end_d
 
         results: List[MediaCandidate] = []
+        max_page = 20
+        tried_pages: Set[int] = set()
         async with create_async_http_client(timeout=5.5) as client:
             for _ in range(max(2, count * 2)):
                 if len(results) >= count:
                     break
                 params = dict(base_params)
-                params["page"] = str(random.randint(1, 20))
+                avail_pages = [p for p in range(1, max(2, max_page + 1)) if p not in tried_pages] or [1]
+                chosen_page = random.choice(avail_pages)
+                tried_pages.add(chosen_page)
+                params["page"] = str(chosen_page)
                 try:
                     resp = await client.get(
                         "https://api.themoviedb.org/3/discover/tv",
@@ -190,8 +206,11 @@ class TmdbSeriesAdapter(IScraperSource):
                         continue
                     payload = resp.json()
                     total_pages = min(int(payload.get("total_pages") or 1), 500)
+                    max_page = max(1, min(20, total_pages))
                     if int(params["page"]) > total_pages and total_pages >= 1:
-                        params["page"] = str(random.randint(1, total_pages))
+                        fallback_page = random.randint(1, total_pages)
+                        tried_pages.add(fallback_page)
+                        params["page"] = str(fallback_page)
                         resp = await client.get(
                             "https://api.themoviedb.org/3/discover/tv",
                             params=params,
@@ -206,6 +225,11 @@ class TmdbSeriesAdapter(IScraperSource):
                         item_id = f"series_tmdb_{tv_id}"
                         if not tv_id or item_id in seen_ids:
                             continue
+                        item_gids = item.get("genre_ids")
+                        if genre_keys and isinstance(item_gids, list) and item_gids:
+                            if int(g_meta["tmdb_id"]) not in item_gids:
+                                seen_ids.add(item_id)
+                                continue
                         poster_path = item.get("poster_path")
                         backdrop_path = item.get("backdrop_path")
                         if not poster_path:

@@ -5,7 +5,7 @@ Canonical Pydantic data models for the DMD Media Showcase API.
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
 DomainType = Literal["games", "movies", "series", "anime"]
@@ -152,9 +152,17 @@ class SessionRegisterRequest(BaseModel):
     )
     video_fps: int = Field(default=15, ge=6, le=60, description="Target video frame rate.")
     video_mode: Literal[
-        "auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"
-    ] = "auto_action"
-    color_boost: bool = True
+        "auto_action", "panorama", "center_crop", "pixel_art", "anime", "cinema"
+    ] = Field(
+        default="auto_action",
+        description="Video framing strategy: 'auto_action' (Let Me Handle It AI), 'panorama' (top-bottom scan), or 'center_crop' (static center crop).",
+    )
+    color_boost: Union[
+        Literal["auto", "pixel_art", "anime", "cinema"], bool, str
+    ] = Field(
+        default="auto",
+        description="LED colorimetry profile: 'auto' (Let Me Handle It AI Smart Color Boost), 'pixel_art', 'anime', or 'cinema'.",
+    )
 
     # Domain-specific filters
     systems: List[str] = Field(

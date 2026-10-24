@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 DomainType = Literal["games", "movies", "series", "anime"]
 
@@ -63,7 +63,7 @@ class FilterCriteria:
     video_max_duration_s: float = 8.0
     video_fps: int = 15
     video_mode: str = "auto_action"
-    color_boost: bool = True
+    color_boost: Union[str, bool] = "auto"
 
 
 @dataclass

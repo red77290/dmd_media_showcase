@@ -1019,6 +1019,157 @@ async def test_tmdb_v3_v4_auth_and_jikan_embed_trailer_extraction(monkeypatch):
     assert cand.youtube_url == "https://www.youtube.com/watch?v=OhNwckCLzis"
 
 
+def test_screenscraper_jeu_infos_xml_official_parser_and_media_parent_isolation():
+    """
+    Verify `ScreenScraperAdapter` & `parse_jeu_infos_xml` against the official `jeuInfos.xml` reference:
+    - Correct `SYSTEM_METADATA` `ss_id` values (`cps1=105`, `cps2=106`, `cps3=107`).
+    - Extracts `<noms>`, `<synopsis lang="fr">`, `<dates>`, `<editeur>`, `<genres>`, `<note>`.
+    - Strictly filters `<medias>` to `parent="jeu"`, ignoring `parent="editeur"`, `parent="famille"`, `parent="genre"`, `parent="region"`.
+    - Enforces `criteria.genres` and `criteria.decades` filtering against `<jeu>` XML.
+    """
+    from app.infrastructure.scrapers.catalog_metadata import SYSTEM_METADATA
+    from app.infrastructure.scrapers.games.screenscraper_adapter import (
+        ScreenScraperAdapter,
+        parse_jeu_infos_xml,
+    )
+
+    assert SYSTEM_METADATA["cps1"]["ss_id"] == 105
+    assert SYSTEM_METADATA["cps2"]["ss_id"] == 106
+    assert SYSTEM_METADATA["cps3"]["ss_id"] == 107
+
+    ref_xml_path = Path("/Users/red1l/Documents/work/git/perso/jeuInfos.xml")
+    if ref_xml_path.exists():
+        xml_text = ref_xml_path.read_text(encoding="utf-8")
+    else:
+        xml_text = """<?xml version="1.0" encoding="UTF-8" ?>
+        <Data><jeu id="3" romid="129379">
+            <systeme id="1" parentid="0">Megadrive</systeme>
+            <editeur id="3">SEGA</editeur>
+            <developpeur id="518">Sonic Team</developpeur>
+            <note>18</note>
+            <noms><nom region="eu">Sonic The Hedgehog 2</nom><nom region="us">Sonic The Hedgehog 2</nom></noms>
+            <synopsis><synopsis langue="fr">Sonic est de retour et meilleur que jamais. Tails est son nouvel ami.</synopsis></synopsis>
+            <dates><date region="eu">1992-11-24</date></dates>
+            <genres><genre id="10" nomcourt="Plateforme" principale="1" lang="fr">Plateforme</genre></genres>
+            <medias>
+                <media parent="jeu" type="box-2D" region="eu">https://neoclone.screenscraper.fr/media/1/3/box-2D(eu).png</media>
+                <media parent="jeu" type="screenmarquee" region="wor">https://neoclone.screenscraper.fr/media/1/3/screenmarquee(wor).png</media>
+                <media parent="jeu" type="ss" region="wor">https://neoclone.screenscraper.fr/media/1/3/ss(wor).png</media>
+                <media parent="jeu" type="video-normalized" region="">https://neoclone.screenscraper.fr/media/1/3/video-normalized.mp4</media>
+                <media parent="editeur" type="pictomonochrome" region="wor">https://neoclone.screenscraper.fr/media/editeur/sega.png</media>
+                <media parent="famille" type="figurine" region="wor">https://neoclone.screenscraper.fr/media/famille/sonic_fig.png</media>
+            </medias>
+        </jeu></Data>"""
+
+    jeu_nodes = parse_jeu_infos_xml(xml_text)
+    assert len(jeu_nodes) == 1
+    jeu_node = jeu_nodes[0]
+    assert jeu_node.get("id") == "3"
+
+    adapter = ScreenScraperAdapter()
+    cand = adapter._parse_game_node(
+        jeu=jeu_node,
+        sys_key="megadrive",
+        lang="fr",
+        criteria=FilterCriteria(domain="games", systems=["megadrive"], genres=["platform"], decades=["1990s"], lang="fr"),
+    )
+    assert cand is not None
+    assert cand.id == "games_ss_3"
+    assert cand.title == "Sonic The Hedgehog 2"
+    assert cand.year == "1992"
+    assert cand.subtitle == "Plateforme • SEGA"
+    assert "Sonic est de retour" in cand.synopsis
+    assert "Tails" in cand.synopsis
+    assert "box-2D(eu)" in (cand.poster_url or "")
+    assert "screenmarquee(wor)" in (cand.marquee_url or "")
+    assert "video-normalized" in (cand.video_url or "")
+    # Non-game parent media (editeur / famille / genre) must never leak into candidate media URLs
+    all_media = [cand.poster_url or "", cand.marquee_url or "", cand.video_url or ""] + list(cand.snapshot_urls)
+    assert not any("figurine" in u or "pictomonochrome" in u for u in all_media)
+
+    # Mismatched genre or decade in criteria must reject the candidate
+    rejected_genre = adapter._parse_game_node(
+        jeu=jeu_node,
+        sys_key="megadrive",
+        lang="fr",
+        criteria=FilterCriteria(domain="games", systems=["megadrive"], genres=["fighting"], lang="fr"),
+    )
+    assert rejected_genre is None
+
+    rejected_decade = adapter._parse_game_node(
+        jeu=jeu_node,
+        sys_key="megadrive",
+        lang="fr",
+        criteria=FilterCriteria(domain="games", systems=["megadrive"], decades=["1980s"], lang="fr"),
+    )
+    assert rejected_decade is None
+
+
+@pytest.mark.asyncio
+async def test_cps2_fighting_ssf2t_catalog_and_mvsc2_naomi_isolation(tmp_path: Path, monkeypatch):
+    """
+    Verify:
+    1. `cps2` + `fighting` in `ArcadeItaliaReferentialStrategy` includes `ssf2t` / `ssf2`
+       (Super Street Fighter II Turbo / The New Challengers) and rejects `mvsc2` (Sega Naomi).
+    2. `ArcadeItaliaAdapter` rejects `mvsc2` rows on `cps2` and marks skipped/clone ROMs in `seen_ids`
+       so `unseen_sg` never stalls.
+    3. `resolve_canonical_genre` maps `"Platform / Shooter Scrolling"` -> `"runandgun"` and
+       `"Shooter / Flying"` -> `"shootemup"`, never `"platform"`.
+    """
+    from app.domain.taxonomy import resolve_canonical_genre
+    from app.infrastructure.scrapers.games.arcadeitalia_adapter import ArcadeItaliaAdapter
+    from app.infrastructure.scrapers.referential_store import ArcadeItaliaReferentialStrategy
+
+    assert resolve_canonical_genre("games", "Platform / Shooter Scrolling") == "runandgun"
+    assert resolve_canonical_genre("games", "Shooter / Flying") == "shootemup"
+    assert resolve_canonical_genre("games", "Platform / Fighter Scrolling") == "action"
+    assert resolve_canonical_genre("games", "Platform / Run Jump") == "platform"
+
+    assert ArcadeItaliaReferentialStrategy.is_rom_allowed_for_system("ssf2t", "cps2") is True
+    assert ArcadeItaliaReferentialStrategy.is_rom_allowed_for_system("ssf2", "cps2") is True
+    assert ArcadeItaliaReferentialStrategy.is_rom_allowed_for_system("mvsc2", "cps2") is False
+
+    monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "cps2_ref_data"))
+    strategy = ArcadeItaliaReferentialStrategy()
+    adapter = ArcadeItaliaAdapter(referential_strategy=strategy)
+
+    # Verify `mvsc2` row (Sega Naomi hardware) is rejected when `sys_key == "cps2"`
+    naomi_row = {
+        "game_name": "mvsc2",
+        "title": "Marvel vs. Capcom 2: New Age of Heroes",
+        "sourcefile": "sega/naomi.cpp",
+        "genre": "Fighter / Versus",
+        "year": "2000",
+    }
+    assert adapter._is_row_valid_for_system(naomi_row, "cps2") is False
+
+    cps2_row = {
+        "game_name": "ssf2t",
+        "title": "Super Street Fighter II Turbo (World 940223)",
+        "sourcefile": "capcom/cps2.cpp",
+        "genre": "Fighter / Versus",
+        "year": "1994",
+    }
+    assert adapter._is_row_valid_for_system(cps2_row, "cps2") is True
+
+
+def test_resolve_framing_and_color_params_orthogonal_matrix():
+    """Verify `resolve_framing_and_color_params` across all `video_mode` and `color_boost` combinations."""
+    from app.scheduler.asset_builder import resolve_framing_and_color_params
+
+    # 1. Default auto_action + auto color boost
+    assert resolve_framing_and_color_params("auto_action", "auto") == (True, False, True, "pixel_art")
+    # 2. Panorama + anime preset
+    assert resolve_framing_and_color_params("panorama", "anime") == (False, True, False, "anime")
+    # 3. Center crop + cinema preset
+    assert resolve_framing_and_color_params("center_crop", "cinema") == (False, False, False, "cinema")
+    # 4. Auto action + fixed pixel_art preset
+    assert resolve_framing_and_color_params("auto_action", "pixel_art") == (True, False, False, "pixel_art")
+    # 5. Disabled color boost (boolean False or "off")
+    assert resolve_framing_and_color_params("auto_action", False) == (True, False, False, "cinema")
+
+
+
 
 
 

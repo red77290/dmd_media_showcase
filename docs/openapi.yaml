@@ -1905,19 +1905,24 @@
             "type": "string",
             "enum": [
               "auto_action",
-              "center_crop",
-              "pixel_art",
-              "anime",
-              "cinema",
-              "panorama"
+              "panorama",
+              "center_crop"
             ],
             "title": "Video Mode",
+            "description": "Video framing strategy: 'auto_action' (Let Me Handle It AI), 'panorama' (top-bottom scan), or 'center_crop' (static center crop).",
             "default": "auto_action"
           },
           "color_boost": {
-            "type": "boolean",
+            "type": "string",
+            "enum": [
+              "auto",
+              "pixel_art",
+              "anime",
+              "cinema"
+            ],
             "title": "Color Boost",
-            "default": true
+            "description": "LED colorimetry profile: 'auto' (Let Me Handle It AI Smart Color Boost), 'pixel_art', 'anime', or 'cinema'.",
+            "default": "auto"
           },
           "systems": {
             "items": {

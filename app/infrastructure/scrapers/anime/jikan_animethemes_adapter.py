@@ -84,6 +84,11 @@ async def enrich_with_animethemes_webm(
                     cand.jacket_url = str(link)
                 cand.add_unique_snapshot(str(link))
 
+        # When the user explicitly requests `video_type="trailer"` and a YouTube trailer is already present,
+        # do not overwrite it with an OP/ED .webm from AnimeThemes.
+        if video_type == "trailer" and cand.youtube_url:
+            return
+
         for theme in anime_obj.get("animethemes") or []:
             ttype = str(theme.get("type") or "")
             if target_prefix and not ttype.startswith(target_prefix):
@@ -224,12 +229,14 @@ class JikanAnimeThemesAdapter(IScraperSource):
         chosen_genre_key = random.choice(genre_keys) if genre_keys else "shonen"
         g_meta = ANIME_GENRES[chosen_genre_key]
 
+        req_mal_id = int(g_meta["mal_id"])
         base_params: Dict[str, str] = {
-            "genres": str(g_meta["mal_id"]),
+            "genres": str(req_mal_id),
             "order_by": "members",
             "sort": "desc",
             "limit": "25",
             "sfw": "true",
+            "min_score": str(max(6.0, criteria.min_rating)),
         }
         valid_decades = [d for d in criteria.decades if d in DECADE_BOUNDS]
         if valid_decades:
@@ -238,20 +245,31 @@ class JikanAnimeThemesAdapter(IScraperSource):
             base_params["end_date"] = end_d
 
         results: List[MediaCandidate] = []
-        async with create_async_http_client(timeout=2.0) as client:
-            for _ in range(max(1, count)):
+        tried_pages: Set[int] = set()
+        max_page = 12
+        async with create_async_http_client(timeout=6.0) as client:
+            for _ in range(max(2, count * 2)):
                 if len(results) >= count:
                     break
+                avail_pages = [p for p in range(1, max_page + 1) if p not in tried_pages]
+                if not avail_pages:
+                    break
+                page = random.choice(avail_pages)
+                tried_pages.add(page)
                 params = dict(base_params)
-                params["page"] = str(random.randint(1, 12))
+                params["page"] = str(page)
                 try:
                     resp = await client.get("https://api.jikan.moe/v4/anime", params=params)
                     if resp.status_code != 200:
                         continue
                     payload = resp.json()
                     last_page = int(((payload.get("pagination") or {}).get("last_visible_page")) or 1)
-                    if int(params["page"]) > last_page and last_page >= 1:
-                        params["page"] = str(random.randint(1, last_page))
+                    max_page = max(1, min(15, last_page))
+                    if page > last_page and last_page >= 1:
+                        fallback_pages = [p for p in range(1, max_page + 1) if p not in tried_pages] or [1]
+                        page = random.choice(fallback_pages)
+                        tried_pages.add(page)
+                        params["page"] = str(page)
                         resp = await client.get("https://api.jikan.moe/v4/anime", params=params)
                         payload = resp.json() if resp.status_code == 200 else {}
 
@@ -263,6 +281,19 @@ class JikanAnimeThemesAdapter(IScraperSource):
                         cid = f"anime_jikan_{item.get('mal_id')}"
                         if cid in seen_ids:
                             continue
+                        item_genre_objs = (
+                            (item.get("genres") or [])
+                            + (item.get("themes") or [])
+                            + (item.get("demographics") or [])
+                        )
+                        if item_genre_objs:
+                            item_mal_ids = {
+                                int(g.get("mal_id"))
+                                for g in item_genre_objs
+                                if isinstance(g, dict) and str(g.get("mal_id") or "").isdigit()
+                            }
+                            if item_mal_ids and req_mal_id not in item_mal_ids:
+                                continue
                         cand = await self._build_jikan_candidate(
                             client, item, g_meta, criteria.lang, criteria.video_type
                         )
