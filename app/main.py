@@ -658,8 +658,9 @@ def run() -> None:
         ssl_kwargs["ssl_certfile"] = settings.ssl_certfile
         ssl_kwargs["ssl_keyfile"] = settings.ssl_keyfile
 
+    target_app: Any = app if getattr(sys, "frozen", False) else "app.main:app"
     uvicorn.run(
-        "app.main:app",
+        target_app,
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level.lower(),
@@ -670,4 +671,7 @@ def run() -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     run()

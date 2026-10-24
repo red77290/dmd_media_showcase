@@ -418,6 +418,19 @@ def test_hermetic_portable_environment_isolation(tmp_path: Path, monkeypatch):
     assert "PYTHONHOME" not in os.environ
     assert os.environ.get("PYTHONNOUSERSITE") == "1"
 
+    # Verify macOS `.app` bundle never writes inside `.app/Contents/MacOS/data`
+    import app.portable_env as penv
+
+    fake_app_bin = tmp_path / "DMD Media Showcase.app" / "Contents" / "MacOS" / "dmd-media-showcase-server"
+    monkeypatch.delenv("DMD_DATA_DIR", raising=False)
+    monkeypatch.setattr(penv.sys, "platform", "darwin")
+    monkeypatch.setattr(penv.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(penv.sys, "executable", str(fake_app_bin))
+    monkeypatch.setattr(penv.Path, "home", classmethod(lambda cls: tmp_path / "fake_home"))
+    assert penv.is_macos_app_bundle() is True
+    app_data_dir = penv.get_data_dir()
+    assert app_data_dir == (tmp_path / "fake_home" / "Library" / "Application Support" / "DMDMediaShowcase" / "data").resolve()
+
 
 @pytest.mark.asyncio
 async def test_live_referential_strategy_zero_hardcoded_roms(tmp_path: Path, monkeypatch):

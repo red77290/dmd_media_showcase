@@ -28,25 +28,39 @@ def get_bundle_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def is_macos_app_bundle() -> bool:
+    """Return True when running inside a macOS `.app` bundle (`.../Contents/MacOS`)."""
+    if sys.platform != "darwin":
+        return False
+    return ".app/Contents/" in f"{get_bundle_root().as_posix()}/"
+
+
 def get_internal_bin_dir() -> Path:
-    """Return the bundled `_internal/bin` directory containing static `ffmpeg` and `ffprobe`."""
+    """Return the bundled `bin` directory containing static `ffmpeg` and `ffprobe`."""
     root = get_bundle_root()
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidate = Path(meipass) / "bin"
         if candidate.exists():
             return candidate
-    internal_bin = root / "_internal" / "bin"
-    if internal_bin.exists():
-        return internal_bin
+    for candidate in (
+        root / "_internal" / "bin",
+        root.parent / "Frameworks" / "bin",
+        root.parent / "Resources" / "bin",
+    ):
+        if candidate.exists():
+            return candidate
     return root / "bin"
 
 
 def get_data_dir() -> Path:
-    """Return the persistent `./data` directory used for `server_config.json` and `seen_history.json`."""
+    """Return the persistent `data` directory used for `server_config.json` and `seen_history.json`."""
     env_data = os.environ.get("DMD_DATA_DIR")
     if env_data:
-        path = Path(env_data).resolve()
+        path = Path(env_data).expanduser().resolve()
+    elif is_macos_app_bundle():
+        # Never write inside `.app/Contents/...` (breaks macOS codesign seal and fails on read-only .dmg)
+        path = (Path.home() / "Library" / "Application Support" / "DMDMediaShowcase" / "data").resolve()
     else:
         path = get_bundle_root() / "data"
     path.mkdir(parents=True, exist_ok=True)
@@ -63,7 +77,11 @@ def enforce_hermetic_environment() -> Path:
 
     if is_portable_bundle():
         bin_dir = get_internal_bin_dir()
-        bin_dir.mkdir(parents=True, exist_ok=True)
+        if not bin_dir.exists():
+            try:
+                bin_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
         # Strictly isolate PATH to the bundled bin directory + minimal OS kernel dirs
         if sys.platform == "win32":
             sys_root = os.environ.get("SystemRoot", r"C:\Windows")

@@ -97,6 +97,10 @@ jobs:
           TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
           SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
           SCREENSCRAPER_DEV_PASS: ${{ secrets.SCREENSCRAPER_DEV_PASS }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           python - <<'PY'
           import os, re, tomllib
@@ -119,16 +123,20 @@ jobs:
               assert tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == pep_ver
               print(f"Stamped release version: {raw_ver} (PEP 440: {pep_ver})")
           PY
-          python -m pip install --upgrade pip setuptools pyinstaller
+          python -m pip install --upgrade pip setuptools pyinstaller pillow
           python scripts/compile_prod_vault.py
           python -m pip install "."
           python scripts/build_portable.py
 
-      - name: Upload portable zip artifact
+      - name: Upload native installer or portable package artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/DMD_Media_Showcase_Portable_*.zip
+          if-no-files-found: error
+          path: |
+            dist/DMD_Media_Showcase_*.dmg
+            dist/DMD_Media_Showcase_*.zip
+            dist/DMD_Media_Showcase_*.tar.gz
 
   snapshot:
     name: Publish GitHub Release or SNAPSHOT (Wheels + Portable Bundles)
@@ -186,6 +194,15 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: dist/*
 
+      - name: Prune obsolete legacy Portable_*.zip assets from SNAPSHOT release
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for asset in DMD_Media_Showcase_Portable_macOS_arm64.zip DMD_Media_Showcase_Portable_Windows_x64.zip DMD_Media_Showcase_Portable_Linux_x64.zip; do
+            gh release delete-asset SNAPSHOT "$asset" --yes --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          done
+
       - name: Publish or Update Rolling SNAPSHOT Pre-Release (on branch push)
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: softprops/action-gh-release@v2
@@ -194,7 +211,7 @@ jobs:
           name: "dmd-media-showcase SNAPSHOT (Latest CI Build — ${{ github.ref_name }})"
           body: |
             Automated rolling snapshot built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
-            - **Hermetic Portable Packages** for **Windows x64**, **macOS Apple Silicon (arm64)**, and **Linux x64** (bundling Python, static `ffmpeg`/`ffprobe`, `dmd_gif_converter`, `yt-dlp`, and the embedded MQTT `:1883` broker).
+            - **Native Installers & Portable Packages**: **macOS Apple Silicon `.dmg`** (`DMD Media Showcase.app` Menu-Bar app), **Windows x64 `.zip`**, and **Linux x64 `.tar.gz`** (bundling Python, `ffmpeg`/`ffprobe`, `dmd_gif_converter`, `yt-dlp`, and the embedded MQTT `:1883` broker).
             - **DDD Ports & Adapters**: 2 dedicated sources per domain (`Primary` + `Fallback`), strict `Consume-Once` (`seen_history.json`), and real-time `ffmpeg -re` UDP `DMDF` streaming.
           prerelease: true
           files: dist/*
