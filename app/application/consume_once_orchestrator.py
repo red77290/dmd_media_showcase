@@ -109,6 +109,38 @@ class ConsumeOnceOrchestrator:
             on_client_event=self.handle_mqtt_client_event,
         )
 
+    def describe_connected_clients(self) -> List[Dict[str, Any]]:
+        """Return a summary of currently registered DMD clients and their prepared queue slots."""
+        out: List[Dict[str, Any]] = []
+        for (dmd_id, domain), (geom, crit) in sorted(self.client_configs.items()):
+            ready_pkg = self.ready_packages.get((dmd_id, domain))
+            standby_pkg = self.standby_packages.get((dmd_id, domain))
+            prep_task = self._prep_tasks.get((dmd_id, domain))
+            active_pkg = next(
+                (p for p in self.active_packages.values() if p.dmd_id == dmd_id and p.domain == domain),
+                None,
+            )
+            out.append(
+                {
+                    "dmd_id": dmd_id,
+                    "domain": domain,
+                    "client_ip": self.client_udp_ips.get(dmd_id, ""),
+                    "width": geom.width,
+                    "height": geom.height,
+                    "lang": crit.lang,
+                    "video_mode": crit.video_mode,
+                    "color_boost": crit.color_boost,
+                    "systems": list(crit.systems),
+                    "genres": list(crit.genres),
+                    "decades": list(crit.decades),
+                    "active_title": active_pkg.card.title if active_pkg else None,
+                    "ready_title": ready_pkg.card.title if ready_pkg else None,
+                    "standby_title": standby_pkg.card.title if standby_pkg else None,
+                    "preparing": bool(prep_task and not prep_task.done()),
+                }
+            )
+        return out
+
     def _parse_domain_criteria(
         self, domain: DomainType, raw_cfg: Dict[str, Any], top_lang: str = "fr"
     ) -> FilterCriteria:

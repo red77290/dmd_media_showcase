@@ -27,11 +27,22 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY scripts/compile_prod_vault.py ./scripts/compile_prod_vault.py
 
 ARG DMD_GIF_CONVERTER_REV=1d80df7
 
-RUN pip install --upgrade pip && \
+RUN --mount=type=secret,id=VAULT_MASTER_SECRET,required=false \
+    --mount=type=secret,id=TMDB_API_KEY,required=false \
+    --mount=type=secret,id=TVDB_API_KEY,required=false \
+    --mount=type=secret,id=SCREENSCRAPER_DEV_ID,required=false \
+    --mount=type=secret,id=SCREENSCRAPER_DEV_PASS,required=false \
+    apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev python3-dev && \
+    pip install --upgrade pip setuptools && \
+    python3 scripts/compile_prod_vault.py && \
+    rm -rf scripts build && \
     pip install . && \
+    apt-get purge -y --auto-remove gcc libc6-dev python3-dev && \
+    rm -rf /var/lib/apt/lists/* && \
     python3 -c "from src.plugins.detectors.detector import _ensure_yolo_model; _ensure_yolo_model()" && \
     mkdir -p /app/data /tmp/dmd_media_showcase_cache
 
