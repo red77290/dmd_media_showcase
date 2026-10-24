@@ -23,7 +23,7 @@ dependencies = [
     "numpy>=1.24.0",
     "opencv-python-headless>=4.9.0",
     "yt-dlp>=2024.5.0",
-    "dmd-gif-converter @ git+https://github.com/red77290/dmd_gif_converter.git@feat/headless-lib-and-cicd",
+    "dmd-gif-converter @ git+https://github.com/red77290/dmd_gif_converter.git@latest",
 ]
 
 [project.optional-dependencies]
