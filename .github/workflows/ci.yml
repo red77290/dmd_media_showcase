@@ -3,6 +3,7 @@ name: CI, Portable Bundles & Snapshot Pre-Release
 on:
   push:
     branches: ["main", "master", "feat/**"]
+    tags: ["v*"]
   pull_request:
     branches: ["main", "master"]
 
@@ -96,6 +97,10 @@ jobs:
           SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
           SCREENSCRAPER_DEV_PASS: ${{ secrets.SCREENSCRAPER_DEV_PASS }}
         run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            REL_VER="${GITHUB_REF_NAME#v}"
+            python -c "from pathlib import Path; import re; p=Path('pyproject.toml'); p.write_text(re.sub(r'^version = \".*\"', f'version = \"{REL_VER}\"', p.read_text(), count=1, flags=re.M)); a=Path('app/__init__.py'); a.write_text(re.sub(r'__version__ = \".*\"', f'__version__ = \"{REL_VER}\"', a.read_text()))"
+          fi
           python -m pip install --upgrade pip setuptools pyinstaller
           python scripts/compile_prod_vault.py
           python -m pip install "."
@@ -108,7 +113,7 @@ jobs:
           path: dist/DMD_Media_Showcase_Portable_*.zip
 
   snapshot:
-    name: Publish v3.0.0-SNAPSHOT Pre-Release (Wheels + Portable Bundles)
+    name: Publish GitHub Release or SNAPSHOT (Wheels + Portable Bundles)
     needs: [test, portable]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -121,8 +126,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build wheel and sdist
+      - name: Stamp version from release tag (if tag push) & Build wheel and sdist
         run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            REL_VER="${GITHUB_REF_NAME#v}"
+            python -c "from pathlib import Path; import re; p=Path('pyproject.toml'); p.write_text(re.sub(r'^version = \".*\"', f'version = \"{REL_VER}\"', p.read_text(), count=1, flags=re.M)); a=Path('app/__init__.py'); a.write_text(re.sub(r'__version__ = \".*\"', f'__version__ = \"{REL_VER}\"', a.read_text()))"
+          fi
           python -m pip install --upgrade pip build
           python -m build
 
@@ -132,13 +141,24 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Publish or Update v3.0.0-SNAPSHOT Pre-Release
+      - name: Publish Official GitHub Release (on tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.0.0-SNAPSHOT
-          name: "dmd-media-showcase v3.0.0-SNAPSHOT (DDD + MQTT/UDP + Hermetic Portable)"
+          tag_name: ${{ github.ref_name }}
+          name: "dmd-media-showcase ${{ github.ref_name }}"
+          generate_release_notes: true
+          prerelease: false
+          files: dist/*
+
+      - name: Publish or Update Rolling SNAPSHOT Pre-Release (on branch push)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: SNAPSHOT
+          name: "dmd-media-showcase SNAPSHOT (Latest CI Build — ${{ github.ref_name }})"
           body: |
-            Automated rolling V3.0 snapshot built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
+            Automated rolling snapshot built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
             - **Hermetic Portable Packages** for **Windows x64**, **macOS Apple Silicon (arm64)**, and **Linux x64** (bundling Python, static `ffmpeg`/`ffprobe`, `dmd_gif_converter`, `yt-dlp`, and the embedded MQTT `:1883` broker).
             - **DDD Ports & Adapters**: 2 dedicated sources per domain (`Primary` + `Fallback`), strict `Consume-Once` (`seen_history.json`), and real-time `ffmpeg -re` UDP `DMDF` streaming.
           prerelease: true

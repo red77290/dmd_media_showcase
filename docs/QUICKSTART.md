@@ -1,4 +1,4 @@
-# QuickStart & Deployment Guide — DMD Media Showcase Server (V3.0)
+# QuickStart & Deployment Guide — DMD Media Showcase Server
 
 🇬🇧 English | 🇫🇷 [Français](QUICKSTART_FR.md) | 🇪🇸 [Español](QUICKSTART_ES.md)
 
@@ -66,7 +66,7 @@ Open `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/`) in yo
 2. Navigate to **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`):
    - The **Showcase Server URL** is already pre-filled as `http://dmdmediashowcase.local:8890` and **disabled by default** (`⚪ Disabled`) so the DMD makes zero network requests if `dmd_media_showcase` is not installed.
    - Toggle **Enable DMD Media Showcase Server** ON and click **Save Showcase Server** (or **Test Connection**).
-   - Verify that the live connection status indicator turns green: **`🟢 Communication OK (v3.0.0)`**.
+   - Verify that the live connection status indicator turns green: **`🟢 Communication OK`**.
 3. Go to the **Screens / Rotation** tab, add any of the 4 Showcase engines (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`), and set the number of **Media** items per rotation turn.
 4. The DMD WebUI automatically queries `GET /api/v1/{domain}/filters?lang={ui_lang}` from the Showcase server to populate the **Systems**, **Genres**, and **Decades** dropdowns dynamically (filtering available genres/decades when you select a system such as `NES` or `Neo-Geo`).
 5. Adjust **Synopsis Scroll Speed** (`1 = Slow` to `10 = Turbo`, up to `160 px/s`) and click **Save**.

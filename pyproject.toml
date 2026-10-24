@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dmd-media-showcase"
-version = "3.0.0"
-description = "V3.0 DDD Media Showcase & Real-Time MQTT+UDP / HTTP Streaming Server (Games, Movies, TV Series, Anime) for HUB75 LED Matrices"
+version = "1.0.0"
+description = "DDD Media Showcase & Real-Time MQTT+UDP / HTTP Streaming Server (Games, Movies, TV Series, Anime) for HUB75 LED Matrices"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

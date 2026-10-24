@@ -22,7 +22,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DMD Media Showcase Server v3.0 — Control Center</title>
+  <title>DMD Media Showcase Server — Control Center</title>
   <style>
     :root {
       --bg: #0b0e14;
@@ -180,7 +180,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="brand">
         <div class="brand-logo">DMD</div>
         <div>
-          <h1>DMD Media Showcase Server v3.0</h1>
+          <h1>DMD Media Showcase Server</h1>
           <div class="subtitle" data-i18n="header_sub">
             Architecture DDD • MQTT Retain (:1883) + UDP Temps Réel • Consume-Once
           </div>

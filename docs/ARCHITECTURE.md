@@ -1,4 +1,4 @@
-# DDD Architecture & Real-Time Streaming Pipeline — DMD Media Showcase Server (V3.0)
+# DDD Architecture & Real-Time Streaming Pipeline — DMD Media Showcase Server
 
 🇬🇧 English | 🇫🇷 [Français](ARCHITECTURE_FR.md) | 🇪🇸 [Español](ARCHITECTURE_ES.md)
 

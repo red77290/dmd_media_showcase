@@ -1,4 +1,4 @@
-# Guía para Desarrolladores y Estrategias de Scrapers — DMD Media Showcase Server (V3.0)
+# Guía para Desarrolladores y Estrategias de Scrapers — DMD Media Showcase Server
 
 🇬🇧 [English](DEVELOPER.md) | 🇫🇷 [Français](DEVELOPER_FR.md) | 🇪🇸 Español
 

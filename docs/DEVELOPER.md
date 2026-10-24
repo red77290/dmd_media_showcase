@@ -1,4 +1,4 @@
-# Developer & Scraper Strategy Guide — DMD Media Showcase Server (V3.0)
+# Developer & Scraper Strategy Guide — DMD Media Showcase Server
 
 🇬🇧 English | 🇫🇷 [Français](DEVELOPER_FR.md) | 🇪🇸 [Español](DEVELOPER_ES.md)
 

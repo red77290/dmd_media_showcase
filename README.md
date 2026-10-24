@@ -1,4 +1,4 @@
-# DMD Media Showcase Server (V3.0)
+# DMD Media Showcase Server
 
 🇬🇧 English | 🇫🇷 [Français](README_FR.md) | 🇪🇸 [Español](README_ES.md)
 
@@ -43,7 +43,7 @@ docker compose up -d --build
 - **Web Admin Dashboard**: `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/` — configure optional TMDB / ScreenScraper credentials & reset `seen_history.json`)
 - **Interactive Swagger UI**: `http://dmdmediashowcase.local:8890/docs`
 - **Embedded MQTT Broker**: `mqtt://dmdmediashowcase.local:1883`
-- **Automatic Local Network Discovery (mDNS)**: Automatically advertises `dmdmediashowcase.local` (`224.0.0.251:5353`) so your DMD (`ArcadeMatrix` ESP32 or `ArcadeMatrix_RPi`) finds it without typing an IP address. Simply toggle Showcase **ON** in the DMD Web UI (`Settings -> Showcase Server`), verify the **`🟢 Communication OK (v3.0.0)`** badge, and add the Showcase engines to your rotation!
+- **Automatic Local Network Discovery (mDNS)**: Automatically advertises `dmdmediashowcase.local` (`224.0.0.251:5353`) so your DMD (`ArcadeMatrix` ESP32 or `ArcadeMatrix_RPi`) finds it without typing an IP address. Simply toggle Showcase **ON** in the DMD Web UI (`Settings -> Showcase Server`), verify the **`🟢 Communication OK`** badge, and add the Showcase engines to your rotation!
 
 ### Option 2: Portable Standalone Bundle (Windows / macOS)
 
