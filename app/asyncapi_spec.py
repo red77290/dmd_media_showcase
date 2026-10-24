@@ -1,5 +1,5 @@
 """
-Authoritative AsyncAPI 2.6.0 specification for the DMD Media Showcase V3.0
+Authoritative AsyncAPI 2.6.0 specification for the DMD Media Showcase
 MQTT 3.1.1 Control Plane (`:1883`) and Real-Time UDP `DMDF` Streaming Data Plane.
 """
 
@@ -8,9 +8,9 @@ from __future__ import annotations
 ASYNCAPI_YAML = """asyncapi: 2.6.0
 info:
   title: DMD Media Showcase Server — MQTT 3.1.1 & UDP DMDF Streaming Protocol
-  version: 3.0.0
+  version: 1.0.0
   description: |
-    Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server (V3.0)**,
+    Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server**,
     powering **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** HUB75 LED panels.
 
     ### Protocol Architecture

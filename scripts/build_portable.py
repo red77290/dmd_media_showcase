@@ -55,7 +55,7 @@ def _write_launchers(bundle_dir: Path) -> None:
     bat_path = bundle_dir / "Start_Showcase_Windows.bat"
     bat_path.write_text(
         "@echo off\r\n"
-        "title DMD Media Showcase Server v3.0 (Portable Hermetic)\r\n"
+        "title DMD Media Showcase Server (Portable Hermetic)\r\n"
         "set DMD_PORTABLE_MODE=1\r\n"
         "echo Starting DMD Media Showcase Server on http://dmdmediashowcase.local:8890 (http://localhost:8890) and MQTT :1883 ...\r\n"
         "start \"\" http://localhost:8890/\r\n"
@@ -68,7 +68,7 @@ def _write_launchers(bundle_dir: Path) -> None:
         "#!/usr/bin/env bash\n"
         "DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
         "export DMD_PORTABLE_MODE=1\n"
-        "echo \"Starting DMD Media Showcase Server v3.0 on http://dmdmediashowcase.local:8890 (http://localhost:8890) and MQTT :1883 ...\"\n"
+        "echo \"Starting DMD Media Showcase Server on http://dmdmediashowcase.local:8890 (http://localhost:8890) and MQTT :1883 ...\"\n"
         "(sleep 2 && open http://localhost:8890/ >/dev/null 2>&1 || true) &\n"
         "exec \"$DIR/dmd-media-showcase\"\n",
         encoding="utf-8",

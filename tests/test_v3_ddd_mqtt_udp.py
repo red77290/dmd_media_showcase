@@ -335,7 +335,7 @@ async def test_consume_once_http_and_admin_endpoints(tmp_path: Path, monkeypatch
         # 1. Admin dashboard HTML & config API
         r_dash = await client.get("/")
         assert r_dash.status_code == 200
-        assert "DMD Media Showcase Server v3.0" in r_dash.text
+        assert "DMD Media Showcase Server" in r_dash.text
 
         r_cfg = await client.post(
             "/api/v1/admin/config",

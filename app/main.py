@@ -1,10 +1,10 @@
 """
-FastAPI entrypoint for the DMD Media Showcase Server (V3.0).
+FastAPI entrypoint for the DMD Media Showcase Server.
 
 Exposes:
 - Centralized Web Admin Dashboard (`/`, `/admin`) & Interactive Swagger UI (`/docs`, `/swagger`, `/redoc`)
 - Embedded MQTT 3.1.1 Control Plane (`:1883` with `retain=True` + `LWT`) + Real-Time `ffmpeg -re` UDP streamer
-- V3.0 Consume-Once HTTP Polling endpoints (`/api/v1/{domain}/config`, `/api/v1/{domain}/next`, `/api/v1/{domain}/stream/{item_id}.rgb565.stream`)
+- Consume-Once HTTP Polling endpoints (`/api/v1/{domain}/config`, `/api/v1/{domain}/next`, `/api/v1/{domain}/stream/{item_id}.rgb565.stream`)
 - Backward-compatible session/batch polling endpoints (`/session`, `/batch`, `/random`, `/on-demand`)
 """
 
@@ -77,7 +77,7 @@ OPENAPI_TAGS = [
         "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` DDD scraper sources.",
     },
     {
-        "name": "Consume-Once Protocol (V3.0)",
+        "name": "Consume-Once Protocol",
         "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`) with automatic disk purge after playback.",
     },
     {
@@ -122,7 +122,7 @@ app = FastAPI(
     description=(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
-        "### V3.0 Architecture Highlights\n"
+        "### Architecture Highlights\n"
         "- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
         "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming "
@@ -320,7 +320,7 @@ async def get_domain_filters(
     }
 
 
-@app.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol (V3.0)"])
+@app.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
 async def register_consume_once_config(
     domain: DomainType,
     req: SessionRegisterRequest,
@@ -352,7 +352,7 @@ async def register_consume_once_config(
     }
 
 
-@app.get("/api/v1/{domain}/next", tags=["Consume-Once Protocol (V3.0)"])
+@app.get("/api/v1/{domain}/next", tags=["Consume-Once Protocol"])
 async def claim_next_consume_once_item(
     domain: DomainType,
     background_tasks: BackgroundTasks,
@@ -404,7 +404,7 @@ async def claim_next_consume_once_item(
     }
 
 
-@app.get("/api/v1/{domain}/poster/{item_id}.rgb565", tags=["Consume-Once Protocol (V3.0)"])
+@app.get("/api/v1/{domain}/poster/{item_id}.rgb565", tags=["Consume-Once Protocol"])
 async def stream_consume_once_poster(
     domain: DomainType,
     item_id: str,
@@ -428,7 +428,7 @@ async def stream_consume_once_poster(
     )
 
 
-@app.get("/api/v1/{domain}/stream/{item_id}.rgb565.stream", tags=["Consume-Once Protocol (V3.0)"])
+@app.get("/api/v1/{domain}/stream/{item_id}.rgb565.stream", tags=["Consume-Once Protocol"])
 async def stream_consume_once_sequence(
     domain: DomainType,
     item_id: str,

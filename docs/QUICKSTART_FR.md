@@ -1,4 +1,4 @@
-# Guide de Démarrage Rapide (QuickStart) — DMD Media Showcase Server (V3.0)
+# Guide de Démarrage Rapide (QuickStart) — DMD Media Showcase Server
 
 🇬🇧 [English](QUICKSTART.md) | 🇫🇷 Français | 🇪🇸 [Español](QUICKSTART_ES.md)
 
@@ -66,7 +66,7 @@ Ouvrez `http://dmdmediashowcase.local:8890/` (ou `http://<ip-serveur>:8890/`) da
 2. Rendez-vous dans **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`) :
    - Le champ **Showcase Server URL** est déjà pré-rempli avec `http://dmdmediashowcase.local:8890` et **désactivé par défaut** (`⚪ Désactivé`) afin d'éviter tout accès réseau inutile si `dmd_media_showcase` n'est pas installé.
    - Activez le bouton **Enable DMD Media Showcase Server** puis cliquez sur **Save Showcase Server** (ou **Test Connection**).
-   - Vérifiez que le témoin visuel passe au vert : **`🟢 Communication OK (v3.0.0)`**.
+   - Vérifiez que le témoin visuel passe au vert : **`🟢 Communication OK`**.
 3. Dans l'onglet **Screens / Rotation**, ajoutez l'un des 4 moteurs Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`) et définissez le nombre de **Media** à afficher par tour de rotation.
 4. Le WebUI du DMD interroge automatiquement `GET /api/v1/{domain}/filters?lang={ui_lang}` pour peupler dynamiquement les listes **Systèmes**, **Genres** et **Décennies** (en filtrant automatiquement les genres et décennies supportés lorsque vous sélectionnez un système comme `NES` ou `Neo-Geo`).
 5. Réglez la **Vitesse de défilement du synopsis** (`1 = Lent` à `10 = Turbo`, jusqu'à `160 px/s`) puis cliquez sur **Sauvegarder**.
