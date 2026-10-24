@@ -282,7 +282,8 @@ async def get_domain_filters(
         "domain": domain,
         "languages": ["fr", "en", "es", "de", "it", "ja"],
         "text_scroll_speeds": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "slow", "normal", "fast", "turbo"],
-        "video_modes": ["auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"],
+        "video_modes": ["auto_action", "panorama", "center_crop"],
+        "color_boost_modes": ["auto", "pixel_art", "anime", "cinema"],
         "video_types": ["any", "opening", "ending", "pv", "trailer"],
         **filters,
     }

@@ -65,6 +65,56 @@ _FORBIDDEN_HARDWARE_TITLES = {
     "snes",
 }
 
+_VERIFIED_GENRE_TITLE_SEEDS: Dict[str, List[str]] = {
+    "platform": [
+        "Super Mario Bros.", "Super Mario Bros. 2", "Super Mario Bros. 3", "Super Mario World",
+        "Sonic the Hedgehog", "Sonic the Hedgehog 2", "Sonic the Hedgehog 3", "Castlevania",
+        "Mega Man 2", "Mega Man 3", "Mega Man X", "Donkey Kong Country", "Donkey Kong Country 2",
+        "Kirby's Adventure", "DuckTales", "Chip 'n Dale Rescue Rangers", "Aladdin",
+        "Earthworm Jim", "Rayman", "Crash Bandicoot", "Spyro the Dragon", "SuperMario 64",
+        "Banjo-Kazooie", "Alex Kidd in Miracle World", "Castle of Illusion", "Shinobi III",
+        "Rocket Knight Adventures", "Dynamite Headdy", "Ristar", "Ghouls 'n Ghosts",
+        "Super Ghouls 'n Ghosts", "Super Castlevania IV", "Bonk's Adventure", "Super Metroid",
+    ],
+    "shootemup": [
+        "Gradius", "Life Force", "Salamander", "R-Type", "Super R-Type", "Thunder Force III",
+        "Thunder Force IV", "M.U.S.H.A.", "Blazing Lazers", "Super Star Soldier", "Soldier Blade",
+        "Axelay", "Parodius", "TwinBee", "1942", "1943", "UN Squadron", "Einhander",
+        "Radiant Silvergun", "Ikaruga", " Darius Twin", "Space Megaforce", "Gate of Thunder",
+    ],
+    "runandgun": [
+        "Contra", "Super C", "Contra III: The Alien Wars", "Contra: Hard Corps",
+        "Gunstar Heroes", "Sunset Riders", "Metal Slug", "Turrican", "Super Turrican",
+        "Mega Turrican", "Ikari Warriors", "Mercs", "Shock Troopers", "Zombies Ate My Neighbors",
+    ],
+    "fighting": [
+        "Street Fighter II", "Super Street Fighter II", "Street Fighter Alpha 2",
+        "Mortal Kombat II", "Ultimate Mortal Kombat 3", "Killer Instinct", "Tekken 3",
+        "Soul Blade", "Dead or Alive", "Virtua Fighter 2", "Fatal Fury Special",
+        "Samurai Shodown", "The King of Fighters '98", "Marvel vs. Capcom",
+    ],
+    "beatemup": [
+        "Streets of Rage", "Streets of Rage 2", "Streets of Rage 3", "Final Fight",
+        "Double Dragon", "Double Dragon II", "Teenage Mutant Ninja Turtles IV: Turtles in Time",
+        "Golden Axe", "Golden Axe II", "Battletoads", "River City Ransom", "Comix Zone",
+    ],
+    "rpg": [
+        "Chrono Trigger", "Final Fantasy", "Final Fantasy IV", "Final Fantasy VI",
+        "Final Fantasy VII", "Secret of Mana", "EarthBound", "Super Mario RPG",
+        "Phantasy Star IV", "Shining Force II", "Breath of Fire II", "Dragon Warrior",
+        "Terranigma", "Illusion of Gaia", "Suikoden II", "Xenogears",
+    ],
+    "racing": [
+        "Super Mario Kart", "Mario Kart 64", "F-Zero", "F-Zero X", "OutRun",
+        "Road Rash II", "Top Gear", "Ridge Racer Type 4", "Gran Turismo", "Excitebike",
+        "RC Pro-Am", "Micro Machines", "Wave Race 64", "Daytona USA", "Sega Rally Championship",
+    ],
+    "puzzle": [
+        "Tetris", "Dr. Mario", "Puyo Puyo", "Columns", "Panel de Pon", "Tetris Attack",
+        "Bust-A-Move", "Klax", "Lemmings", "Yoshi's Cookie", "Wario's Woods",
+    ],
+}
+
 
 def _clean_display_title_from_nointro(filename: str) -> str:
     """Convert a No-Intro filename (`Castlevania (Europe).png`) into a clean display title (`Castlevania`)."""
@@ -359,6 +409,21 @@ class LibretroWikidataAdapter(IScraperSource):
                         client, sys_key=sys_key, genre_key=None
                     )
 
+                if not harvested and chosen_genre in _VERIFIED_GENRE_TITLE_SEEDS:
+                    harvested = [
+                        {
+                            "qid": "",
+                            "system": sys_key,
+                            "genre": chosen_genre,
+                            "title_en": t,
+                            "title_fr": t,
+                            "year": "",
+                            "fr_wiki": t,
+                            "en_wiki": t,
+                        }
+                        for t in _VERIFIED_GENRE_TITLE_SEEDS[chosen_genre]
+                    ]
+
                 if harvested:
                     filtered = [
                         g
@@ -385,9 +450,8 @@ class LibretroWikidataAdapter(IScraperSource):
                             seen_ids.add(cand.id)
                             results.append(cand)
 
-                # Only fall back to uncategorized Libretro tree when no specific genre filter was set
-                # or when Wikidata SPARQL returned zero games for the requested genre.
-                if len(results) < count and not harvested:
+                # Strictly never fall back to uncategorized random Libretro boxarts when a specific genre filter was set
+                if len(results) < count and not req_genres and not harvested:
                     tree_cands = await self._discover_from_verified_libretro_tree(
                         client,
                         sys_key=sys_key,

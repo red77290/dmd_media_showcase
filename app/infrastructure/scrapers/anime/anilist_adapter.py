@@ -28,12 +28,12 @@ from app.infrastructure.scrapers.http_utils import (
 logger = logging.getLogger("dmd_showcase.scrapers.anime.anilist")
 
 _ANILIST_QUERY = """
-query ($page: Int, $perPage: Int, $genre: String, $startGreater: FuzzyDateInt, $startLesser: FuzzyDateInt, $search: String) {
+query ($page: Int, $perPage: Int, $genre: String, $tag: String, $startGreater: FuzzyDateInt, $startLesser: FuzzyDateInt, $search: String) {
   Page(page: $page, perPage: $perPage) {
     pageInfo {
       lastPage
     }
-    media(type: ANIME, isAdult: false, sort: POPULARITY_DESC, genre: $genre, startDate_greater: $startGreater, startDate_lesser: $startLesser, search: $search) {
+    media(type: ANIME, isAdult: false, sort: POPULARITY_DESC, genre: $genre, tag: $tag, startDate_greater: $startGreater, startDate_lesser: $startLesser, search: $search) {
       id
       idMal
       title {
@@ -171,23 +171,35 @@ class AniListAdapter(IScraperSource):
         chosen_genre_key = random.choice(genre_keys) if genre_keys else "shonen"
         g_meta = ANIME_GENRES[chosen_genre_key]
 
-        variables: Dict[str, Any] = {
-            "page": random.randint(1, 15),
+        base_variables: Dict[str, Any] = {
             "perPage": 25,
-            "genre": g_meta["anilist"],
         }
+        if g_meta.get("anilist_tag"):
+            base_variables["tag"] = g_meta["anilist_tag"]
+        else:
+            base_variables["genre"] = g_meta["anilist"]
+
         valid_decades = [d for d in criteria.decades if d in DECADE_BOUNDS]
         if valid_decades:
             dec = random.choice(valid_decades)
             base_yr = int(dec[:4])
-            variables["startGreater"] = base_yr * 10000
-            variables["startLesser"] = (base_yr + 9) * 10000 + 1231
+            base_variables["startGreater"] = base_yr * 10000
+            base_variables["startLesser"] = (base_yr + 9) * 10000 + 1231
 
         results: List[MediaCandidate] = []
+        tried_pages: Set[int] = set()
+        max_page = 15
         async with create_async_http_client(timeout=5.5) as client:
             for _ in range(max(2, count * 2)):
                 if len(results) >= count:
                     break
+                avail_pages = [p for p in range(1, max_page + 1) if p not in tried_pages]
+                if not avail_pages:
+                    break
+                page = random.choice(avail_pages)
+                tried_pages.add(page)
+                variables = dict(base_variables)
+                variables["page"] = page
                 try:
                     resp = await client.post(
                         "https://graphql.anilist.co",
@@ -196,9 +208,14 @@ class AniListAdapter(IScraperSource):
                     if resp.status_code != 200:
                         continue
                     page_data = (resp.json().get("data") or {}).get("Page") or {}
+                    last_page = int(((page_data.get("pageInfo") or {}).get("lastPage")) or 1)
+                    max_page = max(1, min(15, last_page))
                     items = page_data.get("media") or []
-                    if not items and variables.get("page", 1) > 1:
-                        variables["page"] = 1
+                    if not items and page > 1:
+                        fallback_pages = [p for p in range(1, max_page + 1) if p not in tried_pages] or [1]
+                        page = random.choice(fallback_pages)
+                        tried_pages.add(page)
+                        variables["page"] = page
                         resp = await client.post(
                             "https://graphql.anilist.co",
                             json={"query": _ANILIST_QUERY, "variables": variables},

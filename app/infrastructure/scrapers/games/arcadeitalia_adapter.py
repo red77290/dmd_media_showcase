@@ -38,11 +38,21 @@ from app.infrastructure.scrapers.http_utils import (
     create_async_http_client,
     fetch_wikipedia_localized_synopsis,
 )
-from app.infrastructure.scrapers.referential_store import arcadeitalia_referential_strategy
+from app.infrastructure.scrapers.referential_store import (
+    ArcadeItaliaReferentialStrategy,
+    arcadeitalia_referential_strategy,
+)
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.arcadeitalia")
 
 ADB_HTTPS_URL = "https://adb.arcadeitalia.net/service_scraper.php"
+
+_NON_CPS_TITLES = (
+    "marvel vs. capcom 2",
+    "marvel vs capcom 2",
+    "capcom vs. snk",
+    "capcom vs snk",
+)
 
 
 class ArcadeItaliaAdapter(IScraperSource):
@@ -75,6 +85,56 @@ class ArcadeItaliaAdapter(IScraperSource):
             "decades": [{"id": d["id"], "label": d["label"]} for d in ref["decades"]],
         }
 
+    @staticmethod
+    def _detect_hardware_system_from_row(row: Dict[str, Any], default_sys: str) -> str:
+        """Resolve exact hardware system (`cps1`, `cps2`, `cps3`, `neogeo`) from ADB row driver or ROM."""
+        canon = resolve_canonical_system(default_sys)
+        if canon not in ("arcade", "mame", "fbneo"):
+            return canon
+        sourcefile = str(row.get("sourcefile") or row.get("driver") or "").strip().lower()
+        rom = str(row.get("game_name") or "").strip().lower()
+        cloneof = str(row.get("cloneof") or "").strip().lower()
+        if "cps3" in sourcefile or rom in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["cps3"] or cloneof in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["cps3"]:
+            return "cps3"
+        if "cps2" in sourcefile or rom in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["cps2"] or cloneof in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["cps2"]:
+            return "cps2"
+        if "cps1" in sourcefile or rom in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["cps1"] or cloneof in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["cps1"]:
+            return "cps1"
+        if "neogeo" in sourcefile or rom in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["neogeo"] or cloneof in ArcadeItaliaReferentialStrategy._AUTHORITATIVE_SYSTEM_ROMS["neogeo"]:
+            return "neogeo"
+        return canon
+
+    @staticmethod
+    def _is_row_valid_for_system(row: Dict[str, Any], sys_key: str) -> bool:
+        """Strictly verify that an ArcadeItalia MAME row belongs to the requested hardware system."""
+        canon_sys = resolve_canonical_system(sys_key)
+        rom = str(row.get("game_name") or "").strip().lower()
+        cloneof = str(row.get("cloneof") or "").strip().lower()
+        if not ArcadeItaliaReferentialStrategy.is_rom_allowed_for_system(rom, canon_sys):
+            return False
+        if cloneof and not ArcadeItaliaReferentialStrategy.is_rom_allowed_for_system(cloneof, canon_sys):
+            return False
+
+        title_low = str(row.get("title") or "").strip().lower()
+        sourcefile = str(row.get("sourcefile") or row.get("driver") or "").strip().lower()
+
+        if canon_sys in ("cps1", "cps2", "cps3"):
+            if any(bad in title_low for bad in _NON_CPS_TITLES):
+                return False
+            if sourcefile:
+                if "naomi" in sourcefile or "neogeo" in sourcefile or "zn" in sourcefile or "dc" in sourcefile:
+                    return False
+                if canon_sys == "cps1" and "cps1" not in sourcefile and ("cps2" in sourcefile or "cps3" in sourcefile or ".cpp" in sourcefile or ".c" in sourcefile):
+                    return False
+                if canon_sys == "cps2" and "cps2" not in sourcefile and ("cps1" in sourcefile or "cps3" in sourcefile or ".cpp" in sourcefile or ".c" in sourcefile):
+                    return False
+                if canon_sys == "cps3" and "cps3" not in sourcefile and ("cps1" in sourcefile or "cps2" in sourcefile or ".cpp" in sourcefile or ".c" in sourcefile):
+                    return False
+        elif canon_sys == "neogeo":
+            if sourcefile and "neogeo" not in sourcefile and "neo" not in sourcefile:
+                return False
+        return True
+
     async def _build_candidate(
         self,
         client: Any,
@@ -84,6 +144,8 @@ class ArcadeItaliaAdapter(IScraperSource):
     ) -> Optional[MediaCandidate]:
         rom = str(info.get("game_name") or "").strip()
         if not rom:
+            return None
+        if not self._is_row_valid_for_system(info, sys_key):
             return None
         raw_title = str(info.get("title") or rom).strip()
         clean_title = re.sub(r"\s*\([^)]*\)\s*$", "", raw_title).strip() or raw_title
@@ -98,7 +160,7 @@ class ArcadeItaliaAdapter(IScraperSource):
         rate = info.get("rate")
         rating_str = f"{float(rate) / 10.0:.1f}" if rate and str(rate).isdigit() else "8.8"
 
-        canon_sys = resolve_canonical_system(sys_key)
+        canon_sys = self._detect_hardware_system_from_row(info, sys_key)
         sys_meta = RETRO_SYSTEM_CATALOG.get(canon_sys, RETRO_SYSTEM_CATALOG["arcade"])
         history = clean_synopsis_text(info.get("history"), max_chars=300)
 
@@ -237,9 +299,16 @@ class ArcadeItaliaAdapter(IScraperSource):
                     results.extend(c_batch)
                     continue
 
+                sys_criteria = FilterCriteria(
+                    domain="games",
+                    systems=[sys_key],
+                    genres=list(criteria.genres),
+                    decades=list(criteria.decades),
+                    lang=criteria.lang,
+                )
                 picked_roms = await self.referential_strategy.sample_unseen_tokens(
                     client,
-                    criteria=criteria,
+                    criteria=sys_criteria,
                     seen_ids=seen_ids,
                     count=max(8, (count - len(results)) * 6),
                 )
@@ -274,29 +343,37 @@ class ArcadeItaliaAdapter(IScraperSource):
                         cand_id = f"games_adb_{rom}"
                         if not rom or cand_id in seen_ids:
                             continue
+                        if not self._is_row_valid_for_system(row, sys_key):
+                            seen_ids.add(cand_id)
+                            continue
                         if req_genres:
                             row_genre = resolve_canonical_genre(
                                 "games", str(row.get("genre") or "").strip()
                             )
                             if row_genre not in req_genres:
+                                seen_ids.add(cand_id)
                                 continue
                         if (
                             not row.get("url_image_ingame")
                             and not row.get("url_image_flyer")
                             and not row.get("url_image_title")
                         ):
+                            seen_ids.add(cand_id)
                             continue
                         cand = await self._build_candidate(client, row, sys_key, criteria.lang)
-                        if cand:
-                            title_slug = re.sub(r"[^a-z0-9]+", "_", cand.title.lower()).strip("_")
-                            title_key = f"games_adb_title_{title_slug}"
-                            if title_key in seen_ids:
-                                continue
+                        if not cand:
+                            seen_ids.add(cand_id)
+                            continue
+                        title_slug = re.sub(r"[^a-z0-9]+", "_", cand.title.lower()).strip("_")
+                        title_key = f"games_adb_title_{title_slug}"
+                        if title_key in seen_ids:
                             seen_ids.add(cand.id)
-                            seen_ids.add(title_key)
-                            results.append(cand)
-                            if len(results) >= count:
-                                break
+                            continue
+                        seen_ids.add(cand.id)
+                        seen_ids.add(title_key)
+                        results.append(cand)
+                        if len(results) >= count:
+                            break
 
         if console_systems and len(results) < count:
             fallback_batch = await self.console_adapter.fetch_random_unseen(

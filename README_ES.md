@@ -26,6 +26,7 @@
 - **Protocolo Consume-Once Estricto y Pipelining `N+1` en Segundo Plano**:
   - Registra cada título mostrado en `./data/seen_history.json` (cero repeticiones hasta agotar el catálogo).
   - Prepara el elemento `N+1` en segundo plano en cuanto el elemento `N` muestra su ficha (`start_card`) y elimina del disco los archivos consumidos al recibir `stream_eof`.
+- **Impulsado por `dmd_gif_converter`**: Encuadre de vídeo ortogonal (`auto_action` IA Let Me Handle It, `panorama` barrido vertical, `center_crop`) y colorimetría LED HUB75 (`auto` Smart Color Boost IA, `pixel_art`, `anime`, `cinema`), reescalado Lanczos + `unsharp` y panoramas verticales fluidos (`Carátula`, `Marquee`, `Capturas`) en todas las geometrías Horizontal (`128x32`, `128x64`, `256x64`), Cuadrada (`64x64`) y TATE (`64x128`, `32x128`).
 
 ---
 
