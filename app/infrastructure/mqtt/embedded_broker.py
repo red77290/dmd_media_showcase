@@ -275,13 +275,13 @@ class EmbeddedMqttBroker:
             pass
         finally:
             if session is not None:
-                self.clients.pop(session.client_id, None)
                 if not session.clean_disconnect and session.will_topic:
                     await self.publish(
                         session.will_topic,
                         session.will_payload,
                         retain=session.will_retain,
                     )
+                self.clients.pop(session.client_id, None)
             try:
                 writer.close()
             except Exception:
