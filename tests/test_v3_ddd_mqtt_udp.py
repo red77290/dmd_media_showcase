@@ -930,8 +930,10 @@ async def test_itunes_movies_fallback_and_client_offline_domain_switch(tmp_path:
     assert cands[0].video_url == "https://video-ssl.itunes.apple.com/itunes-assets/neverending.m4v"
     assert "L'Histoire sans fin" in cands[0].synopsis
 
-    # Verify `client_offline` removes client_configs and does NOT re-trigger _schedule_preparation
+    # Verify `client_offline` stops active UDP streams while preserving `client_configs`
+    # so multi-engine rotation does NOT cancel background retained preparation.
     scheduled_calls = []
+    stopped_streams = []
 
     class _NoopMqtt:
         def set_handlers(self, **_kwargs):
@@ -942,7 +944,7 @@ async def test_itunes_movies_fallback_and_client_offline_domain_switch(tmp_path:
 
     class _NoopStreamer:
         async def stop_stream(self, dmd_id: str):
-            pass
+            stopped_streams.append(dmd_id)
 
     orch = ConsumeOnceOrchestrator(mqtt_gateway=_NoopMqtt(), streamer=_NoopStreamer())  # type: ignore[arg-type]
     orch._schedule_preparation = lambda d, dom: scheduled_calls.append((d, dom))  # type: ignore[method-assign]
@@ -951,8 +953,13 @@ async def test_itunes_movies_fallback_and_client_offline_domain_switch(tmp_path:
         FilterCriteria(domain="games"),
     )
     await orch.handle_mqtt_client_event("rpi_games_128x32", {"event": "client_offline"})
-    assert ("rpi_games_128x32", "games") not in orch.client_configs
+    assert ("rpi_games_128x32", "games") in orch.client_configs
+    assert stopped_streams == ["rpi_games_128x32"]
     assert scheduled_calls == []
+
+    # Explicit `unregister: true` payload cleanly removes `client_configs`
+    await orch.handle_mqtt_client_config("rpi_games_128x32", {"unregister": True})
+    assert ("rpi_games_128x32", "games") not in orch.client_configs
 
 
 @pytest.mark.asyncio
@@ -1231,6 +1238,213 @@ def test_three_tier_credential_resolution_and_public_config_sanitization(tmp_pat
     store.update({"tmdb_api_key": "••••••••", "screenscraper_pass": "••••••••"})
     assert store.get_all()["tmdb_api_key"] == "user_custom_tmdb_key"
     assert store.get_all()["screenscraper_pass"] == "p4ss"
+
+
+def test_compile_prod_vault_script_end_to_end(monkeypatch):
+    """
+    Exercise `scripts/compile_prod_vault.py` end-to-end with dummy secrets to guarantee
+    C extension generation, compilation, self-test roundtrip, and summary logging never regress.
+    Cleans up any generated `_prod_vault*` binary afterwards.
+    """
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parent.parent
+    security_dir = repo_root / "app" / "security"
+    script_path = repo_root / "scripts" / "compile_prod_vault.py"
+
+    for old in security_dir.glob("_prod_vault*"):
+        old.unlink(missing_ok=True)
+
+    env = dict(os.environ)
+    env["VAULT_MASTER_SECRET"] = "unit_test_master_salt_987654321"
+    env["TMDB_API_KEY"] = "unit_test_tmdb_key_abcdef"
+    env["TVDB_API_KEY"] = "unit_test_tvdb_key_123456"
+
+    try:
+        res = subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=str(repo_root),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, f"compile_prod_vault failed: {res.stderr}\n{res.stdout}"
+        assert "[PROD-VAULT] Compiled native binary" in res.stdout
+        assert "self-test OK" in res.stdout
+        built = list(security_dir.glob("_prod_vault*"))
+        assert len(built) >= 1
+    finally:
+        for f in security_dir.glob("_prod_vault*"):
+            f.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_four_showcase_engines_rotation_preserves_prep_and_delivers_retained_ready(tmp_path: Path, monkeypatch):
+    """
+    Simulate 4 Showcase engines (`series`, `games`, `movies`, `anime`) rotating rapidly on the
+    same LAN IP (`192.168.1.177`):
+    1. Initial registration publishes retained `ready: false` (`preparing`) and starts background prep.
+    2. Rotating to the next engine on `192.168.1.177` + `client_offline` stops UDP streams ONLY,
+       never cancels sibling `_prep_tasks`.
+    3. All 4 domains complete Slot N (`ready: true` with `retain=True`) before Slot N+1 (`standby`),
+       and reconnecting clients immediately receive the retained `ready: true` payload on SUBSCRIBE!
+    """
+    import json
+    from app.config import settings
+    from app.domain.entities import MediaCandidate
+    from app.infrastructure.mqtt.embedded_broker import EmbeddedMqttBroker, SimpleAsyncMqttClient
+    from app.infrastructure.mqtt.showcase_mqtt_gateway import ShowcaseMqttGateway
+    from app.infrastructure.persistence.json_seen_repository import JsonSeenHistoryRepository
+
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache")
+
+    broker = EmbeddedMqttBroker(host="127.0.0.1", port=0)
+
+    gw = ShowcaseMqttGateway()
+    gw.embedded_broker = broker
+    gw._running = True
+    broker.subscribe_internal("dmd_showcase/clients/+/config", gw._on_raw_msg)
+    broker.subscribe_internal("dmd_showcase/clients/+/status", gw._on_raw_msg)
+    broker.subscribe_internal("dmd_showcase/clients/+/+/events", gw._on_raw_msg)
+
+    slot_order: list[tuple[str, int]] = []
+
+    class _FakeChain:
+        def __init__(self) -> None:
+            self.seq = 0
+
+        async def acquire_unseen_candidates(self, criteria, count=1, extra_exclude_ids=None):
+            self.seq += 1
+            cid = f"{criteria.domain}_cand_{self.seq}"
+            return [
+                MediaCandidate(
+                    id=cid,
+                    domain=criteria.domain,
+                    title=f"Title {criteria.domain} #{self.seq}",
+                    year="1995",
+                    badge=criteria.domain.upper(),
+                    badge_color="#00D2FF",
+                    subtitle="Action",
+                    rating="8.5",
+                    synopsis="Test synopsis",
+                    source_id="mock_src",
+                )
+            ]
+
+    class _SlowTranscoder:
+        async def transcode_candidate(self, cand, criteria, geometry, item_dir: Path):
+            await asyncio.sleep(0.12)
+            item_dir.mkdir(parents=True, exist_ok=True)
+            stream_p = item_dir / "unified.rgb565.stream"
+            stream_p.write_bytes(b"DMDS" + b"\x00" * 28)
+            is_slot_n = (f"rpi_{criteria.domain}_128x32", criteria.domain) not in orch.ready_packages
+            slot_order.append((criteria.domain, 1 if is_slot_n else 2))
+            return {
+                "poster_rgb565_b64": "AA==",
+                "has_panoramas": True,
+                "has_video": True,
+                "unified_stream_path": str(stream_p),
+                "stream_frames": 30,
+                "stream_fps": 15,
+                "stream_duration_s": 2.0,
+            }
+
+    stopped_udp: list[str] = []
+
+    class _FakeStreamer:
+        async def stop_stream(self, dmd_id: str):
+            stopped_udp.append(dmd_id)
+
+        async def start_udp_clock_stream(self, **_kwargs):
+            pass
+
+    seen = JsonSeenHistoryRepository(file_path=tmp_path / "seen.json")
+    orch = ConsumeOnceOrchestrator(
+        chain_service=_FakeChain(),  # type: ignore[arg-type]
+        seen_repo=seen,
+        transcoder=_SlowTranscoder(),  # type: ignore[arg-type]
+        streamer=_FakeStreamer(),  # type: ignore[arg-type]
+        mqtt_gateway=gw,
+    )
+
+    try:
+        domains = ("series", "games", "movies", "anime")
+        # Pass 1: All 4 engines connect rapidly on 192.168.1.177, see `ready: false`, and rotate out cleanly
+        for idx, dom in enumerate(domains):
+            dmd_id = f"rpi_{dom}_128x32"
+            cli = SimpleAsyncMqttClient(
+                "127.0.0.1",
+                0,
+                f"{dmd_id}_1",
+                will_topic=f"dmd_showcase/clients/{dmd_id}/status",
+                will_payload=b'{"online":false}',
+                will_retain=False,
+            )
+            await _connect_mqtt_client_to_broker(broker, cli)
+            got_msgs: list[dict] = []
+
+            async def _on_ready(_t: str, payload: bytes, _r: bool, bucket=got_msgs) -> None:
+                bucket.append(json.loads(payload.decode("utf-8")))
+
+            await cli.publish(
+                f"dmd_showcase/clients/{dmd_id}/config",
+                json.dumps(
+                    {
+                        "dmd_id": dmd_id,
+                        "client_ip": "192.168.1.177",
+                        "udp_ip": "192.168.1.177",
+                        "width": 128,
+                        "height": 32,
+                        "udp_port": 40000 + idx,
+                        "lang": "fr",
+                        "domains": {dom: {"lang": "fr"}},
+                    }
+                ).encode("utf-8"),
+                retain=True,
+            )
+            await asyncio.sleep(0.02)
+            await cli.subscribe(f"dmd_showcase/clients/{dmd_id}/{dom}/ready", _on_ready)
+            await asyncio.sleep(0.02)
+            assert len(got_msgs) >= 1
+            assert got_msgs[0]["ready"] is False
+            # Clean disconnect (simulating rotation switch) -> must NOT fire LWT or cancel prep!
+            await cli.disconnect(graceful=True)
+
+        # Wait ~0.6s for background preparation of all 4 domains to finish
+        for _ in range(40):
+            if all((f"rpi_{d}_128x32", d) in orch.ready_packages for d in domains):
+                break
+            await asyncio.sleep(0.05)
+
+        for dom in domains:
+            assert (f"rpi_{dom}_128x32", dom) in orch.ready_packages, f"{dom} Slot N was cancelled!"
+
+        # Fairness check: the first 4 completed transcodes must be Slot N (1) for each of the 4 domains!
+        first_four_slots = [slot_num for (_dom, slot_num) in slot_order[:4]]
+        assert first_four_slots == [1, 1, 1, 1], f"Expected all 4 Slot N before Slot N+1, got {slot_order}"
+
+        # Pass 2: Reconnect each engine on its next rotation turn -> retained `ready: true` delivered immediately!
+        for dom in domains:
+            dmd_id = f"rpi_{dom}_128x32"
+            cli2 = SimpleAsyncMqttClient("127.0.0.1", 0, f"{dmd_id}_2")
+            await _connect_mqtt_client_to_broker(broker, cli2)
+            retained_ready: list[dict] = []
+
+            async def _on_ready2(_t: str, payload: bytes, _r: bool, bucket=retained_ready) -> None:
+                bucket.append(json.loads(payload.decode("utf-8")))
+
+            await cli2.subscribe(f"dmd_showcase/clients/{dmd_id}/{dom}/ready", _on_ready2)
+            await asyncio.sleep(0.03)
+            assert len(retained_ready) == 1
+            assert retained_ready[0]["ready"] is True
+            assert retained_ready[0]["domain"] == dom
+            await cli2.disconnect(graceful=True)
+    finally:
+        for task in list(orch._prep_tasks.values()):
+            task.cancel()
+        await broker.stop()
+
 
 
 

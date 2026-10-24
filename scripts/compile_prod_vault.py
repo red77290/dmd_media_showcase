@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 from typing import Dict, Tuple
@@ -171,19 +172,54 @@ def compile_native_vault() -> int:
             str(ROOT),
         ]
         res = subprocess.run(cmd, cwd=str(tmp_dir), capture_output=True, text=True)
+        if res.returncode != 0 and os.name != "nt":
+            # Fallback to direct POSIX C compiler (`cc`/`clang`/`gcc`) via `sysconfig`
+            # when `setuptools` is not pre-installed in a Python 3.12+/3.13 virtualenv.
+            cc = shutil.which(os.environ.get("CC", "cc")) or shutil.which("clang") or shutil.which("gcc")
+            inc_dir = sysconfig.get_paths().get("include") or ""
+            ext_suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+            if cc and inc_dir:
+                out_so = SECURITY_DIR / f"_prod_vault{ext_suffix}"
+                cc_cmd = [cc, "-O2", f"-I{inc_dir}"]
+                if sys.platform == "darwin":
+                    cc_cmd += ["-bundle", "-undefined", "dynamic_lookup"]
+                else:
+                    cc_cmd += ["-shared", "-fPIC"]
+                cc_cmd += [str(c_file), "-o", str(out_so)]
+                res = subprocess.run(cc_cmd, cwd=str(tmp_dir), capture_output=True, text=True)
         if res.returncode != 0:
             print(f"[PROD-VAULT] Warning: Native C compilation failed ({res.stderr.strip()}).", file=sys.stderr)
             return 1
 
-    # Verify the compiled binary exists and works in-memory
+    # Verify the compiled binary exists and decrypts secrets accurately in-memory
     built_files = list(SECURITY_DIR.glob("_prod_vault*"))
     if not built_files:
         print("[PROD-VAULT] Error: No compiled _prod_vault binary produced.", file=sys.stderr)
         return 1
 
+    sample_key, sample_val = next(iter(secrets_map.items()))
+    verify_cmd = [
+        sys.executable,
+        "-c",
+        (
+            "import sys; "
+            "from app.security.vault import decrypt_prod_vault_secret, has_prod_vault_secret; "
+            f"assert has_prod_vault_secret({sample_key!r}), 'vault secret not detected'; "
+            f"assert decrypt_prod_vault_secret({sample_key!r}) == sys.argv[1], 'roundtrip mismatch'"
+        ),
+        sample_val,
+    ]
+    verify_res = subprocess.run(verify_cmd, cwd=str(ROOT), capture_output=True, text=True)
+    if verify_res.returncode != 0:
+        print(
+            f"[PROD-VAULT] Error: Compiled _prod_vault self-test failed ({verify_res.stderr.strip()}).",
+            file=sys.stderr,
+        )
+        return 1
+
     print(
-        f"[PROD-VAULT] Compiled native binary {[f.name for f.name in built_files]} "
-        f"with {len(secrets_map)} encrypted secret(s) (source .c purged)."
+        f"[PROD-VAULT] Compiled native binary {[p.name for p in built_files]} "
+        f"with {len(secrets_map)} encrypted secret(s) (source .c purged, self-test OK)."
     )
     return 0
 

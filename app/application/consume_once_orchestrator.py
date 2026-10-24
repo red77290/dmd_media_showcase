@@ -104,10 +104,19 @@ class ConsumeOnceOrchestrator:
         self.standby_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
         self.active_packages: Dict[str, PreparedShowcasePackage] = {}
         self._prep_tasks: Dict[Tuple[str, DomainType], asyncio.Task[None]] = {}
+        self._transcode_sem: Optional[asyncio.Semaphore] = None
+        self._transcode_sem_loop: Optional[asyncio.AbstractEventLoop] = None
         self.mqtt.set_handlers(
             on_client_config=self.handle_mqtt_client_config,
             on_client_event=self.handle_mqtt_client_event,
         )
+
+    def _get_transcode_semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._transcode_sem is None or self._transcode_sem_loop is not loop:
+            self._transcode_sem = asyncio.Semaphore(max(1, settings.effective_max_workers))
+            self._transcode_sem_loop = loop
+        return self._transcode_sem
 
     def describe_connected_clients(self) -> List[Dict[str, Any]]:
         """Return a summary of currently registered DMD clients and their prepared queue slots."""
@@ -247,15 +256,22 @@ class ConsumeOnceOrchestrator:
         # and purge any pre-reboot consumed package that was waiting for `start_stream`.
         await self._cleanup_abandoned_active_packages(dmd_id)
 
-        # If this physical DMD (identified by its LAN `best_ip`) switched to a different
-        # domain client (e.g. `rpi_games_128x32` -> `rpi_movies_128x32`), cancel any in-flight
-        # background prep tasks of the previous domain on the same IP so the active domain gets immediate priority.
+        if payload.get("unregister"):
+            for dom_key in VALID_DOMAINS:
+                self.client_configs.pop((dmd_id, dom_key), None)
+                t = self._prep_tasks.pop((dmd_id, dom_key), None)
+                if t and not t.done():
+                    t.cancel()
+            return
+
+        # If this physical DMD (identified by its LAN `best_ip`) rotated to a sibling
+        # Showcase domain (e.g. `rpi_series_128x32` -> `rpi_games_128x32`), stop any
+        # active real-time UDP stream of the previous domain on the same IP, while
+        # preserving background slot preparation so all 4 rotation domains become ready
+        # and publish `ready: true` (`retain=True`) on the broker!
         if best_ip and best_ip != "127.0.0.1":
-            for (other_dmd_id, other_dom), task in list(self._prep_tasks.items()):
-                if other_dmd_id != dmd_id and self.client_udp_ips.get(other_dmd_id) == best_ip:
-                    if not task.done():
-                        task.cancel()
-                    self._prep_tasks.pop((other_dmd_id, other_dom), None)
+            for other_dmd_id, other_ip in list(self.client_udp_ips.items()):
+                if other_dmd_id != dmd_id and other_ip == best_ip:
                     await self.streamer.stop_stream(other_dmd_id)
 
         engines_map = payload.get("domains") or payload.get("engines")
@@ -358,21 +374,29 @@ class ConsumeOnceOrchestrator:
             self._schedule_preparation(dmd_id, domain)
             return
 
+        if old_pair is None and key not in self.ready_packages:
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                {"ready": False, "item_id": "", "domain": domain, "status": "preparing"},
+                retain=True,
+            )
+
         if (key not in self.ready_packages or key not in self.standby_packages) and (
             key not in self._prep_tasks or self._prep_tasks[key].done()
         ):
-            logger.info(
-                "[ORCHESTRATOR] Registered dmd='%s' domain='%s' (%dx%d, lang=%s, systems=%s, genres=%s, decades=%s, speed=%s)",
-                dmd_id,
-                domain,
-                geometry.width,
-                geometry.height,
-                criteria.lang,
-                criteria.systems,
-                criteria.genres,
-                criteria.decades,
-                criteria.text_scroll_speed,
-            )
+            if old_pair is None:
+                logger.info(
+                    "[ORCHESTRATOR] Registered dmd='%s' domain='%s' (%dx%d, lang=%s, systems=%s, genres=%s, decades=%s, speed=%s)",
+                    dmd_id,
+                    domain,
+                    geometry.width,
+                    geometry.height,
+                    criteria.lang,
+                    criteria.systems,
+                    criteria.genres,
+                    criteria.decades,
+                    criteria.text_scroll_speed,
+                )
             self._schedule_preparation(dmd_id, domain)
 
     def _schedule_preparation(self, dmd_id: str, domain: DomainType) -> None:
@@ -391,6 +415,21 @@ class ConsumeOnceOrchestrator:
             while key in self.client_configs and (
                 key not in self.ready_packages or key not in self.standby_packages
             ):
+                # Multi-domain fairness: if this domain already has its Slot N (`ready_packages`)
+                # published (`retain=True`), yield before building Slot N+1 (`standby_packages`)
+                # whenever any sibling rotation domain is still preparing its initial Slot N.
+                if key in self.ready_packages:
+                    sibling_missing_ready = any(
+                        other_k != key
+                        and other_k not in self.ready_packages
+                        and (t := self._prep_tasks.get(other_k)) is not None
+                        and not t.done()
+                        for other_k in list(self.client_configs.keys())
+                    )
+                    if sibling_missing_ready:
+                        await asyncio.sleep(0.05)
+                        continue
+
                 cfg_pair = self.client_configs.get(key)
                 if not cfg_pair:
                     return
@@ -407,17 +446,30 @@ class ConsumeOnceOrchestrator:
                         active_exclude.add(slot_pkg.candidate.id)
 
                 chosen_pkg: Optional[PreparedShowcasePackage] = None
-                candidates = await self.chain_service.acquire_unseen_candidates(
-                    criteria, count=1, extra_exclude_ids=active_exclude
-                )
-                if candidates:
-                    cand = candidates[0]
-                    active_exclude.add(cand.id)
-                    item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
-                    item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
-                    files_map = await self.transcoder.transcode_candidate(
-                        cand, criteria, geometry, item_dir
+                async with self._get_transcode_semaphore():
+                    candidates = await self.chain_service.acquire_unseen_candidates(
+                        criteria, count=1, extra_exclude_ids=active_exclude
                     )
+                    if candidates:
+                        cand = candidates[0]
+                        active_exclude.add(cand.id)
+                        item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
+                        item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
+                        files_map = await self.transcoder.transcode_candidate(
+                            cand, criteria, geometry, item_dir
+                        )
+                    else:
+                        cand = None
+                        item_id = ""
+                        item_dir = settings.cache_dir
+                        files_map = {}
+
+                if self.client_configs.get(key) != (geometry, criteria):
+                    if candidates and cand is not None:
+                        shutil.rmtree(item_dir, ignore_errors=True)
+                    continue
+
+                if candidates and cand is not None:
                     poster_w, poster_h = geometry.resolved_poster_dims()
 
                     card = ShowcaseCard(
@@ -683,12 +735,10 @@ class ConsumeOnceOrchestrator:
                 await self.purge_consumed_package(item_id)
 
         elif ev_type == "client_offline":
-            logger.info("[ORCHESTRATOR] DMD client '%s' went offline (LWT) -> cleaning up active streams", dmd_id)
-            for dom_key in VALID_DOMAINS:
-                self.client_configs.pop((dmd_id, dom_key), None)
-                t = self._prep_tasks.pop((dmd_id, dom_key), None)
-                if t and not t.done():
-                    t.cancel()
+            logger.info(
+                "[ORCHESTRATOR] DMD client '%s' disconnected -> stopping active UDP streams (preserving retained slot prep)",
+                dmd_id,
+            )
             await self._cleanup_abandoned_active_packages(dmd_id)
 
 
