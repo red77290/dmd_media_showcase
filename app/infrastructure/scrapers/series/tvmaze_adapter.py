@@ -18,7 +18,9 @@ from app.infrastructure.scrapers.catalog_metadata import SERIES_GENRES
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
     create_async_http_client,
+    fetch_dailymotion_trailer_and_stills,
     fetch_wikipedia_localized_synopsis,
+    resolve_multilingual_media_details,
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.series.tvmaze")
@@ -63,7 +65,8 @@ class TvMazeAdapter(IScraperSource):
         genre_meta: Dict[str, Any],
     ) -> MediaCandidate:
         show_id = show.get("id")
-        title = str(show.get("name") or "Unknown Series").strip()
+        orig_title = str(show.get("name") or "Unknown Series").strip()
+        title = orig_title
         premiered = str(show.get("premiered") or "2010")
         year = premiered[:4] if len(premiered) >= 4 else "2010"
         rating_val = (show.get("rating") or {}).get("average") or 8.1
@@ -75,14 +78,16 @@ class TvMazeAdapter(IScraperSource):
         poster_url = img.get("original") or img.get("medium")
 
         summary = clean_synopsis_text(show.get("summary"), max_chars=300)
-        if lang != "en" or not summary:
-            wiki_syn, wiki_thumb = await fetch_wikipedia_localized_synopsis(
-                client, title, lang=lang, domain_hint="TV series"
-            )
-            if wiki_syn:
-                summary = wiki_syn
-            if wiki_thumb and not poster_url:
-                poster_url = wiki_thumb
+        resolved_trailer: Optional[str] = None
+        loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
+            client, orig_title, lang=lang, domain_hint="TV series", year=year
+        )
+        if loc_syn and (lang != "en" or not summary):
+            summary = loc_syn
+        if loc_t and lang != "en":
+            title = loc_t
+        if loc_tr:
+            resolved_trailer = loc_tr
 
         cand = MediaCandidate(
             id=f"series_tvmaze_{show_id}",
@@ -97,6 +102,7 @@ class TvMazeAdapter(IScraperSource):
             lang=lang,
             poster_url=poster_url,
             jacket_url=poster_url,
+            youtube_url=resolved_trailer,
             source_id=self.source_id,
             theme_palette=genre_meta["palette"],
             extra_meta={"tvmaze_id": str(show_id)},
@@ -120,27 +126,39 @@ class TvMazeAdapter(IScraperSource):
             except Exception:
                 pass
 
-        # Try Apple iTunes TV Episode previewUrl (.m4v) for official series clip; otherwise None (no random ytsearch)
-        try:
-            it_resp = await client.get(
-                "https://itunes.apple.com/search",
-                params={
-                    "term": title,
-                    "media": "tvShow",
-                    "entity": "tvEpisode",
-                    "country": "US",
-                    "limit": "5",
-                },
-                timeout=3.5,
+        # Try Apple iTunes TV Episode previewUrl (.m4v) using original title first
+        for term in dict.fromkeys([orig_title, title]):
+            try:
+                it_resp = await client.get(
+                    "https://itunes.apple.com/search",
+                    params={
+                        "term": term,
+                        "media": "tvShow",
+                        "entity": "tvEpisode",
+                        "country": "US",
+                        "limit": "5",
+                    },
+                    timeout=3.5,
+                )
+                if it_resp.status_code == 200:
+                    for row in it_resp.json().get("results") or []:
+                        prev = str(row.get("previewUrl") or "").strip()
+                        if prev.startswith("http"):
+                            cand.video_url = prev
+                            break
+                if cand.video_url:
+                    break
+            except Exception:
+                pass
+
+        if not cand.video_url and not cand.youtube_url:
+            dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                client, f"{orig_title} series trailer", max_snapshots=4
             )
-            if it_resp.status_code == 200:
-                for row in it_resp.json().get("results") or []:
-                    prev = str(row.get("previewUrl") or "").strip()
-                    if prev.startswith("http"):
-                        cand.video_url = prev
-                        break
-        except Exception:
-            pass
+            if dm_url:
+                cand.youtube_url = dm_url
+            for st in dm_stills:
+                cand.add_unique_snapshot(st)
 
         return cand
 

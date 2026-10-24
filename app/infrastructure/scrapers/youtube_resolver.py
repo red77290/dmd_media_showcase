@@ -45,7 +45,7 @@ def slice_hd_remote_video_ffmpeg(
         return False
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     out_mp4.unlink(missing_ok=True)
-    dur = max(2.0, min(60.0, float(max_duration_s)))
+    dur = max(2.0, min(120.0, float(max_duration_s)))
     ffmpeg_bin = get_ffmpeg_binary()
     cmd = [
         ffmpeg_bin,
@@ -102,7 +102,7 @@ def extract_hd_youtube_clip_ytdlp(
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     out_mp4.unlink(missing_ok=True)
 
-    clip_dur = max(2.0, min(60.0, float(max_duration_s)))
+    clip_dur = max(2.0, min(120.0, float(max_duration_s)))
     sec_start = 8
     sec_end = int(sec_start + round(clip_dur))
     ffmpeg_bin = get_ffmpeg_binary()

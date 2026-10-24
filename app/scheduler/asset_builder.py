@@ -79,7 +79,7 @@ def _download_bytes(url: Optional[str], timeout: float = 6.0) -> Optional[bytes]
         )
         with urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
-                data = resp.read(20 * 1024 * 1024)
+                data = resp.read(80 * 1024 * 1024)
                 if len(data) < 128:
                     logger.info(
                         "[CONVERTER] Ignored empty/truncated payload (%d bytes) from %s",
@@ -524,11 +524,22 @@ def build_video_assets_worker_task(
     have_real_video = False
     if video_url:
         if (
-            video_url.endswith(".webm")
+            video_url.endswith((".webm", ".m4v"))
             or "animethemes.moe" in video_url
+            or "itunes.apple.com" in video_url
+            or "mzstatic.com" in video_url
             or "archive.org/download/" in video_url
         ):
-            offset_s = 4.0 if "archive.org/download/" in video_url else 12.0
+            if "archive.org/download/" in video_url:
+                offset_s = 4.0
+            elif (
+                "itunes.apple.com" in video_url
+                or "mzstatic.com" in video_url
+                or video_url.endswith(".m4v")
+            ):
+                offset_s = 8.0
+            else:
+                offset_s = 12.0
             have_real_video = _slice_remote_video_ffmpeg(
                 video_url, src_video_path, max_duration_s=max_duration_s, start_offset_s=offset_s
             )

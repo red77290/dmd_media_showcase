@@ -145,12 +145,12 @@ class SessionRegisterRequest(BaseModel):
 
     # Video & Colorimetry parameters
     video_max_duration_s: float = Field(
-        default=6.0,
+        default=8.0,
         ge=1.5,
-        le=60.0,
+        le=120.0,
         description="Maximum video duration in seconds requested by the DMD.",
     )
-    video_fps: int = Field(default=15, ge=6, le=30, description="Target video frame rate.")
+    video_fps: int = Field(default=15, ge=6, le=60, description="Target video frame rate.")
     video_mode: Literal[
         "auto_action", "center_crop", "pixel_art", "anime", "cinema", "panorama"
     ] = "auto_action"
@@ -314,6 +314,7 @@ class HealthResponse(BaseModel):
 
 class AdminServerConfigPayload(BaseModel):
     tmdb_api_key: Optional[str] = None
+    tvdb_api_key: Optional[str] = None
     screenscraper_user: Optional[str] = None
     screenscraper_pass: Optional[str] = None
     screenscraper_dev_id: Optional[str] = None

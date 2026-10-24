@@ -39,9 +39,10 @@ cd dmd_media_showcase
 docker compose up -d --build
 ```
 
-- **Panel Web de Administración**: `http://<ip-servidor>:8080/`
-- **Swagger UI Interactivo**: `http://<ip-servidor>:8080/docs`
-- **Broker MQTT Integrado**: `mqtt://<ip-servidor>:1883`
+- **Panel Web de Administración**: `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`)
+- **Swagger UI Interactivo**: `http://dmdmediashowcase.local:8890/docs`
+- **Broker MQTT Integrado**: `mqtt://dmdmediashowcase.local:1883`
+- **Autodescubrimiento en Red Local (mDNS)**: Anuncia automáticamente `dmdmediashowcase.local` (`224.0.0.251:5353`) para que su DMD (`ArcadeMatrix` ESP32 o `ArcadeMatrix_RPi`) lo detecte sin introducir una IP. Basta con activar el interruptor Showcase en la Web UI del DMD (`Settings -> Showcase Server`), verificar el indicador **`🟢 Comunicación OK (v3.0.0)`** y añadir los motores Showcase a su rotación.
 
 ### Opción 2: Paquete Portátil Autónomo (Windows / macOS)
 
@@ -51,10 +52,10 @@ Descargue el archivo portátil (`DMD_Media_Showcase_Windows_x64.zip` o `DMD_Medi
 
 ```bash
 # 1. Comprobar el estado del servidor, workers y puerto MQTT
-curl -s http://localhost:8080/api/v1/health | jq .
+curl -s http://localhost:8890/api/v1/health | jq .
 
 # 2. Obtener el referencial consolidado en español para Retro Games
-curl -s "http://localhost:8080/api/v1/games/filters?lang=es" | jq '.systems[0], .genres[:3]'
+curl -s "http://localhost:8890/api/v1/games/filters?lang=es" | jq '.systems[0], .genres[:3]'
 ```
 
 ---

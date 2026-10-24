@@ -40,9 +40,10 @@ cd dmd_media_showcase
 docker compose up -d --build
 ```
 
-- **Web Admin Dashboard**: `http://<server-ip>:8080/` (configure optional TMDB / ScreenScraper credentials & reset `seen_history.json`)
-- **Interactive Swagger UI**: `http://<server-ip>:8080/docs`
-- **Embedded MQTT Broker**: `mqtt://<server-ip>:1883`
+- **Web Admin Dashboard**: `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/` — configure optional TMDB / ScreenScraper credentials & reset `seen_history.json`)
+- **Interactive Swagger UI**: `http://dmdmediashowcase.local:8890/docs`
+- **Embedded MQTT Broker**: `mqtt://dmdmediashowcase.local:1883`
+- **Automatic Local Network Discovery (mDNS)**: Automatically advertises `dmdmediashowcase.local` (`224.0.0.251:5353`) so your DMD (`ArcadeMatrix` ESP32 or `ArcadeMatrix_RPi`) finds it without typing an IP address. Simply toggle Showcase **ON** in the DMD Web UI (`Settings -> Showcase Server`), verify the **`🟢 Communication OK (v3.0.0)`** badge, and add the Showcase engines to your rotation!
 
 ### Option 2: Portable Standalone Bundle (Windows / macOS)
 
@@ -52,10 +53,10 @@ Download the latest portable archive (`DMD_Media_Showcase_Windows_x64.zip` or `D
 
 ```bash
 # 1. Check server health, active worker pool, and MQTT broker port
-curl -s http://localhost:8080/api/v1/health | jq .
+curl -s http://localhost:8890/api/v1/health | jq .
 
 # 2. Fetch consolidated French referential for Retro Games (Systems -> Genres & Decades)
-curl -s "http://localhost:8080/api/v1/games/filters?lang=fr" | jq '.systems[0], .genres[:3]'
+curl -s "http://localhost:8890/api/v1/games/filters?lang=fr" | jq '.systems[0], .genres[:3]'
 ```
 
 ---

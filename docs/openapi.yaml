@@ -543,7 +543,7 @@
           "Consume-Once Protocol (V3.0)"
         ],
         "summary": "Stream Consume Once Sequence",
-        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` and immediately purge the consumed files from disk once the HTTP response completes.",
+        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` and immediately purge the consumed files from disk once the HTTP response completes\n(unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).",
         "operationId": "stream_consume_once_sequence_api_v1__domain__stream__item_id__rgb565_stream_get",
         "parameters": [
           {
@@ -569,6 +569,18 @@
               "type": "string",
               "title": "Item Id"
             }
+          },
+          {
+            "name": "purge",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)",
+              "default": true,
+              "title": "Purge"
+            },
+            "description": "Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)"
           }
         ],
         "responses": {
@@ -867,7 +879,7 @@
             "required": false,
             "schema": {
               "type": "number",
-              "maximum": 30.0,
+              "maximum": 60.0,
               "minimum": 1.5,
               "default": 6.0,
               "title": "Video Max Duration S"
@@ -1050,7 +1062,7 @@
               "anyOf": [
                 {
                   "type": "number",
-                  "maximum": 30.0,
+                  "maximum": 60.0,
                   "minimum": 0.5
                 },
                 {
@@ -1098,6 +1110,17 @@
               }
             ],
             "title": "Tmdb Api Key"
+          },
+          "tvdb_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tvdb Api Key"
           },
           "screenscraper_user": {
             "anyOf": [
@@ -1864,15 +1887,15 @@
           },
           "video_max_duration_s": {
             "type": "number",
-            "maximum": 30.0,
+            "maximum": 120.0,
             "minimum": 1.5,
             "title": "Video Max Duration S",
             "description": "Maximum video duration in seconds requested by the DMD.",
-            "default": 6.0
+            "default": 8.0
           },
           "video_fps": {
             "type": "integer",
-            "maximum": 30.0,
+            "maximum": 60.0,
             "minimum": 6.0,
             "title": "Video Fps",
             "description": "Target video frame rate.",

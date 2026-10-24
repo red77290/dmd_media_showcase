@@ -18,8 +18,9 @@ services:
     container_name: dmd-media-showcase
     restart: unless-stopped
     ports:
-      - "8080:8080"       # FastAPI REST + Web Admin Dashboard + Swagger UI
+      - "8890:8890"       # FastAPI REST + Web Admin Dashboard + Swagger UI
       - "1883:1883"       # Embedded MQTT 3.1.1 Control Plane Broker
+      - "5353:5353/udp"   # Local Network mDNS Auto-Discovery (dmdmediashowcase.local)
     volumes:
       - ./data:/app/data  # Persistent server_config.json, seen_history.json & referentials/
     environment:
@@ -47,12 +48,12 @@ docker logs -f dmd-media-showcase
 
 ---
 
-## 2. Web Admin Dashboard (`http://<server-ip>:8080/`)
+## 2. Web Admin Dashboard (`http://dmdmediashowcase.local:8890/`)
 
-Open `http://<server-ip>:8080/` in your browser to:
+Open `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/`) in your browser to:
 - Configure **optional** Primary scraper credentials:
   - **ScreenScraper** (`user`, `pass`, `dev_id`, `dev_pass`) for `games`. Without credentials, `ArcadeItalia` (MAME HTTPS) + `Libretro+Wikidata` (Console SPARQL + GitHub Tree) operate automatically with zero configuration.
-  - **TMDB API Key** (`tmdb_api_key`) for `movies` and `series`. Without a key, `Apple iTunes` and `TVMaze` operate automatically.
+  - **TMDB API Key / v4 Read Access Token** (`tmdb_api_key`) and **TheTVDB v4 API Key** (`tvdb_api_key`) for `movies`, `series`, and `anime`. Without keys, `Apple iTunes`, `TVMaze`, `Jikan + AnimeThemes`, and `Wikipedia Interwiki` operate automatically.
 - Choose **Embedded MQTT Broker** (`:1883`, default) or connect to an **External MQTT Broker** (e.g. Mosquitto / Home Assistant).
 - View per-domain **Seen History counters** and reset `seen_history.json` per domain or globally.
 - Trigger a live **Scraper Referential Sync** (`POST /api/v1/admin/referentials/sync`).
@@ -61,9 +62,12 @@ Open `http://<server-ip>:8080/` in your browser to:
 
 ## 3. Connecting Your DMD (`ArcadeMatrix` ESP32 & `ArcadeMatrix_RPi`)
 
-1. Open your DMD WebUI (`http://<dmd-ip>/`).
-2. Enable any of the 4 Showcase engines (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`).
-3. Set `Showcase Server URL` to `http://<server-ip>:8080` and `MQTT Broker` to `mqtt://<server-ip>:1883`.
+1. Open your DMD WebUI (`http://arcadematrix.local/` on ESP32 or `http://arcadematrix.local:8080/` on Raspberry Pi).
+2. Navigate to **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`):
+   - The **Showcase Server URL** is already pre-filled as `http://dmdmediashowcase.local:8890` and **disabled by default** (`⚪ Disabled`) so the DMD makes zero network requests if `dmd_media_showcase` is not installed.
+   - Toggle **Enable DMD Media Showcase Server** ON and click **Save Showcase Server** (or **Test Connection**).
+   - Verify that the live connection status indicator turns green: **`🟢 Communication OK (v3.0.0)`**.
+3. Go to the **Screens / Rotation** tab, add any of the 4 Showcase engines (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`), and set the number of **Media** items per rotation turn.
 4. The DMD WebUI automatically queries `GET /api/v1/{domain}/filters?lang={ui_lang}` from the Showcase server to populate the **Systems**, **Genres**, and **Decades** dropdowns dynamically (filtering available genres/decades when you select a system such as `NES` or `Neo-Geo`).
 5. Adjust **Synopsis Scroll Speed** (`1 = Slow` to `10 = Turbo`, up to `160 px/s`) and click **Save**.
 

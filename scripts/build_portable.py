@@ -57,8 +57,8 @@ def _write_launchers(bundle_dir: Path) -> None:
         "@echo off\r\n"
         "title DMD Media Showcase Server v3.0 (Portable Hermetic)\r\n"
         "set DMD_PORTABLE_MODE=1\r\n"
-        "echo Starting DMD Media Showcase Server on http://localhost:8080 and MQTT :1883 ...\r\n"
-        "start \"\" http://localhost:8080/\r\n"
+        "echo Starting DMD Media Showcase Server on http://dmdmediashowcase.local:8890 (http://localhost:8890) and MQTT :1883 ...\r\n"
+        "start \"\" http://localhost:8890/\r\n"
         "\"%~dp0dmd-media-showcase.exe\"\r\n",
         encoding="utf-8",
     )
@@ -68,8 +68,8 @@ def _write_launchers(bundle_dir: Path) -> None:
         "#!/usr/bin/env bash\n"
         "DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
         "export DMD_PORTABLE_MODE=1\n"
-        "echo \"Starting DMD Media Showcase Server v3.0 on http://localhost:8080 and MQTT :1883 ...\"\n"
-        "(sleep 2 && open http://localhost:8080/ >/dev/null 2>&1 || true) &\n"
+        "echo \"Starting DMD Media Showcase Server v3.0 on http://dmdmediashowcase.local:8890 (http://localhost:8890) and MQTT :1883 ...\"\n"
+        "(sleep 2 && open http://localhost:8890/ >/dev/null 2>&1 || true) &\n"
         "exec \"$DIR/dmd-media-showcase\"\n",
         encoding="utf-8",
     )
