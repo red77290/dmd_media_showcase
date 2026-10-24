@@ -56,12 +56,16 @@ docker run -d \
 
 ---
 
-### Mode B: Portable Hermetic Bundle (Windows 10/11 & macOS)
+### Mode B: Native Desktop Installers & Portable Bundles (macOS `.dmg`, Windows `.zip`, Linux `.tar.gz`)
 
-1. Download `DMD_Media_Showcase_Windows_x64.zip` or `DMD_Media_Showcase_macOS.zip` from GitHub Releases.
-2. Extract to any folder (e.g. `C:\DMD_Media_Showcase\`).
-3. Run `dmd-media-showcase.exe` (Windows) or `./dmd-media-showcase` (macOS).
-4. All runtime state is isolated inside `./data/` (`server_config.json`, `seen_history.json`, `referentials/`, `stream_tmp/`). Host `PYTHONPATH` and `PYTHONHOME` are automatically stripped (`enforce_hermetic_environment()`).
+1. **macOS (Apple Silicon `arm64`)**:
+   - Download **`DMD_Media_Showcase_macOS_arm64.dmg`** from GitHub Releases, open it, and drag **`DMD Media Showcase.app`** to **`Applications`**.
+   - Launch **`DMD Media Showcase.app`**: the `▣ DMD` icon appears in your macOS Menu Bar, automatically opens `http://localhost:8890/`, and stores persistent data in `~/Library/Application Support/DMDMediaShowcase/data/`.
+   - *First launch Gatekeeper note (open-source ad-hoc signed build)*: Right-click `DMD Media Showcase.app` → **Open** (or **System Settings → Privacy & Security → Open Anyway**, or run `xattr -cr "/Applications/DMD Media Showcase.app"` once).
+2. **Windows 10/11 (`x64`)**:
+   - Download **`DMD_Media_Showcase_Windows_x64.zip`**, extract anywhere (e.g. `C:\DMD_Media_Showcase\`), and run `Start_Showcase_Windows.bat` (or `dmd-media-showcase.exe`). Persistent state is stored in `./data/`.
+3. **Linux (`x64`)**:
+   - Download **`DMD_Media_Showcase_Linux_x64.tar.gz`**, extract (`tar -xzf ...`), and run `./start_showcase.sh`.
 
 ---
 

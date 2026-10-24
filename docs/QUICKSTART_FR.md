@@ -56,12 +56,16 @@ docker run -d \
 
 ---
 
-### Mode B : Exécutable Portable Hermétique (Windows 10/11 & macOS)
+### Mode B : Installeurs Natifs & Archives Portables (macOS `.dmg`, Windows `.zip`, Linux `.tar.gz`)
 
-1. Téléchargez `DMD_Media_Showcase_Windows_x64.zip` ou `DMD_Media_Showcase_macOS.zip` depuis GitHub Releases.
-2. Extrayez l'archive dans le dossier de votre choix (ex. `C:\DMD_Media_Showcase\`).
-3. Lancez `dmd-media-showcase.exe` (Windows) ou `./dmd-media-showcase` (macOS).
-4. Toutes les données sont isolées dans `./data/` (`server_config.json`, `seen_history.json`, `referentials/`, `stream_tmp/`). Les variables `PYTHONPATH` et `PYTHONHOME` de l'hôte sont automatiquement purgées (`enforce_hermetic_environment()`).
+1. **macOS (Apple Silicon `arm64`)** :
+   - Téléchargez **`DMD_Media_Showcase_macOS_arm64.dmg`** depuis GitHub Releases, ouvrez-le et glissez **`DMD Media Showcase.app`** dans **`Applications`**.
+   - Lancez **`DMD Media Showcase.app`** : l'icône `▣ DMD` apparaît dans la barre des menus macOS, ouvre automatiquement `http://localhost:8890/` et stocke les données dans `~/Library/Application Support/DMDMediaShowcase/data/`.
+   - *Note Gatekeeper au 1er lancement (app open-source signée ad-hoc sans certificat Apple payant)* : Clic droit sur `DMD Media Showcase.app` → **Ouvrir** (ou **Réglages Système → Confidentialité et sécurité → Ouvrir quand même**, ou `xattr -cr "/Applications/DMD Media Showcase.app"` une seule fois).
+2. **Windows 10/11 (`x64`)** :
+   - Téléchargez **`DMD_Media_Showcase_Windows_x64.zip`**, extrayez-la (ex. `C:\DMD_Media_Showcase\`) et double-cliquez sur `Start_Showcase_Windows.bat` (ou `dmd-media-showcase.exe`). Données isolées dans `./data/`.
+3. **Linux (`x64`)** :
+   - Téléchargez **`DMD_Media_Showcase_Linux_x64.tar.gz`**, extrayez (`tar -xzf ...`) et lancez `./start_showcase.sh`.
 
 ---
 

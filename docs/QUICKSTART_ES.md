@@ -56,11 +56,16 @@ docker run -d \
 
 ---
 
-### Modo B: Paquete Portátil Hermético (Windows 10/11 y macOS)
+### Modo B: Instaladores Nativos y Paquetes Portátiles (macOS `.dmg`, Windows `.zip`, Linux `.tar.gz`)
 
-1. Descargue `DMD_Media_Showcase_Windows_x64.zip` o `DMD_Media_Showcase_macOS.zip` desde GitHub Releases.
-2. Extraiga el archivo en cualquier carpeta y ejecute `dmd-media-showcase`.
-3. Todos los datos se almacenan en `./data/` (`server_config.json`, `seen_history.json`, `referentials/`, `stream_tmp/`).
+1. **macOS (Apple Silicon `arm64`)**:
+   - Descargue **`DMD_Media_Showcase_macOS_arm64.dmg`** desde GitHub Releases, ábralo y arrastre **`DMD Media Showcase.app`** a **`Applications`**.
+   - Inicie **`DMD Media Showcase.app`**: el icono `▣ DMD` aparece en la barra de menús de macOS, abre `http://localhost:8890/` y guarda los datos en `~/Library/Application Support/DMDMediaShowcase/data/`.
+   - *Nota Gatekeeper en el primer inicio*: Clic derecho en `DMD Media Showcase.app` → **Abrir** (o ejecute `xattr -cr "/Applications/DMD Media Showcase.app"` una vez).
+2. **Windows 10/11 (`x64`)**:
+   - Descargue **`DMD_Media_Showcase_Windows_x64.zip`**, extráigalo y ejecute `Start_Showcase_Windows.bat`.
+3. **Linux (`x64`)**:
+   - Descargue **`DMD_Media_Showcase_Linux_x64.tar.gz`**, extráigalo y ejecute `./start_showcase.sh`.
 
 ---
 

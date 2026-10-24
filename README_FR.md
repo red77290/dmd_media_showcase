@@ -83,9 +83,12 @@ docker run -d \
 - **Broker MQTT Embarqué** : `mqtt://dmdmediashowcase.local:1883`
 - **Auto-Découverte Réseau Local (mDNS)** : Annonce automatiquement `dmdmediashowcase.local` (`224.0.0.251:5353`) afin que votre DMD (`ArcadeMatrix` ESP32 ou `ArcadeMatrix_RPi`) le détecte sans saisir d'adresse IP. Il suffit d'activer le toggle Showcase dans la Web UI du DMD (`Settings -> Showcase Server`), de vérifier le témoin **`🟢 Communication OK`**, puis d'ajouter les moteurs Showcase à votre rotation !
 
-### Option 2 : Exécutable Portable Autonome (Windows / macOS)
+### Option 2 : Installeurs Natifs & Archives Portables (macOS `.dmg` / Windows `.zip` / Linux `.tar.gz`)
 
-Téléchargez l'archive portable (`DMD_Media_Showcase_Windows_x64.zip` ou `DMD_Media_Showcase_macOS.zip`) depuis **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)**, décompressez-la et lancez `dmd-media-showcase` (aucune installation Python ou FFmpeg requise sur la machine hôte).
+Téléchargez le paquet correspondant à votre OS depuis **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)** (aucune installation Python ou FFmpeg requise sur la machine hôte) :
+- **macOS (Apple Silicon `arm64`)** : Ouvrez **`DMD_Media_Showcase_macOS_arm64.dmg`**, glissez **`DMD Media Showcase.app`** dans **`Applications`**, puis lancez-la (l'icône `▣ DMD` apparaît dans la barre des menus macOS et ouvre automatiquement `http://localhost:8890/`). *(1er lancement d'une app open-source non notarisée Apple : Clic droit → **Ouvrir** ou `Réglages Système → Confidentialité et sécurité → Ouvrir quand même`, ou `xattr -cr "/Applications/DMD Media Showcase.app"` une seule fois).*
+- **Windows (`x64`)** : Décompressez **`DMD_Media_Showcase_Windows_x64.zip`** et double-cliquez sur `Start_Showcase_Windows.bat`.
+- **Linux (`x64`)** : Décompressez **`DMD_Media_Showcase_Linux_x64.tar.gz`** et lancez `./start_showcase.sh`.
 
 ### Exemple Rapide de Vérification
 
