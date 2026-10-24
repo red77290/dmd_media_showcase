@@ -42,6 +42,16 @@ jobs:
             type=raw,value=SNAPSHOT,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Resolve latest dmd_gif_converter tag SHA for Docker cache invalidation
+        id: converter_rev
+        run: |
+          CONV_SHA=$(git ls-remote https://github.com/red77290/dmd_gif_converter.git refs/tags/latest | awk '{print $1}')
+          if [ -z "$CONV_SHA" ]; then
+            CONV_SHA=$(git ls-remote https://github.com/red77290/dmd_gif_converter.git refs/heads/main | awk '{print $1}')
+          fi
+          echo "sha=${CONV_SHA:-latest}" >> "$GITHUB_OUTPUT"
+          echo "Resolved dmd_gif_converter@latest -> ${CONV_SHA:-latest}"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -50,6 +60,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DMD_GIF_CONVERTER_REV=${{ steps.converter_rev.outputs.sha }}
           secrets: |
             "VAULT_MASTER_SECRET=${{ secrets.VAULT_MASTER_SECRET }}"
             "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}"

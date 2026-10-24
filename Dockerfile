@@ -29,7 +29,8 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY scripts/compile_prod_vault.py ./scripts/compile_prod_vault.py
 
-ARG DMD_GIF_CONVERTER_REV=1d80df7
+# Resolved commit SHA of dmd_gif_converter@latest (injected by CI to invalidate layer cache on new releases)
+ARG DMD_GIF_CONVERTER_REV=latest
 
 RUN --mount=type=secret,id=VAULT_MASTER_SECRET,required=false \
     --mount=type=secret,id=TMDB_API_KEY,required=false \
