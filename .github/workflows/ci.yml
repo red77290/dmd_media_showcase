@@ -72,7 +72,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg libglib2.0-0 libsm6 libxext6
 
       - name: Ensure FFmpeg & FFprobe are available (macOS)
         if: runner.os == 'macOS'
@@ -90,6 +90,7 @@ jobs:
           ffprobe -version
 
       - name: Compile optional CI/CD Production Native Vault & Build hermetic portable bundle
+        shell: bash
         env:
           VAULT_MASTER_SECRET: ${{ secrets.VAULT_MASTER_SECRET }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
@@ -97,10 +98,27 @@ jobs:
           SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
           SCREENSCRAPER_DEV_PASS: ${{ secrets.SCREENSCRAPER_DEV_PASS }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            REL_VER="${GITHUB_REF_NAME#v}"
-            python -c "from pathlib import Path; import re; p=Path('pyproject.toml'); p.write_text(re.sub(r'^version = \".*\"', f'version = \"{REL_VER}\"', p.read_text(), count=1, flags=re.M)); a=Path('app/__init__.py'); a.write_text(re.sub(r'__version__ = \".*\"', f'__version__ = \"{REL_VER}\"', a.read_text()))"
-          fi
+          python - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+
+          ref = os.environ.get("GITHUB_REF", "")
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          if ref.startswith("refs/tags/v"):
+              raw_ver = ref_name.removeprefix("v")
+              pep_ver = re.sub(r"-snapshot$", ".dev0", raw_ver, flags=re.I)
+              for rel_path, pattern, repl in [
+                  ("pyproject.toml", r'^version = ".*"', f'version = "{pep_ver}"'),
+                  ("app/__init__.py", r'^__version__ = ".*"', f'__version__ = "{raw_ver}"'),
+              ]:
+                  p = Path(rel_path)
+                  p.write_text(
+                      re.sub(pattern, repl, p.read_text(encoding="utf-8"), count=1, flags=re.M),
+                      encoding="utf-8",
+                  )
+              assert tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == pep_ver
+              print(f"Stamped release version: {raw_ver} (PEP 440: {pep_ver})")
+          PY
           python -m pip install --upgrade pip setuptools pyinstaller
           python scripts/compile_prod_vault.py
           python -m pip install "."
@@ -128,10 +146,27 @@ jobs:
 
       - name: Stamp version from release tag (if tag push) & Build wheel and sdist
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            REL_VER="${GITHUB_REF_NAME#v}"
-            python -c "from pathlib import Path; import re; p=Path('pyproject.toml'); p.write_text(re.sub(r'^version = \".*\"', f'version = \"{REL_VER}\"', p.read_text(), count=1, flags=re.M)); a=Path('app/__init__.py'); a.write_text(re.sub(r'__version__ = \".*\"', f'__version__ = \"{REL_VER}\"', a.read_text()))"
-          fi
+          python - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+
+          ref = os.environ.get("GITHUB_REF", "")
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          if ref.startswith("refs/tags/v"):
+              raw_ver = ref_name.removeprefix("v")
+              pep_ver = re.sub(r"-snapshot$", ".dev0", raw_ver, flags=re.I)
+              for rel_path, pattern, repl in [
+                  ("pyproject.toml", r'^version = ".*"', f'version = "{pep_ver}"'),
+                  ("app/__init__.py", r'^__version__ = ".*"', f'__version__ = "{raw_ver}"'),
+              ]:
+                  p = Path(rel_path)
+                  p.write_text(
+                      re.sub(pattern, repl, p.read_text(encoding="utf-8"), count=1, flags=re.M),
+                      encoding="utf-8",
+                  )
+              assert tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == pep_ver
+              print(f"Stamped release version: {raw_ver} (PEP 440: {pep_ver})")
+          PY
           python -m pip install --upgrade pip build
           python -m build
 
@@ -148,7 +183,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "dmd-media-showcase ${{ github.ref_name }}"
           generate_release_notes: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: dist/*
 
       - name: Publish or Update Rolling SNAPSHOT Pre-Release (on branch push)
