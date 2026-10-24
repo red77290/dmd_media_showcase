@@ -1,0 +1,8 @@
+# Developer override to build the image locally from source:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+services:
+  dmd-media-showcase:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    pull_policy: build

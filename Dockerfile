@@ -2,7 +2,9 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="dmd-media-showcase" \
       org.opencontainers.image.description="DDD Media Showcase & Real-Time UDP/MQTT Video Streaming Server for HUB75 LED Matrices (ArcadeMatrix ESP32 / RPi)" \
+      org.opencontainers.image.url="https://github.com/red77290/dmd_media_showcase" \
       org.opencontainers.image.source="https://github.com/red77290/dmd_media_showcase" \
+      org.opencontainers.image.documentation="https://github.com/red77290/dmd_media_showcase/blob/main/docs/QUICKSTART.md" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

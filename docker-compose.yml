@@ -1,9 +1,7 @@
 services:
   dmd-media-showcase:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    pull_policy: build
+    image: ghcr.io/red77290/dmd_media_showcase:latest
+    pull_policy: always
     container_name: dmd-media-showcase
     restart: unless-stopped
     ports:

@@ -32,12 +32,50 @@
 
 ## 🚀 Instalación Rápida y Ejemplo Corto
 
-### Opción 1: Docker Compose (Recomendado para Raspberry Pi / NAS / Home-Lab)
+### Opción 1: Imagen Docker Oficial Multi-Arch (`amd64` / `arm64` — Raspberry Pi / NAS / Home-Lab)
+
+#### A. Docker Compose (Recomendado — sin `git clone` ni compilación local)
+
+Descargue el archivo [`docker-compose.yml`](docker-compose.yml) listo para usar e inicie el servidor:
 
 ```bash
-git clone https://github.com/red77290/dmd_media_showcase.git
-cd dmd_media_showcase
-docker compose up -d --build
+curl -fsSLO https://raw.githubusercontent.com/red77290/dmd_media_showcase/main/docker-compose.yml
+docker compose up -d
+```
+
+<details>
+<summary>📄 Ver <code>docker-compose.yml</code> autónomo</summary>
+
+```yaml
+services:
+  dmd-media-showcase:
+    image: ghcr.io/red77290/dmd_media_showcase:latest
+    pull_policy: always
+    container_name: dmd-media-showcase
+    restart: unless-stopped
+    ports:
+      - "8890:8890"
+      - "1883:1883"
+      - "5353:5353/udp"
+    volumes:
+      - ./data:/app/data
+    tmpfs:
+      - /tmp/dmd_media_showcase_cache:size=256m,mode=1777
+```
+</details>
+
+#### B. Comando `docker run` Directo
+
+```bash
+docker run -d \
+  --name dmd-media-showcase \
+  --restart unless-stopped \
+  -p 8890:8890 \
+  -p 1883:1883 \
+  -p 5353:5353/udp \
+  -v ./data:/app/data \
+  --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
+  ghcr.io/red77290/dmd_media_showcase:latest
 ```
 
 - **Panel Web de Administración**: `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`)
