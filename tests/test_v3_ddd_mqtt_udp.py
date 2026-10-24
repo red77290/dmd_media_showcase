@@ -1169,6 +1169,71 @@ def test_resolve_framing_and_color_params_orthogonal_matrix():
     assert resolve_framing_and_color_params("auto_action", False) == (True, False, False, "cinema")
 
 
+def test_three_tier_credential_resolution_and_public_config_sanitization(tmp_path: Path, monkeypatch):
+    """
+    Verify:
+    1. 3-Tier priority: `server_config.json` (WebUI) > `.env`/`docker-compose` > `_prod_vault`.
+    2. `get_public_admin_config()` never leaks `screenscraper_dev_id`, `screenscraper_dev_pass`,
+       or built-in `tmdb_api_key`/`tvdb_api_key`, and masks user-saved secrets (`••••••••`).
+    """
+    import sys
+    from app.config import settings
+    from app.infrastructure.persistence.server_config_store import ServerConfigStore
+
+    scs_mod = sys.modules["app.infrastructure.persistence.server_config_store"]
+
+    # Simulate Tier 3 (_prod_vault) providing dev keys + default TMDB key
+    fake_vault = {
+        "tmdb_api_key": "vault_tmdb_secret",
+        "tvdb_api_key": "vault_tvdb_secret",
+        "screenscraper_dev_id": "vault_dev_id",
+        "screenscraper_dev_pass": "vault_dev_pass",
+    }
+    monkeypatch.setattr(scs_mod, "decrypt_prod_vault_secret", lambda k: fake_vault.get(k, ""))
+    monkeypatch.setattr(scs_mod, "has_prod_vault_secret", lambda k: k in fake_vault)
+    monkeypatch.delenv("TMDB_API_KEY", raising=False)
+    monkeypatch.delenv("TVDB_API_KEY", raising=False)
+    monkeypatch.delenv("SCREENSCRAPER_DEV_ID", raising=False)
+    monkeypatch.delenv("SCREENSCRAPER_DEV_PASS", raising=False)
+    monkeypatch.setattr(settings, "tmdb_api_key", "")
+    monkeypatch.setattr(settings, "tvdb_api_key", "")
+    monkeypatch.setattr(settings, "screenscraper_dev_id", "")
+    monkeypatch.setattr(settings, "screenscraper_dev_pass", "")
+
+    store = ServerConfigStore(file_path=tmp_path / "server_config.json")
+
+    # Tier 3 active when neither .env nor server_config.json overrides exist
+    eff = store.get_all()
+    assert eff["tmdb_api_key"] == "vault_tmdb_secret"
+    assert eff["screenscraper_dev_id"] == "vault_dev_id"
+    assert eff["screenscraper_dev_pass"] == "vault_dev_pass"
+
+    # Public config must never expose vault or dev keys
+    pub = store.get_public_admin_config()
+    assert "screenscraper_dev_id" not in pub
+    assert "screenscraper_dev_pass" not in pub
+    assert pub["tmdb_api_key"] == ""
+    assert pub["tvdb_api_key"] == ""
+
+    # Tier 2 (.env / docker-compose) overrides Tier 3 (_prod_vault)
+    monkeypatch.setenv("TMDB_API_KEY", "compose_env_tmdb_key")
+    assert store.get_all()["tmdb_api_key"] == "compose_env_tmdb_key"
+    assert store.get_public_admin_config()["tmdb_api_key"] == ""
+
+    # Tier 1 (WebUI server_config.json) overrides Tier 2 and is masked in public config
+    store.update({"tmdb_api_key": "user_custom_tmdb_key", "screenscraper_user": "player1", "screenscraper_pass": "p4ss"})
+    assert store.get_all()["tmdb_api_key"] == "user_custom_tmdb_key"
+    pub_after = store.get_public_admin_config()
+    assert pub_after["tmdb_api_key"] == "••••••••"
+    assert pub_after["screenscraper_pass"] == "••••••••"
+
+    # Submitting masked placeholder `••••••••` preserves existing user secret
+    store.update({"tmdb_api_key": "••••••••", "screenscraper_pass": "••••••••"})
+    assert store.get_all()["tmdb_api_key"] == "user_custom_tmdb_key"
+    assert store.get_all()["screenscraper_pass"] == "p4ss"
+
+
+
 
 
 

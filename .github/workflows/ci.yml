@@ -88,9 +88,16 @@ jobs:
           ffmpeg -version
           ffprobe -version
 
-      - name: Build hermetic portable bundle (PyInstaller + bundled FFmpeg + MQTT broker)
+      - name: Compile optional CI/CD Production Native Vault & Build hermetic portable bundle
+        env:
+          VAULT_MASTER_SECRET: ${{ secrets.VAULT_MASTER_SECRET }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TVDB_API_KEY: ${{ secrets.TVDB_API_KEY }}
+          SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
+          SCREENSCRAPER_DEV_PASS: ${{ secrets.SCREENSCRAPER_DEV_PASS }}
         run: |
-          python -m pip install --upgrade pip pyinstaller
+          python -m pip install --upgrade pip setuptools pyinstaller
+          python scripts/compile_prod_vault.py
           python -m pip install "."
           python scripts/build_portable.py
 

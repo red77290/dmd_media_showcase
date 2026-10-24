@@ -216,22 +216,29 @@ async def get_health() -> HealthResponse:
 
 @app.get("/api/v1/admin/config", tags=["System & Admin"])
 async def get_admin_config() -> Dict[str, Any]:
-    """Return centralized server configuration (`server_config.json`) and `seen_history.json` counts."""
+    """
+    Return sanitized server configuration (`server_config.json`), encrypted vault status,
+    active scraper chains, connected DMD clients, and `seen_history.json` counts.
+    Developer API keys are never exposed in plaintext.
+    """
     return {
-        "config": server_config_store.get_all(),
+        "config": server_config_store.get_public_admin_config(),
+        "vault_status": server_config_store.get_vault_status(),
         "providers": scraper_registry.describe_active_chains(),
         "seen_history": seen_repository.stats(),
+        "clients": consume_once_orchestrator.describe_connected_clients(),
     }
 
 
 @app.post("/api/v1/admin/config", tags=["System & Admin"])
 async def update_admin_config(payload: AdminServerConfigPayload) -> Dict[str, Any]:
-    """Update centralized scraper credentials and MQTT settings in `./data/server_config.json`."""
+    """Update centralized user scraper credentials and MQTT settings in `./data/server_config.json`."""
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     updated = server_config_store.update(updates)
     return {
         "status": "saved",
         "config": updated,
+        "vault_status": server_config_store.get_vault_status(),
         "providers": scraper_registry.describe_active_chains(),
     }
 
