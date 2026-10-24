@@ -101,14 +101,30 @@ sequenceDiagram
     ORCH->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, Œuvre N+1)
 ```
 
-### En-tête Binaire UDP `DMDF` (10 Octets, Little-Endian `<4sHBBI`)
+### En-tête Binaire UDP `DMDF` (10 Octets, Little-Endian `<4sHBBH`)
+
+> Spécification formelle complète (topics MQTT 3.1.1 + datagrammes UDP `DMDF`) : [`docs/asyncapi.yaml`](asyncapi.yaml) (également exposée en direct sur `GET /asyncapi.yaml` et `GET /api/v1/asyncapi.yaml`).
 
 | Offset | Type | Champ | Description |
 | :--- | :--- | :--- | :--- |
 | `0..3` | `char[4]` | `magic` | `"DMDF"` (`0x44 0x4D 0x44 0x46`) |
-| `4..5` | `uint16` | `frame_seq` | Numéro de séquence monotone de la trame (`0..65535`) |
+| `4..5` | `uint16le` | `frame_seq` | Numéro de séquence monotone de la trame (`0..65535`) |
 | `6` | `uint8` | `chunk_idx` | Index du fragment dans la trame courante (`0..total_chunks-1`) |
-| `7` | `uint8` | `total_chunks` | Nombre total de fragments composant la trame |
-| `8..11` | `uint32` | `byte_offset` | Offset en octets de ce fragment dans le framebuffer RGB565LE |
-| `10..N` | `uint8[]` | `payload` | Tranche de pixels bruts RGB565LE (`<= 1024` octets, compatible MTU Wi-Fi) |
+| `7` | `uint8` | `total_chunks` | Nombre total de fragments composant la trame (`1..64`) |
+| `8..9` | `uint16le` | `byte_offset` | Offset en octets (`chunk_idx * 1024`) dans le framebuffer RGB565LE |
+| `10..N` | `uint8[]` | `payload` | Tranche de pixels bruts RGB565LE (`<= 1024` octets, `<= 1034` octets/paquet UDP) |
+
+### En-tête Binaire HTTP `DMDS` du Flux Unifié (16 Octets, Little-Endian `<4sBBHHHHH`)
+
+| Offset | Type | Champ | Description |
+| :--- | :--- | :--- | :--- |
+| `0..3` | `char[4]` | `magic` | `"DMDS"` (`0x44 0x4D 0x44 0x53`) |
+| `4` | `uint8` | `version` | Version du format binaire (`1`) |
+| `5` | `uint8` | `fps` | Cadence d'affichage cible (`8..60` FPS) |
+| `6..7` | `uint16le` | `width` | Largeur panneau en pixels (ex. `128`) |
+| `8..9` | `uint16le` | `height` | Hauteur panneau en pixels (ex. `32`) |
+| `10..11` | `uint16le` | `total_frames` | Nombre total de trames RGB565LE concaténées (`1..65535`) |
+| `12..13` | `uint16le` | `frame_dur_ms` | Durée nominale par trame en ms (`round(1000 / fps)`) |
+| `14..15` | `uint16le` | `reserved` | Réservé (`0`) |
+| `16..EOF` | `uint8[]` | `frames` | Séquence contiguë de `total_frames * width * height * 2` octets RGB565LE |
 

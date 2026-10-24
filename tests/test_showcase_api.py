@@ -169,6 +169,19 @@ async def test_swagger_and_exhaustive_domain_filters():
         assert schema["info"]["title"] == "DMD Media Showcase Server API"
         assert "/api/v1/{domain}/session" in schema["paths"]
         assert "/api/v1/{domain}/batch" in schema["paths"]
+        assert "/api/v1/asyncapi.yaml" in schema["paths"]
+
+        # Verify AsyncAPI 2.6 MQTT + UDP DMDF specification endpoints and static doc sync
+        for async_path in ("/asyncapi.yaml", "/api/v1/asyncapi.yaml"):
+            r_async = await client.get(async_path)
+            assert r_async.status_code == 200
+            assert "yaml" in r_async.headers.get("content-type", "")
+            assert "asyncapi: 2.6.0" in r_async.text
+            assert "udp/dmdf_frame_chunk:" in r_async.text
+            assert 'x-binary-header-format: "<4sHBBH"' in r_async.text
+
+        docs_dir = Path(__file__).resolve().parent.parent / "docs"
+        assert (docs_dir / "asyncapi.yaml").read_text(encoding="utf-8") == r_async.text
 
         # 2. Verify Health endpoint
         for path in ("/api/v1/health", "/health"):

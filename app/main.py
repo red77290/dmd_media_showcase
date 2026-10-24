@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from app import __version__
 from app.application.consume_once_orchestrator import consume_once_orchestrator
+from app.asyncapi_spec import ASYNCAPI_YAML
 from app.config import settings
 from app.domain.entities import PanelGeometry
 from app.infrastructure.mdns_responder import showcase_mdns_responder
@@ -124,7 +125,9 @@ app = FastAPI(
         "### V3.0 Architecture Highlights\n"
         "- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
-        "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming, plus HTTP Polling."
+        "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming "
+        "(`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at "
+        "[`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header)."
     ),
     version=__version__,
     openapi_tags=OPENAPI_TAGS,
@@ -152,7 +155,7 @@ async def optional_api_key_security_middleware(request: Request, call_next):
       `Authorization: Bearer <key>` header, or `?api_key=<key>` query parameter.
     """
     path = request.url.path
-    if path.startswith("/api/v1/") and path != "/api/v1/health":
+    if path.startswith("/api/v1/") and path not in ("/api/v1/health", "/api/v1/asyncapi.yaml"):
         expected_key = str(
             server_config_store.get_all().get("showcase_api_key") or settings.showcase_api_key or ""
         ).strip()
@@ -184,6 +187,27 @@ async def swagger_alias() -> HTMLResponse:
         openapi_url=app.openapi_url or "/openapi.json",
         title=f"{app.title} - Swagger UI",
     )
+
+
+@app.get("/asyncapi.yaml", include_in_schema=False)
+@app.get(
+    "/api/v1/asyncapi.yaml",
+    tags=["System & Admin"],
+    summary="Get AsyncAPI 2.6 Specification (MQTT 3.1.1 & UDP DMDF Streaming)",
+    responses={
+        200: {
+            "content": {"application/yaml": {"schema": {"type": "string"}}},
+            "description": "AsyncAPI 2.6.0 YAML specification for MQTT `:1883` topics and UDP `DMDF` `<4sHBBH` frame datagrams.",
+        }
+    },
+)
+async def get_asyncapi_spec() -> Response:
+    """
+    Serve the authoritative AsyncAPI 2.6.0 specification describing:
+    - MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)
+    - Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE)
+    """
+    return Response(content=ASYNCAPI_YAML, media_type="application/yaml; charset=utf-8")
 
 
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)
@@ -418,6 +442,19 @@ async def stream_consume_once_sequence(
     Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
     for `item_id` and immediately purge the consumed files from disk once the HTTP response completes
     (unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).
+
+    ### Binary HTTP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
+    - `0..3` (`char[4]`): `"DMDS"` (`0x44 0x4D 0x44 0x53`)
+    - `4` (`uint8`): `version` (`1`)
+    - `5` (`uint8`): `fps` (`8..60`)
+    - `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)
+    - `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)
+    - `10..11` (`uint16le`): `total_frames` (`1..65535`)
+    - `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)
+    - `14..15` (`uint16le`): `reserved` (`0`)
+    - `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.
+
+    For real-time UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.
     """
     pkg = consume_once_orchestrator.active_packages.get(item_id)
     if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():

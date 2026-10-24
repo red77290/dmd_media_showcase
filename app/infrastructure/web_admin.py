@@ -191,6 +191,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="links">
           <a href="/docs">Swagger (/docs)</a>
           <a href="/redoc">ReDoc</a>
+          <a href="/asyncapi.yaml">AsyncAPI (MQTT/UDP)</a>
           <a href="/api/v1/health">Health JSON</a>
         </div>
         <select id="ui-lang" class="lang-switch" onchange="setUiLang(this.value)">
