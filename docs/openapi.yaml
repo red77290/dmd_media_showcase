@@ -3,10 +3,35 @@
   "info": {
     "title": "DMD Media Showcase Server API",
     "summary": "DDD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 DMDs",
-    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### V3.0 Architecture Highlights\n- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming, plus HTTP Polling.",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### V3.0 Architecture Highlights\n- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
     "version": "3.0.0"
   },
   "paths": {
+    "/api/v1/asyncapi.yaml": {
+      "get": {
+        "tags": [
+          "System & Admin"
+        ],
+        "summary": "Get AsyncAPI 2.6 Specification (MQTT 3.1.1 & UDP DMDF Streaming)",
+        "description": "Serve the authoritative AsyncAPI 2.6.0 specification describing:\n- MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)\n- Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE)",
+        "operationId": "get_asyncapi_spec_api_v1_asyncapi_yaml_get",
+        "responses": {
+          "200": {
+            "description": "AsyncAPI 2.6.0 YAML specification for MQTT `:1883` topics and UDP `DMDF` `<4sHBBH` frame datagrams.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/health": {
       "get": {
         "tags": [
@@ -35,7 +60,7 @@
           "System & Admin"
         ],
         "summary": "Get Admin Config",
-        "description": "Return centralized server configuration (`server_config.json`) and `seen_history.json` counts.",
+        "description": "Return sanitized server configuration (`server_config.json`), encrypted vault status,\nactive scraper chains, connected DMD clients, and `seen_history.json` counts.\nDeveloper API keys are never exposed in plaintext.",
         "operationId": "get_admin_config_api_v1_admin_config_get",
         "responses": {
           "200": {
@@ -57,7 +82,7 @@
           "System & Admin"
         ],
         "summary": "Update Admin Config",
-        "description": "Update centralized scraper credentials and MQTT settings in `./data/server_config.json`.",
+        "description": "Update centralized user scraper credentials and MQTT settings in `./data/server_config.json`.",
         "operationId": "update_admin_config_api_v1_admin_config_post",
         "requestBody": {
           "content": {
@@ -543,7 +568,7 @@
           "Consume-Once Protocol (V3.0)"
         ],
         "summary": "Stream Consume Once Sequence",
-        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` and immediately purge the consumed files from disk once the HTTP response completes\n(unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).",
+        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` and immediately purge the consumed files from disk once the HTTP response completes\n(unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).\n\n### Binary HTTP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)\n- `0..3` (`char[4]`): `\"DMDS\"` (`0x44 0x4D 0x44 0x53`)\n- `4` (`uint8`): `version` (`1`)\n- `5` (`uint8`): `fps` (`8..60`)\n- `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)\n- `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)\n- `10..11` (`uint16le`): `total_frames` (`1..65535`)\n- `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)\n- `14..15` (`uint16le`): `reserved` (`0`)\n- `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.\n\nFor real-time UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.",
         "operationId": "stream_consume_once_sequence_api_v1__domain__stream__item_id__rgb565_stream_get",
         "parameters": [
           {
@@ -1906,19 +1931,32 @@
             "enum": [
               "auto_action",
               "panorama",
-              "center_crop"
+              "center_crop",
+              "pixel_art",
+              "anime",
+              "cinema"
             ],
             "title": "Video Mode",
             "description": "Video framing strategy: 'auto_action' (Let Me Handle It AI), 'panorama' (top-bottom scan), or 'center_crop' (static center crop).",
             "default": "auto_action"
           },
           "color_boost": {
-            "type": "string",
-            "enum": [
-              "auto",
-              "pixel_art",
-              "anime",
-              "cinema"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "pixel_art",
+                  "anime",
+                  "cinema"
+                ]
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              }
             ],
             "title": "Color Boost",
             "description": "LED colorimetry profile: 'auto' (Let Me Handle It AI Smart Color Boost), 'pixel_art', 'anime', or 'cinema'.",

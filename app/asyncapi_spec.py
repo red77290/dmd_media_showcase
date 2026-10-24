@@ -1,0 +1,486 @@
+"""
+Authoritative AsyncAPI 2.6.0 specification for the DMD Media Showcase V3.0
+MQTT 3.1.1 Control Plane (`:1883`) and Real-Time UDP `DMDF` Streaming Data Plane.
+"""
+
+from __future__ import annotations
+
+ASYNCAPI_YAML = """asyncapi: 2.6.0
+info:
+  title: DMD Media Showcase Server — MQTT 3.1.1 & UDP DMDF Streaming Protocol
+  version: 3.0.0
+  description: |
+    Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server (V3.0)**,
+    powering **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** HUB75 LED panels.
+
+    ### Protocol Architecture
+    1. **MQTT 3.1.1 Control Plane (`:1883`)**:
+       - Uses `retain=True` for server availability (`dmd_showcase/server/status`), consolidated scraper
+         referentials (`dmd_showcase/catalog/{domain}/referential`), DMD client configuration
+         (`dmd_showcase/clients/{dmd_id}/config`), and per-domain prepared Consume-Once slots
+         (`dmd_showcase/clients/{dmd_id}/{domain}/ready`).
+       - Uses `LWT` (Last Will and Testament) on both server and DMD clients for instant disconnect cleanup
+         while preserving background `N+1` media transcoding tasks across rotation slot switches.
+    2. **Real-Time UDP `DMDF` Data Plane (`udp://{client_ip}:{udp_port}`)**:
+       - Triggered when the DMD publishes `{"action": "start_stream", "item_id": "...", "udp_ip": "...", "udp_port": ...}`.
+       - `FfmpegUdpClockStreamer` strips the 16-byte `DMDS` file header (`<4sBBHHHHH`), clocks raw RGB565LE
+         frames through `ffmpeg -re` at the negotiated `video_fps`, and slices each frame into Wi-Fi MTU-safe
+         UDP datagrams (`<= 1034` bytes total: **10-byte Little-Endian `<4sHBBH` `DMDF` header** + `<= 1024` bytes RGB565LE).
+       - Clients automatically fall back to HTTP `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
+         (`DMDS` 16-byte header) if container-to-LAN UDP is blocked by host VM NAT.
+    3. **`N+1` Background Pipelining & Strict Consume-Once**:
+       - Publishing `start_card` immediately marks item `N` consumed in `seen_history.json`, updates the
+         retained `ready` topic to `{"ready": false}`, and starts preparing unseen item `N+1` in the background.
+  contact:
+    name: ArcadeMatrix Community
+    url: https://t.me/+DrSdAO8UMUViNmE0
+  license:
+    name: MIT
+
+servers:
+  embeddedMqttBroker:
+    url: mqtt://{host}:1883
+    protocol: mqtt
+    description: Zero-config Embedded MQTT 3.1.1 Broker hosted inside `dmd-media-showcase` (or External Mosquitto).
+    variables:
+      host:
+        default: dmdmediashowcase.local
+  udpDmdfStreamer:
+    url: udp://{client_ip}:{udp_port}
+    protocol: udp
+    description: >-
+      Unidirectional real-time `ffmpeg -re` UDP `DMDF` RGB565LE chunk stream sent from the Showcase server
+      to the UDP socket bound by the active DMD engine (`5568 + domain_idx` on ESP32, ephemeral/configured port on RPi).
+    variables:
+      client_ip:
+        default: 192.168.1.50
+      udp_port:
+        default: "5568"
+
+channels:
+  dmd_showcase/server/status:
+    servers:
+      - embeddedMqttBroker
+    description: "Server availability status (`retain=True`) with automatic `LWT` (`online: false`) on ungraceful disconnect."
+    subscribe:
+      summary: Receive server online/offline status
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/ServerStatusMessage'
+
+  dmd_showcase/catalog/{domain}/referential:
+    servers:
+      - embeddedMqttBroker
+    description: Consolidated localized scraper referential (`systems`, `genres`, `decades`, `sources`) for a domain (`retain=True`).
+    parameters:
+      domain:
+        $ref: '#/components/parameters/DomainParam'
+    subscribe:
+      summary: Receive consolidated domain referential
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/CatalogReferentialMessage'
+
+  dmd_showcase/clients/{dmd_id}/status:
+    servers:
+      - embeddedMqttBroker
+    description: 'DMD client presence and `LWT` disconnect notification (`{"online": false}`).'
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    publish:
+      summary: Publish DMD client online/offline LWT status
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+      message:
+        $ref: '#/components/messages/ClientStatusMessage'
+
+  dmd_showcase/clients/{dmd_id}/config:
+    servers:
+      - embeddedMqttBroker
+    description: Retained DMD client geometry, LAN IP (`client_ip` / `udp_ip`), UDP port, and per-domain filter criteria (`retain=True`).
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    publish:
+      summary: Publish DMD client configuration (`retain=True`)
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/ClientConfigMessage'
+
+  dmd_showcase/clients/{dmd_id}/{domain}/ready:
+    servers:
+      - embeddedMqttBroker
+    description: >-
+      Authoritative retained Consume-Once slot state (`retain=True`). Publishes `{"ready": true, "card": {...}}`
+      when an unseen item and its unified stream are ready on disk, or `{"ready": false}` while warming `N+1`
+      so rotating DMD engines can yield their turn immediately without stalling.
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+      domain:
+        $ref: '#/components/parameters/DomainParam'
+    subscribe:
+      summary: "Receive prepared showcase card (`ready: true`) or explicit warming state (`ready: false`)"
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/SlotReadyMessage'
+
+  dmd_showcase/clients/{dmd_id}/{domain}/events:
+    servers:
+      - embeddedMqttBroker
+    description: >-
+      Real-time per-domain lifecycle commands published by the DMD (`start_card`, `start_stream`, `stop_stream`).
+      The legacy domain-less topic `dmd_showcase/clients/{dmd_id}/events` is also accepted.
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+      domain:
+        $ref: '#/components/parameters/DomainParam'
+    publish:
+      summary: Trigger `start_card` (Consume-Once lock + `N+1` prep), `start_stream` (`ffmpeg -re` UDP), or `stop_stream`
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+      message:
+        $ref: '#/components/messages/ClientEventMessage'
+
+  dmd_showcase/clients/{dmd_id}/stream_state:
+    servers:
+      - embeddedMqttBroker
+    description: Server-to-DMD stream lifecycle notifications (`stream_started`, `stream_eof`).
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    subscribe:
+      summary: Receive `stream_started` and `stream_eof` events
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+      message:
+        $ref: '#/components/messages/StreamStateMessage'
+
+  udp/dmdf_frame_chunk:
+    servers:
+      - udpDmdfStreamer
+    description: >-
+      Real-time binary UDP datagram stream (`DMDF`) carrying MTU-safe RGB565LE framebuffer slices
+      clocked by `ffmpeg -re` toward `{udp_ip}:{udp_port}` between `start_stream` and `stream_eof` / `stop_stream`.
+    subscribe:
+      summary: Receive real-time `DMDF` 10-byte header + RGB565LE pixel chunk datagrams over UDP
+      message:
+        $ref: '#/components/messages/DmdfUdpDatagram'
+
+components:
+  parameters:
+    DmdIdParam:
+      description: Unique DMD client/engine identifier (e.g. `rpi_movies_128x32`, `esp32_games_128x32`).
+      schema:
+        type: string
+    DomainParam:
+      description: Showcase media domain.
+      schema:
+        type: string
+        enum: [games, movies, series, anime]
+
+  messages:
+    ServerStatusMessage:
+      name: ServerStatusMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [online, version]
+        properties:
+          online:
+            type: boolean
+          version:
+            type: string
+          mode:
+            type: string
+            enum: [embedded, external]
+          port:
+            type: integer
+
+    ClientStatusMessage:
+      name: ClientStatusMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [online]
+        properties:
+          online:
+            type: boolean
+          dmd_id:
+            type: string
+
+    CatalogReferentialMessage:
+      name: CatalogReferentialMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [domain, lang, genres, decades]
+        properties:
+          domain:
+            type: string
+            enum: [games, movies, series, anime]
+          lang:
+            type: string
+          systems:
+            type: array
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+                badge: { type: string }
+                is_arcade: { type: boolean }
+                genres:
+                  type: array
+                  items: { type: string }
+                decades:
+                  type: array
+                  items: { type: string }
+                sources:
+                  type: array
+                  items: { type: string }
+          genres:
+            type: array
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+          decades:
+            type: array
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+
+    ClientConfigMessage:
+      name: ClientConfigMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [width, height, lang]
+        properties:
+          dmd_id: { type: string }
+          client_ip:
+            type: string
+            description: Real LAN IPv4 of the DMD client (bypasses Docker bridge NAT `172.18.0.1`).
+          udp_ip:
+            type: string
+            description: Explicit target IPv4 for UDP `DMDF` datagrams.
+          udp_port:
+            type: integer
+            description: Default UDP receiver port bound by the DMD client.
+            example: 5568
+          width: { type: integer, example: 128 }
+          height: { type: integer, example: 32 }
+          lang: { type: string, example: fr }
+          domains:
+            type: object
+            additionalProperties:
+              type: object
+              properties:
+                systems:
+                  oneOf:
+                    - type: array
+                      items: { type: string }
+                    - type: string
+                genres:
+                  oneOf:
+                    - type: array
+                      items: { type: string }
+                    - type: string
+                decades:
+                  oneOf:
+                    - type: array
+                      items: { type: string }
+                    - type: string
+                video_type: { type: string, default: any }
+                min_rating: { type: number, default: 0.0 }
+                text_scroll_speed:
+                  type: string
+                  description: "'1' (Slow) to '10' (Turbo, 160 px/s) or 'slow'|'normal'|'fast'|'turbo'."
+                  example: "8"
+                show_poster: { type: boolean, default: true }
+                show_synopsis: { type: boolean, default: true }
+                jacket_panorama: { type: boolean, default: true }
+                marquee_panorama: { type: boolean, default: false }
+                snapshot_panorama_count: { type: integer, minimum: 0, maximum: 5, default: 0 }
+                show_video: { type: boolean, default: true }
+                video_max_duration_s:
+                  type: number
+                  minimum: 2.0
+                  maximum: 120.0
+                  default: 8.0
+                  description: Maximum trailer clip duration in seconds (hard-clamped to `2..=120s` on both DMD and server).
+                video_fps: { type: integer, minimum: 8, maximum: 60, default: 15 }
+                video_mode: { type: string, enum: [auto_action, panorama, center_crop], default: auto_action }
+                color_boost: { type: string, enum: [auto, pixel_art, anime, cinema], default: auto }
+
+    SlotReadyMessage:
+      name: SlotReadyMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [ready, domain]
+        properties:
+          ready:
+            type: boolean
+            description: "`true` when an unseen item is ready to play immediately; `false` while preparing in background."
+          item_id: { type: string }
+          domain: { type: string }
+          card:
+            type: object
+            properties:
+              id: { type: string }
+              item_id: { type: string }
+              domain: { type: string }
+              title: { type: string }
+              year: { type: string }
+              badge: { type: string }
+              badge_color: { type: string }
+              subtitle: { type: string }
+              rating: { type: string }
+              synopsis: { type: string }
+              lang: { type: string }
+              poster_width: { type: integer }
+              poster_height: { type: integer }
+              poster_rgb565_b64: { type: string }
+              text_scroll_speed: { type: string }
+              has_panoramas: { type: boolean }
+              has_video: { type: boolean }
+              stream_frames: { type: integer }
+              stream_fps: { type: integer }
+              fps: { type: integer }
+              stream_duration_s: { type: number }
+              total_stream_duration_s: { type: number }
+
+    ClientEventMessage:
+      name: ClientEventMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [item_id]
+        properties:
+          action:
+            type: string
+            enum: [start_card, start_stream, stop_stream]
+            description: Primary command field (`event` is accepted as an alias).
+          event:
+            type: string
+            enum: [start_card, start_stream, stop_stream]
+            description: Alias for `action`.
+          domain:
+            type: string
+            enum: [games, movies, series, anime]
+          item_id:
+            type: string
+          client_ip:
+            type: string
+            description: Real LAN IPv4 of the DMD client for UDP streaming.
+          udp_ip:
+            type: string
+            description: Target IPv4 for UDP `DMDF` datagrams.
+          udp_port:
+            type: integer
+            description: UDP port bound by the DMD client receiver socket (`1024..65535`).
+
+    StreamStateMessage:
+      name: StreamStateMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [event, item_id, domain]
+        properties:
+          event:
+            type: string
+            enum: [stream_started, stream_eof]
+          item_id:
+            type: string
+          domain:
+            type: string
+
+    DmdfUdpDatagram:
+      name: DmdfUdpDatagram
+      title: Binary DMDF UDP Frame Chunk Datagram
+      contentType: application/octet-stream
+      summary: 10-byte Little-Endian `<4sHBBH` header + `<= 1024`-byte RGB565LE framebuffer slice (`<= 1034` bytes/UDP packet).
+      description: |
+        Each video or panorama frame (`width * height * 2` bytes of Little-Endian RGB565 pixels, e.g. `8192` bytes
+        for `128x32` = `8` chunks of `1024` bytes) is split into MTU-safe UDP datagrams packed in Little-Endian
+        (`struct.pack("<4sHBBH", b"DMDF", frame_seq, chunk_idx, total_chunks, byte_offset) + payload`):
+
+        | Byte Offset | C / Struct Type | Field | Constraints & Semantics |
+        | :--- | :--- | :--- | :--- |
+        | `0..3` | `char[4]` (`4s`) | `magic` | ASCII `"DMDF"` (`0x44 0x4D 0x44 0x46`) |
+        | `4..5` | `uint16le` (`H`) | `frame_seq` | Wrapping monotonic frame counter (`0..65535`) |
+        | `6` | `uint8` (`B`) | `chunk_idx` | Zero-based chunk index within `frame_seq` (`0 .. total_chunks - 1`) |
+        | `7` | `uint8` (`B`) | `total_chunks` | Total chunks forming the complete frame (`1..64`) |
+        | `8..9` | `uint16le` (`H`) | `byte_offset` | Destination byte offset (`chunk_idx * 1024`) in RGB565LE framebuffer |
+        | `10..N` | `uint8[<=1024]` | `payload` | Raw Little-Endian RGB565 pixel bytes (`1..1024` bytes) |
+
+        **Reassembly & Watchdog Contract (ESP32 & Raspberry Pi)**:
+        - Copy `payload` directly into `framebuffer_bytes[byte_offset .. byte_offset + len(payload)]` if bounds-valid
+          and `total_chunks <= 64`.
+        - Set bit `(1 << chunk_idx)` in a 64-bit `chunk_mask`; commit the frame when `chunk_mask == (1 << total_chunks) - 1`
+          (or flush partial non-zero `chunk_mask` if `frame_seq` advances on minor Wi-Fi packet loss).
+        - If zero UDP packets arrive within `850ms` of `start_stream` (e.g. Docker Desktop VM NAT blocking host UDP),
+          seamlessly play/fall back to the HTTP TCP stream `/api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
+          (`DMDS` 16-byte `<4sBBHHHHH` header).
+      payload:
+        type: string
+        format: binary
+        minLength: 12
+        maxLength: 1034
+        x-binary-header-format: "<4sHBBH"
+        x-binary-header-bytes: 10
+        x-max-payload-bytes: 1024
+        x-header-fields:
+          magic:
+            offset: 0
+            size: 4
+            type: ascii
+            const: DMDF
+          frame_seq:
+            offset: 4
+            size: 2
+            type: uint16le
+          chunk_idx:
+            offset: 6
+            size: 1
+            type: uint8
+          total_chunks:
+            offset: 7
+            size: 1
+            type: uint8
+            minimum: 1
+            maximum: 64
+          byte_offset:
+            offset: 8
+            size: 2
+            type: uint16le
+          payload:
+            offset: 10
+            maxSize: 1024
+            type: rgb565le
+"""

@@ -66,14 +66,30 @@ En lugar de codificar categorías fijas en el firmware o en la WebUI del DMD:
 
 ## 3. Protocolo MQTT en Tiempo Real, Pipelining `N+1` y Paquetes UDP `DMDF`
 
-### Cabecera Binaria UDP `DMDF` (10 Bytes, Little-Endian `<4sHBBI`)
+### Cabecera Binaria UDP `DMDF` (10 Bytes, Little-Endian `<4sHBBH`)
+
+> Especificación formal completa (tópicos MQTT 3.1.1 + datagramas UDP `DMDF`): [`docs/asyncapi.yaml`](asyncapi.yaml) (también servida en vivo en `GET /asyncapi.yaml` y `GET /api/v1/asyncapi.yaml`).
 
 | Offset | Tipo | Campo | Descripción |
 | :--- | :--- | :--- | :--- |
 | `0..3` | `char[4]` | `magic` | `"DMDF"` (`0x44 0x4D 0x44 0x46`) |
-| `4..5` | `uint16` | `frame_seq` | Número de secuencia monotónico del fotograma (`0..65535`) |
+| `4..5` | `uint16le` | `frame_seq` | Número de secuencia monotónico del fotograma (`0..65535`) |
 | `6` | `uint8` | `chunk_idx` | Índice del fragmento dentro del fotograma actual (`0..total_chunks-1`) |
-| `7` | `uint8` | `total_chunks` | Total de fragmentos del fotograma |
-| `8..11` | `uint32` | `byte_offset` | Desplazamiento en bytes dentro del búfer RGB565LE |
-| `10..N` | `uint8[]` | `payload` | Datos de píxeles RGB565LE (`<= 1024` bytes) |
+| `7` | `uint8` | `total_chunks` | Total de fragmentos del fotograma (`1..64`) |
+| `8..9` | `uint16le` | `byte_offset` | Desplazamiento en bytes (`chunk_idx * 1024`) dentro del búfer RGB565LE |
+| `10..N` | `uint8[]` | `payload` | Datos de píxeles RGB565LE (`<= 1024` bytes, `<= 1034` bytes/paquete UDP) |
+
+### Cabecera Binaria HTTP `DMDS` del Flujo Unificado (16 Bytes, Little-Endian `<4sBBHHHHH`)
+
+| Offset | Tipo | Campo | Descripción |
+| :--- | :--- | :--- | :--- |
+| `0..3` | `char[4]` | `magic` | `"DMDS"` (`0x44 0x4D 0x44 0x53`) |
+| `4` | `uint8` | `version` | Versión del formato binario (`1`) |
+| `5` | `uint8` | `fps` | Frecuencia objetivo (`8..60` FPS) |
+| `6..7` | `uint16le` | `width` | Ancho del panel en píxeles (ej. `128`) |
+| `8..9` | `uint16le` | `height` | Alto del panel en píxeles (ej. `32`) |
+| `10..11` | `uint16le` | `total_frames` | Total de fotogramas RGB565LE concatenados (`1..65535`) |
+| `12..13` | `uint16le` | `frame_dur_ms` | Duración nominal por fotograma en ms (`round(1000 / fps)`) |
+| `14..15` | `uint16le` | `reserved` | Reservado (`0`) |
+| `16..EOF` | `uint8[]` | `frames` | Secuencia contigua de `total_frames * width * height * 2` bytes RGB565LE |
 
