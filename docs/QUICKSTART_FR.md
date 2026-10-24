@@ -9,12 +9,15 @@
 
 ## 1. Modes de Déploiement
 
-### Mode A : Docker Compose (Linux / Raspberry Pi 4 & 5 / NAS)
+### Mode A : Image Docker Officielle Multi-Arch (Linux / Raspberry Pi 4 & 5 / NAS)
+
+#### Option 1 — `docker-compose.yml` (Recommandé)
 
 ```yaml
 services:
   dmd-media-showcase:
-    build: .
+    image: ghcr.io/red77290/dmd_media_showcase:latest
+    pull_policy: always
     container_name: dmd-media-showcase
     restart: unless-stopped
     ports:
@@ -23,15 +26,29 @@ services:
       - "5353:5353/udp"   # Auto-Découverte Réseau Local mDNS (dmdmediashowcase.local)
     volumes:
       - ./data:/app/data  # Persistance server_config.json, seen_history.json & referentials/
-    environment:
-      - LOG_LEVEL=INFO
-      - MAX_WORKERS=2
+    tmpfs:
+      - /tmp/dmd_media_showcase_cache:size=256m,mode=1777
 ```
 
-Démarrage :
+Démarrage direct avec le [`docker-compose.yml`](../docker-compose.yml) du dépôt :
 ```bash
-docker compose up -d --build
+curl -fsSLO https://raw.githubusercontent.com/red77290/dmd_media_showcase/main/docker-compose.yml
+docker compose up -d
 docker logs -f dmd-media-showcase
+```
+
+#### Option 2 — Commande `docker run` Directe
+
+```bash
+docker run -d \
+  --name dmd-media-showcase \
+  --restart unless-stopped \
+  -p 8890:8890 \
+  -p 1883:1883 \
+  -p 5353:5353/udp \
+  -v ./data:/app/data \
+  --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
+  ghcr.io/red77290/dmd_media_showcase:latest
 ```
 
 > [!TIP]
