@@ -41,6 +41,7 @@ class ServerConfigStore:
     def _defaults(self) -> Dict[str, Any]:
         return {
             "tmdb_api_key": settings.tmdb_api_key or "",
+            "tvdb_api_key": settings.tvdb_api_key or "",
             "screenscraper_user": settings.screenscraper_user or "",
             "screenscraper_pass": settings.screenscraper_pass or "",
             "screenscraper_dev_id": settings.screenscraper_dev_id or "",
@@ -78,6 +79,8 @@ class ServerConfigStore:
             # Always reflect runtime settings overrides if store value is empty
             if not out.get("tmdb_api_key") and settings.tmdb_api_key:
                 out["tmdb_api_key"] = settings.tmdb_api_key
+            if not out.get("tvdb_api_key") and settings.tvdb_api_key:
+                out["tvdb_api_key"] = settings.tvdb_api_key
             if not out.get("screenscraper_user") and settings.screenscraper_user:
                 out["screenscraper_user"] = settings.screenscraper_user
             if not out.get("screenscraper_pass") and settings.screenscraper_pass:
@@ -93,6 +96,7 @@ class ServerConfigStore:
             self._ensure_loaded()
             for key in (
                 "tmdb_api_key",
+                "tvdb_api_key",
                 "screenscraper_user",
                 "screenscraper_pass",
                 "screenscraper_dev_id",
@@ -108,6 +112,7 @@ class ServerConfigStore:
 
             # Sync with in-memory settings for legacy callers
             settings.tmdb_api_key = str(self._data.get("tmdb_api_key") or "")
+            settings.tvdb_api_key = str(self._data.get("tvdb_api_key") or "")
             settings.screenscraper_user = str(self._data.get("screenscraper_user") or "")
             settings.screenscraper_pass = str(self._data.get("screenscraper_pass") or "")
             settings.screenscraper_dev_id = str(self._data.get("screenscraper_dev_id") or "")

@@ -1,5 +1,5 @@
 """
-Centralized Web Administration Dashboard HTML for `dmd_media_showcase` (`http://localhost:8080/admin`).
+Centralized Web Administration Dashboard HTML for `dmd_media_showcase` (`http://dmdmediashowcase.local:8890/admin`).
 Allows users to configure ScreenScraper & TMDB credentials, MQTT broker mode (`embedded` vs `external`),
 and reset `seen_history.json` without any API keys on the DMD engines.
 """
@@ -84,8 +84,12 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </p>
       <div class="grid">
         <div>
-          <label>TMDB API Key v3 (Primary for Movies &amp; TV Series)</label>
-          <input type="password" id="tmdb_api_key" placeholder="TMDB v3 API Key" />
+          <label>TMDB API Key v3 / v4 Read Access Token (Movies &amp; TV Series)</label>
+          <input type="password" id="tmdb_api_key" placeholder="TMDB v3 API Key or v4 Bearer Token" />
+        </div>
+        <div>
+          <label>TheTVDB API Key v4 (TV Series, Anime &amp; Movies Translations/Trailers)</label>
+          <input type="password" id="tvdb_api_key" placeholder="TheTVDB v4 API Key" />
         </div>
         <div>
           <label>Default Metadata Language</label>
@@ -146,6 +150,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       const r = await fetch('/api/v1/admin/config');
       const d = await r.json();
       document.getElementById('tmdb_api_key').value = d.config.tmdb_api_key || '';
+      document.getElementById('tvdb_api_key').value = d.config.tvdb_api_key || '';
       document.getElementById('screenscraper_user').value = d.config.screenscraper_user || '';
       document.getElementById('screenscraper_pass').value = d.config.screenscraper_pass || '';
       document.getElementById('mqtt_mode').value = d.config.mqtt_mode || 'embedded';
@@ -162,6 +167,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     async function saveConfig() {
       const payload = {
         tmdb_api_key: document.getElementById('tmdb_api_key').value.trim(),
+        tvdb_api_key: document.getElementById('tvdb_api_key').value.trim(),
         screenscraper_user: document.getElementById('screenscraper_user').value.trim(),
         screenscraper_pass: document.getElementById('screenscraper_pass').value.trim(),
         mqtt_mode: document.getElementById('mqtt_mode').value,

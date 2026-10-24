@@ -23,6 +23,7 @@ from app.infrastructure.scrapers.http_utils import (
     fetch_dailymotion_trailer_and_stills,
     fetch_imdb_suggestion_items,
     fetch_wikipedia_localized_synopsis,
+    resolve_multilingual_media_details,
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.movies.itunes")
@@ -139,11 +140,15 @@ class ItunesMovieAdapter(IScraperSource):
                         if not (decade_bounds[0] <= yr <= decade_bounds[1]):
                             continue
                     if short_lang != "en" and (ctry == "US" or len(cand.synopsis) < 50):
-                        wiki_syn, _ = await fetch_wikipedia_localized_synopsis(
-                            client, cand.title, lang=short_lang, domain_hint="film"
+                        loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
+                            client, cand.title, lang=short_lang, domain_hint="film", year=cand.year
                         )
-                        if wiki_syn:
-                            cand.synopsis = wiki_syn
+                        if loc_syn:
+                            cand.synopsis = loc_syn
+                        if loc_t:
+                            cand.title = loc_t
+                        if loc_tr and not cand.youtube_url:
+                            cand.youtube_url = loc_tr
                     return cand
             except Exception as exc:
                 logger.debug("[iTunes Movies] Lookup error for '%s' (%s): %s", query_term, ctry, exc)

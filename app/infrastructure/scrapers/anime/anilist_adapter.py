@@ -20,7 +20,9 @@ from app.infrastructure.scrapers.catalog_metadata import ANIME_GENRES, DECADE_BO
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
     create_async_http_client,
+    fetch_dailymotion_trailer_and_stills,
     fetch_wikipedia_localized_synopsis,
+    resolve_multilingual_media_details,
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.anime.anilist")
@@ -33,6 +35,7 @@ query ($page: Int, $perPage: Int, $genre: String, $startGreater: FuzzyDateInt, $
     }
     media(type: ANIME, isAdult: false, sort: POPULARITY_DESC, genre: $genre, startDate_greater: $startGreater, startDate_lesser: $startLesser, search: $search) {
       id
+      idMal
       title {
         english
         romaji
@@ -86,10 +89,12 @@ class AniListAdapter(IScraperSource):
         al_id = node.get("id")
         if not al_id:
             return None
+        mal_id = node.get("idMal")
         titles = node.get("title") or {}
-        title = str(titles.get("english") or titles.get("romaji") or "").strip()
-        if not title:
+        orig_title = str(titles.get("english") or titles.get("romaji") or "").strip()
+        if not orig_title:
             return None
+        title = orig_title
 
         cover = node.get("coverImage") or {}
         poster_url = cover.get("extraLarge") or cover.get("large")
@@ -100,13 +105,20 @@ class AniListAdapter(IScraperSource):
         avg_score = float(node.get("averageScore") or 82.0) / 10.0
         synopsis = clean_synopsis_text(node.get("description"), max_chars=300)
 
+        resolved_trailer: Optional[str] = None
         if lang != "en" or not synopsis:
-            wiki_syn, _ = await fetch_wikipedia_localized_synopsis(client, title, lang=lang)
-            if wiki_syn:
-                synopsis = wiki_syn
+            loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
+                client, orig_title, lang=lang, domain_hint="anime", year=year
+            )
+            if loc_syn:
+                synopsis = loc_syn
+            if loc_t:
+                title = loc_t
+            if loc_tr:
+                resolved_trailer = loc_tr
 
         trailer = node.get("trailer") or {}
-        yt_url: Optional[str] = None
+        yt_url: Optional[str] = resolved_trailer
         if str(trailer.get("site") or "").lower() == "youtube" and trailer.get("id"):
             yt_url = f"https://www.youtube.com/watch?v={trailer['id']}"
 
@@ -132,7 +144,21 @@ class AniListAdapter(IScraperSource):
         if banner_url:
             cand.add_unique_snapshot(str(banner_url))
 
-        await enrich_with_animethemes_webm(client, cand, video_type=video_type)
+        await enrich_with_animethemes_webm(
+            client,
+            cand,
+            video_type=video_type,
+            mal_id_override=str(mal_id) if mal_id else None,
+            orig_title=orig_title,
+        )
+        if not cand.video_url and not cand.youtube_url:
+            dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                client, f"{orig_title} anime opening trailer", max_snapshots=3
+            )
+            if dm_url:
+                cand.youtube_url = dm_url
+            for st in dm_stills:
+                cand.add_unique_snapshot(st)
         return cand
 
     async def fetch_random_unseen(

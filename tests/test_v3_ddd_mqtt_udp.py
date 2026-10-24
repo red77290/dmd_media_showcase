@@ -72,18 +72,19 @@ def test_ddd_scraper_registry_and_hd_youtube_selector():
     """Verify each domain has strictly 2 dedicated `IScraperSource` adapters (Primary + Fallback) and HD YouTube format."""
     reg = ScraperRegistry()
     expected = {
-        "games": ("screenscraper", "arcadeitalia"),
-        "movies": ("tmdb_movies", "itunes_movies"),
-        "series": ("tmdb_series", "tvmaze"),
-        "anime": ("jikan_animethemes", "anilist"),
+        "games": ["screenscraper", "arcadeitalia"],
+        "movies": ["tmdb_movies", "itunes_movies"],
+        "series": ["tmdb_series", "tvdb_series", "tvmaze"],
+        "anime": ["jikan_animethemes", "anilist"],
     }
-    for domain, (prim_id, fall_id) in expected.items():
+    for domain, expected_sources in expected.items():
         chain = reg.get_chain(domain)  # type: ignore[arg-type]
-        assert len(chain) == 2
-        assert isinstance(chain[0], IScraperSource)
-        assert isinstance(chain[1], IScraperSource)
-        assert chain[0].source_id == prim_id and chain[0].role == "primary"
-        assert chain[1].source_id == fall_id and chain[1].role == "fallback"
+        assert len(chain) == len(expected_sources)
+        for idx, src in enumerate(chain):
+            assert isinstance(src, IScraperSource)
+            assert src.source_id == expected_sources[idx]
+        assert chain[0].role == "primary"
+        assert chain[1].role == "fallback"
 
     # Verify clean HD (720p/1080p) YouTube format selector is enforced
     assert "height<=1080" in HD_YTDLP_FORMAT
@@ -952,6 +953,71 @@ async def test_itunes_movies_fallback_and_client_offline_domain_switch(tmp_path:
     await orch.handle_mqtt_client_event("rpi_games_128x32", {"event": "client_offline"})
     assert ("rpi_games_128x32", "games") not in orch.client_configs
     assert scheduled_calls == []
+
+
+@pytest.mark.asyncio
+async def test_tmdb_v3_v4_auth_and_jikan_embed_trailer_extraction(monkeypatch):
+    """Verify TMDB v3/v4 token support, Jikan v4 embed_url extraction, and AdminServerConfigPayload tvdb_api_key."""
+    from app.infrastructure.scrapers.anime.jikan_animethemes_adapter import JikanAnimeThemesAdapter
+    from app.infrastructure.scrapers.catalog_metadata import ANIME_GENRES
+    from app.infrastructure.scrapers.http_utils import build_tmdb_auth
+    from app.models import AdminServerConfigPayload
+
+    # 1. TMDB v3 hex key vs v4 Read Access Token
+    p3, h3 = build_tmdb_auth("a1b2c3d4e5f60718293a4b5c6d7e8f90")
+    assert p3 == {"api_key": "a1b2c3d4e5f60718293a4b5c6d7e8f90"}
+    assert h3 == {}
+
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIxMjM0NTY3ODkwIn0.signature"
+    p4, h4 = build_tmdb_auth(jwt)
+    assert p4 == {}
+    assert h4 == {"Authorization": f"Bearer {jwt}"}
+
+    # 2. AdminServerConfigPayload supports tvdb_api_key
+    payload = AdminServerConfigPayload(tmdb_api_key="tmdb123", tvdb_api_key="tvdb456")
+    assert payload.tvdb_api_key == "tvdb456"
+
+    # 3. Jikan v4 embed_url trailer extraction when youtube_id is None
+    async def _mock_resolve(*_args, **_kwargs):
+        return ("Cowboy Bebop FR", "Synopsis français officiel de Cowboy Bebop.", None)
+
+    async def _mock_animethemes(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.infrastructure.scrapers.anime.jikan_animethemes_adapter.resolve_multilingual_media_details",
+        _mock_resolve,
+    )
+    monkeypatch.setattr(
+        "app.infrastructure.scrapers.anime.jikan_animethemes_adapter.enrich_with_animethemes_webm",
+        _mock_animethemes,
+    )
+
+    adapter = JikanAnimeThemesAdapter()
+    cand = await adapter._build_jikan_candidate(
+        client=None,
+        item={
+            "mal_id": 1,
+            "title": "Cowboy Bebop",
+            "year": 1998,
+            "score": 8.75,
+            "synopsis": "English synopsis.",
+            "images": {"jpg": {"large_image_url": "https://cdn.myanimelist.net/images/anime/4/19644l.jpg"}},
+            "trailer": {
+                "youtube_id": None,
+                "url": None,
+                "embed_url": "https://www.youtube-nocookie.com/embed/OhNwckCLzis?enablejsapi=1&wmode=opaque&autoplay=1",
+            },
+        },
+        g_meta=ANIME_GENRES["scifi"],
+        lang="fr",
+        video_type="opening",
+    )
+    assert cand is not None
+    assert cand.title == "Cowboy Bebop FR"
+    assert "Synopsis français officiel" in cand.synopsis
+    assert cand.youtube_url == "https://www.youtube.com/watch?v=OhNwckCLzis"
+
 
 
 

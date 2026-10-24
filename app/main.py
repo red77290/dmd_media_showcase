@@ -32,6 +32,7 @@ from app import __version__
 from app.application.consume_once_orchestrator import consume_once_orchestrator
 from app.config import settings
 from app.domain.entities import PanelGeometry
+from app.infrastructure.mdns_responder import showcase_mdns_responder
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
 from app.infrastructure.persistence import seen_repository, server_config_store
 from app.infrastructure.scrapers.http_utils import create_async_http_client
@@ -103,9 +104,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     batch_manager.start()
     await showcase_mqtt_gateway.start()
+    if settings.mdns_enabled:
+        showcase_mdns_responder.hostname = settings.mdns_hostname
+        await showcase_mdns_responder.start(port=settings.port)
     try:
         yield
     finally:
+        await showcase_mdns_responder.stop()
         await showcase_mqtt_gateway.stop()
         await batch_manager.stop()
 
@@ -168,7 +173,7 @@ async def optional_api_key_security_middleware(request: Request, call_next):
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def web_admin_dashboard() -> HTMLResponse:
-    """Serve the centralized Web Administration Dashboard (`http://localhost:8080/`)."""
+    """Serve the centralized Web Administration Dashboard (`http://dmdmediashowcase.local:8890/`)."""
     return HTMLResponse(content=ADMIN_DASHBOARD_HTML)
 
 
@@ -413,8 +418,8 @@ async def stream_consume_once_sequence(
     raw_bytes = pkg.unified_stream_path.read_bytes()
     if purge:
         background_tasks.add_task(consume_once_orchestrator.purge_consumed_package, item_id)
-    return StreamingResponse(
-        _iter_aligned_chunks(raw_bytes, chunk_size=8192),
+    return Response(
+        content=raw_bytes,
         media_type="application/octet-stream",
         headers={
             "Content-Length": str(len(raw_bytes)),

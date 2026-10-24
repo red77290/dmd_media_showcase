@@ -448,3 +448,38 @@ async def test_on_demand_priority_injection_and_ttl_cleanup(monkeypatch):
         purged = batch_manager.cleanup_expired_sessions()
         assert purged >= 1
         assert session_id not in batch_manager.sessions
+
+
+def test_mdns_responder_packet_encoding_and_reply():
+    import socket
+    import struct
+    from app.infrastructure.mdns_responder import (
+        DNS_CLASS_IN,
+        DNS_TYPE_A,
+        DNS_TYPE_PTR,
+        decode_dns_name,
+        encode_dns_name,
+        parse_and_reply_mdns,
+    )
+
+    wire = encode_dns_name("dmdmediashowcase.local.")
+    decoded, next_off = decode_dns_name(wire, 0)
+    assert decoded == "dmdmediashowcase.local."
+    assert next_off == len(wire)
+
+    # Build a standard mDNS A query for dmdmediashowcase.local.
+    query_hdr = struct.pack("!HHHHHH", 0x1234, 0x0000, 1, 0, 0, 0)
+    query_pkt = query_hdr + wire + struct.pack("!HH", DNS_TYPE_A, DNS_CLASS_IN)
+    reply = parse_and_reply_mdns(query_pkt, hostname="dmdmediashowcase", ipv4="192.168.1.77", port=8890)
+    assert reply is not None
+    assert reply.endswith(socket.inet_aton("192.168.1.77"))
+
+    # Build a PTR query for _dmd-showcase._tcp.local.
+    ptr_pkt = (
+        query_hdr
+        + encode_dns_name("_dmd-showcase._tcp.local.")
+        + struct.pack("!HH", DNS_TYPE_PTR, DNS_CLASS_IN)
+    )
+    ptr_reply = parse_and_reply_mdns(ptr_pkt, hostname="dmdmediashowcase", ipv4="192.168.1.77", port=8890)
+    assert ptr_reply is not None
+    assert socket.inet_aton("192.168.1.77") in ptr_reply

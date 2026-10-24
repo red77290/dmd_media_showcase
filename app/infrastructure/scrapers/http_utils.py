@@ -92,6 +92,40 @@ def clean_synopsis_text(raw: Optional[str], max_chars: int = 320) -> str:
     return f"{cut}…"
 
 
+def build_tmdb_auth(raw_key: Optional[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    Support both TMDB v3 API keys (32-char hex passed as `?api_key=`) and
+    TMDB v4 Read Access Tokens (JWT starting with `eyJ` passed as `Authorization: Bearer`).
+    Returns `(query_params_dict, headers_dict)`.
+    """
+    clean = (raw_key or "").strip()
+    if not clean:
+        return {}, {}
+    if clean.lower().startswith("bearer "):
+        clean = clean[7:].strip()
+    if clean.startswith("eyJ") or len(clean) > 45:
+        return {}, {"Authorization": f"Bearer {clean}"}
+    return {"api_key": clean}, {}
+
+
+MEDIA_TOPIC_KEYWORDS = {
+    "fr": ("film", "série", "anime", "manga", "animation", "télévision", "feuilleton", "cinéma", "vidéo", "manga"),
+    "es": ("película", "serie", "anime", "manga", "animación", "televisión", "cine", "videojuego"),
+    "de": ("film", "serie", "anime", "manga", "fernsehserie", "animation", "kino", "videospiel"),
+    "it": ("film", "serie", "anime", "manga", "animazione", "televisione", "cinema", "videogioco"),
+    "en": ("film", "movie", "series", "anime", "manga", "animation", "television", "tv show", "video game"),
+}
+
+
+def is_relevant_media_extract(data: Dict[str, Any], lang: str) -> bool:
+    """Validate that a Wikipedia summary belongs to the media/entertainment domain."""
+    desc = str(data.get("description") or "").lower()
+    extract = str(data.get("extract") or "").lower()
+    combined = f"{desc} {extract}"
+    keywords = MEDIA_TOPIC_KEYWORDS.get(lang, MEDIA_TOPIC_KEYWORDS["en"])
+    return any(kw in combined for kw in keywords)
+
+
 async def fetch_wikipedia_localized_synopsis(
     client: httpx.AsyncClient,
     title: str,
@@ -99,33 +133,242 @@ async def fetch_wikipedia_localized_synopsis(
     domain_hint: str = "",
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Fetch localized synopsis and high-res original image from Wikipedia REST API
-    when a keyless English API returns an untranslated summary.
+    Fetch localized synopsis and high-res image from Wikipedia REST API adhering
+    strictly to the requested `lang` (zero English fallback when `lang != "en"`):
+    1. If `lang != "en"`, queries English Wikipedia interwiki `langlinks` (`enwiki -> {lang}wiki`)
+       to translate the canonical English title into the exact official localized title.
+    2. Queries `{lang}.wikipedia.org/api/rest_v1/page/summary/{localized_title}`.
+    3. Falls back to localized MediaWiki search on `{lang}.wikipedia.org`.
+    4. Validates that the topic belongs to entertainment/media (prevents homonym misfires).
     """
     short_lang = (lang or "fr").split("-")[0].lower()
-    langs = [short_lang] if short_lang == "en" else [short_lang, "en"]
-    for try_lang in langs:
-        candidates = [f"{title} ({domain_hint})".strip(), title] if domain_hint else [title]
-        for cand in candidates:
-            slug = urllib.parse.quote(cand.replace(" ", "_"))
-            url = f"https://{try_lang}.wikipedia.org/api/rest_v1/page/summary/{slug}"
+    clean_t = re.sub(r"[^\w\s\-\:\'\,\.]", " ", title).strip()
+    if not clean_t:
+        return None, None
+
+    # Step 1: Interwiki resolution via en.wikipedia langlinks if target is not English
+    localized_titles: List[str] = []
+    if short_lang != "en":
+        search_titles = [f"{clean_t} ({domain_hint})", clean_t] if domain_hint else [clean_t]
+        for st in search_titles:
             try:
-                resp = await client.get(url, timeout=3.0)
-                if resp.status_code != 200:
-                    continue
-                data = resp.json()
-                if data.get("type") == "disambiguation":
-                    continue
-                extract = clean_synopsis_text(data.get("extract"), max_chars=300)
-                thumb = (
-                    (data.get("originalimage") or {}).get("source")
-                    or (data.get("thumbnail") or {}).get("source")
-                )
-                if extract and len(extract) > 35:
-                    return extract, thumb
+                ll_url = "https://en.wikipedia.org/w/api.php"
+                ll_params = {
+                    "action": "query",
+                    "titles": st,
+                    "prop": "langlinks",
+                    "lllang": short_lang,
+                    "redirects": "1",
+                    "format": "json",
+                }
+                resp = await client.get(ll_url, params=ll_params, timeout=2.5)
+                if resp.status_code == 200:
+                    pages = (resp.json().get("query") or {}).get("pages") or {}
+                    for page in pages.values():
+                        for llink in page.get("langlinks") or []:
+                            resolved = str(llink.get("*") or "").strip()
+                            if resolved and resolved not in localized_titles:
+                                localized_titles.append(resolved)
             except Exception:
+                pass
+            if localized_titles:
+                break
+
+    # Suffixes localized to the target language
+    suffix_map = {
+        "fr": {"film": "film", "anime": "anime", "series": "série télévisée", "tv": "série télévisée"},
+        "es": {"film": "película", "anime": "anime", "series": "serie de televisión", "tv": "serie de televisión"},
+        "de": {"film": "Film", "anime": "Anime", "series": "Fernsehserie", "tv": "Fernsehserie"},
+        "it": {"film": "film", "anime": "anime", "series": "serie televisiva", "tv": "serie televisiva"},
+        "en": {"film": "film", "anime": "anime", "series": "TV series", "tv": "TV series"},
+    }
+    loc_suffix = suffix_map.get(short_lang, suffix_map["en"]).get(domain_hint.lower(), domain_hint)
+
+    candidates: List[str] = list(localized_titles)
+    if loc_suffix:
+        candidates.append(f"{clean_t} ({loc_suffix})")
+    candidates.append(clean_t)
+
+    # Step 2: Query summary API on `{short_lang}.wikipedia.org`
+    for cand in candidates:
+        slug = urllib.parse.quote(cand.replace(" ", "_"))
+        url = f"https://{short_lang}.wikipedia.org/api/rest_v1/page/summary/{slug}"
+        try:
+            resp = await client.get(url, timeout=3.0)
+            if resp.status_code != 200:
                 continue
+            data = resp.json()
+            if data.get("type") == "disambiguation":
+                continue
+            if not is_relevant_media_extract(data, short_lang):
+                continue
+            extract = clean_synopsis_text(data.get("extract"), max_chars=320)
+            thumb = (
+                (data.get("originalimage") or {}).get("source")
+                or (data.get("thumbnail") or {}).get("source")
+            )
+            if extract and len(extract) > 35:
+                return extract, thumb
+        except Exception:
+            continue
+
+    # Step 3: Localized MediaWiki search if direct slug lookups missed
+    try:
+        search_query = f"{clean_t} {loc_suffix}".strip()
+        sr_url = f"https://{short_lang}.wikipedia.org/w/api.php"
+        sr_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": search_query,
+            "srlimit": "2",
+            "format": "json",
+        }
+        sr_resp = await client.get(sr_url, params=sr_params, timeout=2.5)
+        if sr_resp.status_code == 200:
+            hits = (sr_resp.json().get("query") or {}).get("search") or []
+            for hit in hits:
+                hit_title = str(hit.get("title") or "").strip()
+                if not hit_title:
+                    continue
+                slug = urllib.parse.quote(hit_title.replace(" ", "_"))
+                url = f"https://{short_lang}.wikipedia.org/api/rest_v1/page/summary/{slug}"
+                resp = await client.get(url, timeout=2.5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if is_relevant_media_extract(data, short_lang):
+                        extract = clean_synopsis_text(data.get("extract"), max_chars=320)
+                        thumb = (
+                            (data.get("originalimage") or {}).get("source")
+                            or (data.get("thumbnail") or {}).get("source")
+                        )
+                        if extract and len(extract) > 35:
+                            return extract, thumb
+    except Exception:
+        pass
+
     return None, None
+
+
+async def resolve_multilingual_media_details(
+    client: httpx.AsyncClient,
+    title: str,
+    lang: str = "fr",
+    domain_hint: str = "anime",
+    year: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Unified 3-tier localized resolver respecting the DMD's dynamic `target_lang`:
+    1. TMDB search in `target_lang` (supports both v3 API Key and v4 Bearer Token) + trailer lookup.
+    2. TheTVDB v4 translation + trailer lookup if configured.
+    3. Wikipedia interwiki langlinks bridge + localized summary.
+    Returns `(localized_title, localized_synopsis, optional_trailer_url)`.
+    """
+    short_lang = (lang or "fr").split("-")[0].lower()
+    resolved_title: Optional[str] = None
+    resolved_synopsis: Optional[str] = None
+    resolved_trailer: Optional[str] = None
+
+    # Tier 1: TMDB Search in target_lang
+    try:
+        from app.infrastructure.persistence.server_config_store import server_config_store
+        from app.infrastructure.scrapers.catalog_metadata import TMDB_LANG_MAP
+
+        cfg = server_config_store.get_all()
+        tmdb_key = str(cfg.get("tmdb_api_key") or "").strip()
+        if tmdb_key:
+            auth_params, auth_headers = build_tmdb_auth(tmdb_key)
+            tmdb_lang = TMDB_LANG_MAP.get(short_lang, f"{short_lang}-{short_lang.upper()}")
+            endpoint = "movie" if domain_hint in ("film", "movies", "movie") else "tv"
+            year_key = "first_air_date_year" if endpoint == "tv" else "primary_release_year"
+
+            t_params: Dict[str, str] = {
+                **auth_params,
+                "query": title,
+                "language": tmdb_lang,
+            }
+            if year and len(year) == 4 and year.isdigit():
+                t_params[year_key] = year
+
+            t_resp = await client.get(
+                f"https://api.themoviedb.org/3/search/{endpoint}",
+                params=t_params,
+                headers=auth_headers,
+                timeout=2.5,
+            )
+            t_items = (t_resp.json().get("results") or []) if t_resp.status_code == 200 else []
+            if not t_items and year_key in t_params:
+                t_params_no_yr = {k: v for k, v in t_params.items() if k != year_key}
+                t_resp2 = await client.get(
+                    f"https://api.themoviedb.org/3/search/{endpoint}",
+                    params=t_params_no_yr,
+                    headers=auth_headers,
+                    timeout=2.5,
+                )
+                t_items = (t_resp2.json().get("results") or []) if t_resp2.status_code == 200 else []
+
+            if t_items:
+                best = t_items[0]
+                t_overview = clean_synopsis_text(best.get("overview"), max_chars=320)
+                t_title = best.get("title") or best.get("name")
+                if t_title:
+                    resolved_title = str(t_title)
+                if t_overview and len(t_overview) > 30:
+                    resolved_synopsis = t_overview
+
+                best_id = best.get("id")
+                if best_id:
+                    v_resp = await client.get(
+                        f"https://api.themoviedb.org/3/{endpoint}/{best_id}/videos",
+                        params={
+                            **auth_params,
+                            "language": tmdb_lang,
+                            "include_video_language": f"{short_lang},en,ja,null",
+                        },
+                        headers=auth_headers,
+                        timeout=2.0,
+                    )
+                    if v_resp.status_code == 200:
+                        for v in v_resp.json().get("results") or []:
+                            if v.get("site") == "YouTube" and v.get("key"):
+                                resolved_trailer = f"https://www.youtube.com/watch?v={v['key']}"
+                                if str(v.get("type", "")).lower() == "trailer":
+                                    break
+
+                if resolved_synopsis and resolved_trailer:
+                    return resolved_title, resolved_synopsis, resolved_trailer
+    except Exception:
+        pass
+
+    # Tier 2: TheTVDB v4 in target_lang
+    try:
+        from app.infrastructure.scrapers.tvdb_adapter import fetch_tvdb_localized_overview
+
+        t_title, t_overview, t_trailer = await fetch_tvdb_localized_overview(
+            title=title,
+            media_type="movies" if domain_hint in ("film", "movies", "movie") else "series",
+            lang=short_lang,
+            year=year,
+        )
+        if t_title and not resolved_title:
+            resolved_title = t_title
+        if t_overview and len(t_overview) > 30 and not resolved_synopsis:
+            resolved_synopsis = t_overview
+        if t_trailer and not resolved_trailer:
+            resolved_trailer = t_trailer
+        if resolved_synopsis:
+            return resolved_title, resolved_synopsis, resolved_trailer
+    except Exception:
+        pass
+
+    # Tier 3: Wikipedia interwiki langlinks bridge
+    if not resolved_synopsis and short_lang != "en":
+        wiki_syn, _ = await fetch_wikipedia_localized_synopsis(
+            client, title, lang=short_lang, domain_hint=domain_hint
+        )
+        if wiki_syn and len(wiki_syn) > 30:
+            resolved_synopsis = wiki_syn
+
+    return resolved_title, resolved_synopsis, resolved_trailer
 
 
 async def fetch_imdb_suggestion_items(

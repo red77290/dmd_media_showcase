@@ -20,6 +20,7 @@ from app.infrastructure.scrapers.referential_store import (
     tvmaze_referential_strategy,
 )
 from app.infrastructure.scrapers.series import TmdbSeriesAdapter, TvMazeAdapter
+from app.infrastructure.scrapers.tvdb_adapter import TvdbSeriesAdapter
 
 
 class ScraperRegistry:
@@ -33,7 +34,7 @@ class ScraperRegistry:
         self._chains: Dict[DomainType, List[IScraperSource]] = {
             "games": [ScreenScraperAdapter(), ArcadeItaliaAdapter()],
             "movies": [TmdbMovieAdapter(), ItunesMovieAdapter()],
-            "series": [TmdbSeriesAdapter(), TvMazeAdapter()],
+            "series": [TmdbSeriesAdapter(), TvdbSeriesAdapter(), TvMazeAdapter()],
             "anime": [JikanAnimeThemesAdapter(), AniListAdapter()],
         }
 

@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     )
 
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 8890
+    mdns_enabled: bool = True
+    mdns_hostname: str = "dmdmediashowcase"
     log_level: str = "INFO"
     default_lang: str = "fr"
 

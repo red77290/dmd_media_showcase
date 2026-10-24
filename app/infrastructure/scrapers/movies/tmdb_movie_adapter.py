@@ -13,7 +13,13 @@ from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
 from app.infrastructure.persistence.server_config_store import server_config_store
 from app.infrastructure.scrapers.catalog_metadata import DECADE_BOUNDS, MOVIE_GENRES, TMDB_LANG_MAP
-from app.infrastructure.scrapers.http_utils import clean_synopsis_text, create_async_http_client
+from app.infrastructure.scrapers.http_utils import (
+    build_tmdb_auth,
+    clean_synopsis_text,
+    create_async_http_client,
+    fetch_dailymotion_trailer_and_stills,
+    resolve_multilingual_media_details,
+)
 
 logger = logging.getLogger("dmd_showcase.scrapers.movies.tmdb")
 
@@ -41,30 +47,71 @@ class TmdbMovieAdapter(IScraperSource):
         }
 
     async def _enrich_videos_and_images(
-        self, client: Any, tmdb_id: int, api_key: str, short_lang: str, tmdb_lang: str, cand: MediaCandidate
+        self,
+        client: Any,
+        tmdb_id: int,
+        api_key: str,
+        short_lang: str,
+        tmdb_lang: str,
+        cand: MediaCandidate,
+        orig_title: Optional[str] = None,
     ) -> None:
+        auth_params, auth_headers = build_tmdb_auth(api_key)
         try:
             v_resp = await client.get(
                 f"https://api.themoviedb.org/3/movie/{tmdb_id}/videos",
                 params={
-                    "api_key": api_key,
+                    **auth_params,
                     "language": tmdb_lang,
-                    "include_video_language": f"{short_lang},en,ja,ko,es,de,it,null",
+                    "include_video_language": f"{short_lang},en,ja,ko,es,de,it,fr,null",
                 },
+                headers=auth_headers,
             )
             if v_resp.status_code == 200:
                 vids = v_resp.json().get("results") or []
                 for v in vids:
-                    if v.get("site") == "YouTube" and v.get("key"):
-                        cand.youtube_url = f"https://www.youtube.com/watch?v={v['key']}"
-                        break
+                    site = str(v.get("site") or "")
+                    key = str(v.get("key") or "").strip()
+                    if site == "YouTube" and key:
+                        cand.youtube_url = f"https://www.youtube.com/watch?v={key}"
+                        if str(v.get("type", "")).lower() == "trailer":
+                            break
+                    elif site == "Vimeo" and key and not cand.youtube_url:
+                        cand.youtube_url = f"https://vimeo.com/{key}"
         except Exception:
             pass
+
+        # Direct CDN trailer via Apple iTunes Search (try original title then localized title)
+        if not cand.video_url:
+            search_terms = [t for t in [orig_title, cand.title] if t]
+            for term in dict.fromkeys(search_terms):
+                try:
+                    it_resp = await client.get(
+                        "https://itunes.apple.com/search",
+                        params={
+                            "term": term,
+                            "media": "movie",
+                            "entity": "movie",
+                            "limit": "3",
+                        },
+                        timeout=3.0,
+                    )
+                    if it_resp.status_code == 200:
+                        for row in it_resp.json().get("results") or []:
+                            prev = str(row.get("previewUrl") or "").strip()
+                            if prev.startswith("http"):
+                                cand.video_url = prev
+                                break
+                    if cand.video_url:
+                        break
+                except Exception:
+                    pass
 
         try:
             i_resp = await client.get(
                 f"https://api.themoviedb.org/3/movie/{tmdb_id}/images",
-                params={"api_key": api_key},
+                params=auth_params,
+                headers=auth_headers,
             )
             if i_resp.status_code == 200:
                 img_data = i_resp.json()
@@ -76,6 +123,16 @@ class TmdbMovieAdapter(IScraperSource):
                         cand.add_unique_snapshot(f"https://image.tmdb.org/t/p/w1280{bd['file_path']}")
         except Exception:
             pass
+
+        if not cand.video_url and not cand.youtube_url:
+            q_title = orig_title or cand.title
+            dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                client, f"{q_title} {cand.year} trailer", max_snapshots=3
+            )
+            if dm_url:
+                cand.youtube_url = dm_url
+            for st in dm_stills:
+                cand.add_unique_snapshot(st)
 
     async def fetch_random_unseen(
         self,
@@ -94,8 +151,9 @@ class TmdbMovieAdapter(IScraperSource):
         chosen_genre_key = random.choice(genre_keys) if genre_keys else "scifi"
         g_meta = MOVIE_GENRES[chosen_genre_key]
 
+        auth_params, auth_headers = build_tmdb_auth(api_key)
         base_params: Dict[str, str] = {
-            "api_key": api_key,
+            **auth_params,
             "language": tmdb_lang,
             "sort_by": "popularity.desc",
             "vote_count.gte": "100",
@@ -118,14 +176,22 @@ class TmdbMovieAdapter(IScraperSource):
                 params = dict(base_params)
                 params["page"] = str(random.randint(1, 25))
                 try:
-                    resp = await client.get("https://api.themoviedb.org/3/discover/movie", params=params)
+                    resp = await client.get(
+                        "https://api.themoviedb.org/3/discover/movie",
+                        params=params,
+                        headers=auth_headers,
+                    )
                     if resp.status_code != 200:
                         continue
                     payload = resp.json()
                     total_pages = min(int(payload.get("total_pages") or 1), 500)
                     if int(params["page"]) > total_pages and total_pages >= 1:
                         params["page"] = str(random.randint(1, total_pages))
-                        resp = await client.get("https://api.themoviedb.org/3/discover/movie", params=params)
+                        resp = await client.get(
+                            "https://api.themoviedb.org/3/discover/movie",
+                            params=params,
+                            headers=auth_headers,
+                        )
                         payload = resp.json() if resp.status_code == 200 else {}
 
                     items = payload.get("results") or []
@@ -141,11 +207,21 @@ class TmdbMovieAdapter(IScraperSource):
                             continue
                         year = str(item.get("release_date") or "1999")[:4]
                         vote = float(item.get("vote_average") or 7.5)
-                        title = str(item.get("title") or item.get("original_title") or "Movie").strip()
+                        orig_title = str(item.get("original_title") or item.get("title") or "Movie").strip()
+                        title = str(item.get("title") or orig_title).strip()
                         poster_url = f"https://image.tmdb.org/t/p/w780{poster_path}"
                         backdrop_url = (
                             f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else None
                         )
+                        synopsis = clean_synopsis_text(item.get("overview"))
+                        if len(synopsis) < 30 and short_lang != "en":
+                            loc_t, loc_syn, _ = await resolve_multilingual_media_details(
+                                client, orig_title, lang=short_lang, domain_hint="film", year=year
+                            )
+                            if loc_syn:
+                                synopsis = loc_syn
+                            if loc_t:
+                                title = loc_t
 
                         cand = MediaCandidate(
                             id=item_id,
@@ -156,7 +232,7 @@ class TmdbMovieAdapter(IScraperSource):
                             badge_color=g_meta["color"],
                             subtitle=f"{g_meta['label']} • {year}"[:28],
                             rating=f"{vote:.1f}",
-                            synopsis=clean_synopsis_text(item.get("overview")) or f"{title} ({year}).",
+                            synopsis=synopsis or f"{title} ({year}).",
                             lang=short_lang,
                             poster_url=poster_url,
                             jacket_url=poster_url,
@@ -168,7 +244,7 @@ class TmdbMovieAdapter(IScraperSource):
                         if backdrop_url:
                             cand.add_unique_snapshot(backdrop_url)
                         await self._enrich_videos_and_images(
-                            client, int(tmdb_id), api_key, short_lang, tmdb_lang, cand
+                            client, int(tmdb_id), api_key, short_lang, tmdb_lang, cand, orig_title=orig_title
                         )
                         seen_ids.add(cand.id)
                         results.append(cand)
@@ -185,11 +261,13 @@ class TmdbMovieAdapter(IScraperSource):
             return None
         short_lang = (lang or "fr").split("-")[0].lower()
         tmdb_lang = TMDB_LANG_MAP.get(short_lang, "fr-FR")
+        auth_params, auth_headers = build_tmdb_auth(api_key)
         try:
             async with create_async_http_client(timeout=5.0) as client:
                 resp = await client.get(
                     "https://api.themoviedb.org/3/search/movie",
-                    params={"api_key": api_key, "language": tmdb_lang, "query": query.strip()},
+                    params={**auth_params, "language": tmdb_lang, "query": query.strip()},
+                    headers=auth_headers,
                 )
                 if resp.status_code == 200:
                     items = resp.json().get("results") or []
@@ -198,6 +276,7 @@ class TmdbMovieAdapter(IScraperSource):
                         tmdb_id = int(first["id"])
                         poster_p = first.get("poster_path")
                         poster_url = f"https://image.tmdb.org/t/p/w780{poster_p}" if poster_p else None
+                        orig_title = str(first.get("original_title") or first.get("title") or query)
                         cand = MediaCandidate(
                             id=f"movies_tmdb_{tmdb_id}",
                             domain="movies",
@@ -214,7 +293,7 @@ class TmdbMovieAdapter(IScraperSource):
                             source_id=self.source_id,
                         )
                         await self._enrich_videos_and_images(
-                            client, tmdb_id, api_key, short_lang, tmdb_lang, cand
+                            client, tmdb_id, api_key, short_lang, tmdb_lang, cand, orig_title=orig_title
                         )
                         return cand
         except Exception:

@@ -18,8 +18,9 @@ services:
     container_name: dmd-media-showcase
     restart: unless-stopped
     ports:
-      - "8080:8080"       # API REST FastAPI + Panel Admin + Swagger UI
+      - "8890:8890"       # API REST FastAPI + Panel Admin + Swagger UI
       - "1883:1883"       # Broker MQTT 3.1.1 Integrado
+      - "5353:5353/udp"   # Autodescubrimiento en Red Local mDNS (dmdmediashowcase.local)
     volumes:
       - ./data:/app/data  # Persistencia server_config.json, seen_history.json y referentials/
     environment:
@@ -46,9 +47,9 @@ docker logs -f dmd-media-showcase
 
 ---
 
-## 2. Panel Web de Administración (`http://<ip-servidor>:8080/`)
+## 2. Panel Web de Administración (`http://dmdmediashowcase.local:8890/`)
 
-Abra `http://<ip-servidor>:8080/` en su navegador para:
+Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en su navegador para:
 - Configurar credenciales **opcionales** de scrapers primarios (`ScreenScraper`, `TMDB`). Sin credenciales, los adaptadores sin clave (`ArcadeItalia`, `Libretro+Wikidata`, `iTunes`, `TVMaze`, `Jikan+AnimeThemes`, `AniList`) funcionan automáticamente.
 - Elegir entre el **Broker MQTT Integrado** (`:1883`) o un **Broker MQTT Externo**.
 - Ver y restablecer el historial **`seen_history.json`** por dominio o globalmente.
@@ -57,9 +58,12 @@ Abra `http://<ip-servidor>:8080/` en su navegador para:
 
 ## 3. Conexión de su DMD (`ArcadeMatrix` ESP32 y `ArcadeMatrix_RPi`)
 
-1. Abra la WebUI de su DMD (`http://<ip-dmd>/`).
-2. Active cualquiera de los 4 motores Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`).
-3. Configure `Showcase Server URL` (`http://<ip-servidor>:8080`) y `MQTT Broker` (`mqtt://<ip-servidor>:1883`).
+1. Abra la WebUI de su DMD (`http://arcadematrix.local/` en ESP32 o `http://arcadematrix.local:8080/` en Raspberry Pi).
+2. Vaya a **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`):
+   - El campo **Showcase Server URL** ya viene pre-rellenado como `http://dmdmediashowcase.local:8890` y **desactivado por defecto** (`⚪ Desactivado`) para evitar peticiones de red innecesarias si `dmd_media_showcase` no está instalado.
+   - Active el interruptor **Enable DMD Media Showcase Server** y haga clic en **Save Showcase Server** (o **Test Connection**).
+   - Verifique que el indicador visual se ponga en verde: **`🟢 Comunicación OK (v3.0.0)`**.
+3. Añada cualquiera de los 4 motores Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`) a su rotación.
 4. La WebUI del DMD consulta automáticamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar dinámicamente las listas de **Sistemas**, **Géneros** y **Décadas**.
 5. Ajuste la **Velocidad de desplazamiento de la sinopsis** (`1 = Lento` a `10 = Turbo`, hasta `160 px/s`) y guarde los cambios.
 

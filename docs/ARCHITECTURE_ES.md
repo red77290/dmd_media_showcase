@@ -17,7 +17,7 @@ flowchart TD
     end
 
     subgraph INFRA_IN["Adaptadores de Entrada (Infraestructura)"]
-        HTTP["API REST FastAPI (:8080)\n/api/v1/{domain}/filters & /config & /next"]
+        HTTP["API REST FastAPI (:8890 + mDNS dmdmediashowcase.local)\n/api/v1/{domain}/filters & /config & /next"]
         MQTT["ShowcaseMqttGateway & EmbeddedMqttBroker (:1883)\nRetain=True + LWT"]
     end
 

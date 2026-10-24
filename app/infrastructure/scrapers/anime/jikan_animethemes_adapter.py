@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from typing import Any, Dict, List, Optional, Set
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
@@ -19,32 +20,59 @@ from app.infrastructure.scrapers.catalog_metadata import ANIME_GENRES, DECADE_BO
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
     create_async_http_client,
+    fetch_dailymotion_trailer_and_stills,
     fetch_wikipedia_localized_synopsis,
+    resolve_multilingual_media_details,
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.anime.jikan")
+_YT_EMBED_RE = re.compile(r"/embed/([A-Za-z0-9_-]{6,})")
 
 
 async def enrich_with_animethemes_webm(
     client: Any,
     cand: MediaCandidate,
     video_type: str = "opening",
+    mal_id_override: Optional[str] = None,
+    orig_title: Optional[str] = None,
 ) -> None:
     """Attach direct creditless `.webm` OP/ED stream and high-res cover from `api.animethemes.moe`."""
     target_prefix = "OP" if video_type == "opening" else ("ED" if video_type == "ending" else "")
     try:
-        resp = await client.get(
-            "https://api.animethemes.moe/anime",
-            params={
-                "filter[name-like]": f"%{cand.title}%",
-                "include": "animethemes.animethemeentries.videos,images",
-                "page[size]": "3",
-            },
-            timeout=4.0,
-        )
-        if resp.status_code != 200:
-            return
-        anime_list = resp.json().get("anime") or []
+        # 1. Search by MyAnimeList external ID if present for 100% exact match
+        anime_list: List[Dict[str, Any]] = []
+        mal_id = mal_id_override or (cand.id.split("_")[-1] if "anime_jikan_" in cand.id else "")
+        if mal_id and str(mal_id).isdigit():
+            try:
+                id_resp = await client.get(
+                    "https://api.animethemes.moe/anime",
+                    params={
+                        "filter[has]": "resources",
+                        "filter[site]": "MyAnimeList",
+                        "filter[external_id]": str(mal_id),
+                        "include": "animethemes.animethemeentries.videos,images",
+                        "page[size]": "2",
+                    },
+                    timeout=3.0,
+                )
+                if id_resp.status_code == 200:
+                    anime_list = id_resp.json().get("anime") or []
+            except Exception:
+                pass
+
+        if not anime_list:
+            lookup_name = (orig_title or cand.title).strip()
+            resp = await client.get(
+                "https://api.animethemes.moe/anime",
+                params={
+                    "filter[name-like]": f"%{lookup_name}%",
+                    "include": "animethemes.animethemeentries.videos,images",
+                    "page[size]": "3",
+                },
+                timeout=3.0,
+            )
+            if resp.status_code == 200:
+                anime_list = resp.json().get("anime") or []
         if not anime_list:
             return
         anime_obj = anime_list[0]
@@ -108,9 +136,10 @@ class JikanAnimeThemesAdapter(IScraperSource):
         mal_id = item.get("mal_id")
         if not mal_id:
             return None
-        title = str(item.get("title_english") or item.get("title") or "").strip()
-        if not title:
+        orig_title = str(item.get("title_english") or item.get("title") or "").strip()
+        if not orig_title:
             return None
+        title = orig_title
 
         images = (item.get("images") or {}).get("jpg") or {}
         poster_url = images.get("large_image_url") or images.get("image_url")
@@ -121,14 +150,29 @@ class JikanAnimeThemesAdapter(IScraperSource):
         score = float(item.get("score") or 8.2)
         synopsis = clean_synopsis_text(item.get("synopsis"), max_chars=300)
 
+        resolved_trailer: Optional[str] = None
         if lang != "en" or not synopsis:
-            wiki_syn, _ = await fetch_wikipedia_localized_synopsis(client, title, lang=lang)
-            if wiki_syn:
-                synopsis = wiki_syn
+            loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
+                client, orig_title, lang=lang, domain_hint="anime", year=year
+            )
+            if loc_syn:
+                synopsis = loc_syn
+            if loc_t:
+                title = loc_t
+            if loc_tr:
+                resolved_trailer = loc_tr
 
         trailer = item.get("trailer") or {}
         yt_id = trailer.get("youtube_id")
-        yt_url = f"https://www.youtube.com/watch?v={yt_id}" if yt_id else trailer.get("url")
+        if not yt_id and trailer.get("embed_url"):
+            m = _YT_EMBED_RE.search(str(trailer.get("embed_url")))
+            if m:
+                yt_id = m.group(1)
+        yt_url = (
+            f"https://www.youtube.com/watch?v={yt_id}"
+            if yt_id
+            else (trailer.get("url") or resolved_trailer)
+        )
         max_img = ((trailer.get("images") or {}).get("maximum_image_url")) or None
 
         cand = MediaCandidate(
@@ -153,7 +197,21 @@ class JikanAnimeThemesAdapter(IScraperSource):
         if max_img:
             cand.add_unique_snapshot(str(max_img))
 
-        await enrich_with_animethemes_webm(client, cand, video_type=video_type)
+        await enrich_with_animethemes_webm(
+            client,
+            cand,
+            video_type=video_type,
+            mal_id_override=str(mal_id),
+            orig_title=orig_title,
+        )
+        if not cand.video_url and not cand.youtube_url:
+            dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                client, f"{orig_title} anime opening trailer", max_snapshots=3
+            )
+            if dm_url:
+                cand.youtube_url = dm_url
+            for st in dm_stills:
+                cand.add_unique_snapshot(st)
         return cand
 
     async def fetch_random_unseen(
@@ -180,8 +238,8 @@ class JikanAnimeThemesAdapter(IScraperSource):
             base_params["end_date"] = end_d
 
         results: List[MediaCandidate] = []
-        async with create_async_http_client(timeout=5.5) as client:
-            for _ in range(max(2, count * 2)):
+        async with create_async_http_client(timeout=2.0) as client:
+            for _ in range(max(1, count)):
                 if len(results) >= count:
                     break
                 params = dict(base_params)
