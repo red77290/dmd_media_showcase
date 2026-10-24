@@ -197,10 +197,15 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 except asyncio.IncompleteReadError:
                     break
                 packets = pack_dmdf_frame_chunks(frame_buf, frame_seq)
-                for pkt in packets:
+                for pkt_idx, pkt in enumerate(packets):
                     if self._packet_sink is not None:
                         self._packet_sink(pkt, udp_ip, udp_port)
                         continue
+                    # Micro-pace multi-chunk HD frames (e.g. 256x64 = 32 chunks = 33 KB/frame)
+                    # in 8-KB groups so Wi-Fi AP TX queues and ESP32 lwIP UDP mailboxes never
+                    # tail-drop chunks 16..31, while 128x32 (8 chunks) sends with zero delay.
+                    if pkt_idx > 0 and (pkt_idx % 8) == 0:
+                        await asyncio.sleep(0.0008)
                     try:
                         sock.sendto(pkt, (udp_ip, udp_port))
                     except BlockingIOError:
