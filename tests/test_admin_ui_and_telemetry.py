@@ -894,3 +894,23 @@ def test_no_user_facing_ddd_jargon_in_ui_readmes_or_openapi():
         content = path.read_text(encoding="utf-8")
         assert not ddd_re.search(content), f"Found user-facing 'DDD' jargon in {path.name}"
 
+
+def test_passive_rotation_tag_picker_and_studio_domain_profiles_ui_coherence():
+    """
+    Verify coherent separation between Tab 1 (visual Multi-Select Tag Picker for rotation slots,
+    zero raw CSV inputs or duplicated framing/color/video columns) and Tab 4 (4-Domain Studio
+    Profile Switcher with bidirectional jump links).
+    """
+    html = ADMIN_DASHBOARD_HTML
+    assert 'id="tag-picker-modal"' in html
+    assert "openTagPickerModal(" in html
+    assert "applyTagPickerModal(" in html
+    assert 'id="studio-dom-tabs"' in html
+    assert "selectStudioDomainProfile(" in html
+    assert "openStudioForDmdDomainFromEditor(" in html
+    assert "returnToDmdRotationEditor(" in html
+
+    for removed_legacy_cls in ("pl-systems", "pl-genres", "pl-vmode", "pl-cboost", "pl-vdur"):
+        assert removed_legacy_cls not in html, f"Legacy duplicated input '{removed_legacy_cls}' still present in HTML"
+
+

@@ -572,6 +572,226 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       color: #fff;
     }
 
+    /* Tag Picker Pills, Studio Domain Switcher & Multi-Select Tag Modal */
+    .tag-cell {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      min-width: 170px;
+    }
+    .tag-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      background: rgba(0, 229, 255, 0.12);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+      color: #d8f8ff;
+      white-space: nowrap;
+    }
+    .tag-chip.decade {
+      background: rgba(255, 171, 0, 0.12);
+      border-color: rgba(255, 171, 0, 0.42);
+      color: #ffe082;
+    }
+    .tag-chip-rm {
+      cursor: pointer;
+      opacity: 0.72;
+      font-size: 0.72rem;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .tag-chip-rm:hover { opacity: 1; color: #ff5252; }
+    .tag-all-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      color: var(--muted);
+      background: #0d121b;
+      border: 1px dashed #2b384e;
+    }
+    .tag-pick-btn {
+      height: 28px !important;
+      line-height: 26px !important;
+      padding: 0 9px !important;
+      font-size: 0.74rem !important;
+      border-radius: 7px !important;
+      background: #182234 !important;
+      border: 1px solid #30415c !important;
+      color: var(--text) !important;
+      white-space: nowrap;
+    }
+    .tag-pick-btn:hover { border-color: var(--cyan) !important; color: #fff !important; }
+    .studio-link-cell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 240px;
+    }
+    .studio-summary-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+    .studio-jump-btn {
+      height: 30px !important;
+      line-height: 28px !important;
+      padding: 0 11px !important;
+      font-size: 0.76rem !important;
+      border-radius: 8px !important;
+      background: rgba(255, 109, 0, 0.16) !important;
+      border: 1px solid rgba(255, 109, 0, 0.55) !important;
+      color: #ffb074 !important;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .studio-jump-btn:hover {
+      background: var(--accent) !important;
+      color: #fff !important;
+    }
+    .studio-profile-bar {
+      background: linear-gradient(180deg, #131b28 0%, #0e141f 100%);
+      border: 1px solid #2b3950;
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }
+    .studio-dom-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .studio-dom-tab {
+      height: auto !important;
+      padding: 10px 12px !important;
+      border-radius: 10px !important;
+      background: #0b1018 !important;
+      border: 1px solid var(--border) !important;
+      color: var(--text) !important;
+      text-align: left !important;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .studio-dom-tab:hover { border-color: #3d5274 !important; background: #131c2b !important; }
+    .studio-dom-tab.active {
+      border-color: var(--accent) !important;
+      background: rgba(255, 109, 0, 0.14) !important;
+      box-shadow: 0 0 0 1px rgba(255, 109, 0, 0.35);
+    }
+    .studio-dom-tab-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+    }
+    .studio-dom-tab-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(3, 6, 12, 0.78);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .tag-modal {
+      width: 100%;
+      max-width: 760px;
+      max-height: 85vh;
+      background: #121824;
+      border: 1px solid #30415c;
+      border-radius: 14px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .tag-modal-head {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      background: #0e141f;
+    }
+    .tag-modal-body {
+      padding: 14px 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .tag-modal-sec-title {
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--cyan);
+      font-weight: 700;
+      margin: 6px 0 10px;
+    }
+    .tag-modal-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .tag-option-btn {
+      height: auto !important;
+      min-height: 34px;
+      padding: 6px 12px !important;
+      border-radius: 999px !important;
+      font-size: 0.8rem !important;
+      font-weight: 600 !important;
+      background: #0b1018 !important;
+      border: 1px solid #28354a !important;
+      color: var(--muted) !important;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .tag-option-btn:hover { border-color: #465d82 !important; color: #fff !important; }
+    .tag-option-btn.selected {
+      background: rgba(0, 229, 255, 0.16) !important;
+      border-color: var(--cyan) !important;
+      color: #fff !important;
+    }
+    .tag-option-btn.decade.selected {
+      background: rgba(255, 171, 0, 0.18) !important;
+      border-color: var(--amber) !important;
+      color: #fff !important;
+    }
+    .tag-modal-foot {
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      background: #0e141f;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     @media (max-width: 960px) {
       .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .providers-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -580,9 +800,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       .studio-grid { grid-template-columns: 1fr; }
       .studio-search-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .layout-cards-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .studio-dom-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
-      .form-grid-2, .form-grid-3, .kpi-grid, .providers-grid, .cand-grid { grid-template-columns: 1fr; }
+      .form-grid-2, .form-grid-3, .kpi-grid, .providers-grid, .cand-grid, .studio-dom-tabs { grid-template-columns: 1fr; }
       .field.span-2 { grid-column: span 1; }
     }
   </style>
@@ -725,7 +946,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
           <div class="field">
             <label data-i18n="lbl_prof_lang">Broadcast Content Language (lang)</label>
-            <select id="prof-lang">
+            <select id="prof-lang" onchange="onProfileLangChange()">
               <option value="fr">🇫🇷 Français (fr)</option>
               <option value="en">🇬🇧 English (en)</option>
               <option value="es">🇪🇸 Español (es)</option>
@@ -767,18 +988,20 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
-        <div style="overflow-x:auto;margin-top:16px">
+        <div style="margin-top:16px;padding:10px 14px;background:#0d131d;border:1px solid var(--border);border-radius:9px;font-size:0.82rem;color:var(--muted)" data-i18n="prof_rotation_hint">
+          💡 Select Systems, Genres &amp; Decades with visual tags (empty = All). Video duration, framing, color boost, and Mode 2B Card layout are configured per domain inside Studio — click any domain's Studio button on the right to customize it.
+        </div>
+
+        <div style="overflow-x:auto;margin-top:12px">
           <table class="playlist-table">
             <thead>
               <tr>
                 <th data-i18n="th_pl_on">On</th>
                 <th data-i18n="th_domain">Domain</th>
                 <th data-i18n="th_pl_count">Items / Turn</th>
-                <th data-i18n="th_pl_systems">Systems (Games CSV)</th>
-                <th data-i18n="th_pl_genres">Genres (CSV)</th>
-                <th data-i18n="th_pl_framing">Framing</th>
-                <th data-i18n="th_pl_cboost">Color Boost</th>
-                <th data-i18n="th_pl_vdur">Max Video (s)</th>
+                <th data-i18n="th_pl_systems_tags">Systems (Games)</th>
+                <th data-i18n="th_pl_genres_tags">Genres &amp; Decades</th>
+                <th data-i18n="th_pl_studio_link">Studio Profile (Card, Framing &amp; Video)</th>
               </tr>
             </thead>
             <tbody id="prof-playlist-tbody"></tbody>
@@ -1066,6 +1289,49 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 
     <!-- TAB 4: MODE 2B CARD STUDIO & REAL-TIME HUB75 DMD SIMULATOR -->
     <div id="tab-studio" class="tab-pane">
+      <!-- DOMAIN PROFILE SWITCHER BAR (PER-DOMAIN CARD + SEQUENCE PROFILES: GAMES / MOVIES / SERIES / ANIME) -->
+      <div class="studio-profile-bar">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:0.9rem;font-weight:700;color:#fff" data-i18n="studio_prof_bar_title">🎯 Domain Profiles on DMD:</span>
+            <select id="studio-top-dmd-select" onchange="onStudioTopDmdChange(this.value)" style="width:auto;min-width:250px;height:36px;line-height:34px;font-size:0.84rem;padding:0 32px 0 10px">
+              <option value="" data-i18n="studio_opt_no_dmd">— Select or connect a DMD —</option>
+            </select>
+            <button type="button" id="btn-studio-back-rotation" class="secondary mini-btn" onclick="returnToDmdRotationEditor()" style="display:none" data-i18n="btn_back_rotation">
+              ← Back to DMD Rotation
+            </button>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button type="button" class="mini-btn" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
+              💾 Save Domain Profile to DMD
+            </button>
+            <button type="button" class="secondary mini-btn" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
+              📋 Apply to All 4 Domains
+            </button>
+          </div>
+        </div>
+        <div id="studio-top-save-msg" class="toast" style="margin-top:6px"></div>
+
+        <div class="studio-dom-tabs" id="studio-dom-tabs">
+          <button type="button" class="studio-dom-tab active" data-st-dom="games" onclick="selectStudioDomainProfile('games')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_games">🕹️ Games Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">games</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-games">classic_split • tinted • 10s</span>
+          </button>
+          <button type="button" class="studio-dom-tab" data-st-dom="movies" onclick="selectStudioDomainProfile('movies')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_movies">🎬 Movies Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">movies</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-movies">poster_right • poster_wash • 12s</span>
+          </button>
+          <button type="button" class="studio-dom-tab" data-st-dom="series" onclick="selectStudioDomainProfile('series')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_series">📺 Series Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">series</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-series">classic_split • tinted • 10s</span>
+          </button>
+          <button type="button" class="studio-dom-tab" data-st-dom="anime" onclick="selectStudioDomainProfile('anime')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_anime">⛩️ Anime Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">anime</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-anime">badge_header • neon_border • 12s</span>
+          </button>
+        </div>
+      </div>
+
       <!-- TOP SEARCH & RESOLUTION BAR -->
       <div class="card" style="padding:16px 20px">
         <h2>
@@ -1079,7 +1345,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="studio-search-bar">
           <div class="field">
             <label data-i18n="lbl_domain">Domain</label>
-            <select id="studio-domain" onchange="loadStudioFilters()">
+            <select id="studio-domain" onchange="selectStudioDomainProfile(this.value)">
               <option value="games" data-i18n="opt_dom_games">🕹️ Retro Games (games)</option>
               <option value="movies" data-i18n="opt_dom_movies">🎬 Movies / Films (movies)</option>
               <option value="series" data-i18n="opt_dom_series">📺 TV Series (series)</option>
@@ -1257,6 +1523,16 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
                 </select>
               </div>
               <div class="field">
+                <label data-i18n="studio_lbl_vid_type">Preferred Clip Type (video_type)</label>
+                <select id="st-video-type" onchange="markStudioFullDirty()">
+                  <option value="any" data-i18n="opt_vtype_any">Any (Gameplay / Trailer / Clip)</option>
+                  <option value="trailer" data-i18n="opt_vtype_trailer">Official Trailer (Movies / Series)</option>
+                  <option value="opening" data-i18n="opt_vtype_opening">Opening Theme OP (Anime)</option>
+                  <option value="ending" data-i18n="opt_vtype_ending">Ending Theme ED (Anime)</option>
+                  <option value="pv" data-i18n="opt_vtype_pv">Promotional Video PV</option>
+                </select>
+              </div>
+              <div class="field">
                 <label data-i18n="lbl_video_mode">Video Framing Mode (video_mode)</label>
                 <select id="st-video-mode" onchange="markStudioFullDirty()">
                   <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
@@ -1367,8 +1643,11 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
               <button type="button" class="secondary" onclick="enqueueStudioSim('play_now')" data-i18n="studio_btn_play_sim_now">
                 ⚡ Broadcast Simulation Now
               </button>
-              <button type="button" class="secondary" onclick="saveStudioStyleToDmdProfile()" data-i18n="studio_btn_save_2b_prof">
-                💾 Save Mode 2B Style to DMD
+              <button type="button" class="secondary" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
+                💾 Save Domain Profile to DMD
+              </button>
+              <button type="button" class="secondary" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
+                📋 Apply to All 4 Domains
               </button>
             </div>
             <div id="studio-queue-action-msg" class="toast" style="margin-top:8px"></div>
@@ -1544,6 +1823,31 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           <button class="secondary" onclick="resetHistory('movies')" data-i18n="btn_reset_movies">Reset Movies</button>
           <button class="secondary" onclick="resetHistory('series')" data-i18n="btn_reset_series">Reset Series</button>
           <button class="secondary" onclick="resetHistory('anime')" data-i18n="btn_reset_anime">Reset Anime</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MULTI-SELECT TAG PICKER MODAL (SYSTEMS / GENRES & DECADES) -->
+  <div id="tag-picker-modal" class="modal-backdrop" onclick="if(event.target===this) closeTagPickerModal()">
+    <div class="tag-modal" role="dialog" aria-modal="true">
+      <div class="tag-modal-head">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
+          <b id="tag-modal-title" style="font-size:1.02rem;color:#fff">🏷️ Select Tags</b>
+          <button type="button" class="secondary mini-btn" onclick="closeTagPickerModal()" data-i18n="btn_close">✕ Close</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="tag-modal-search" oninput="renderTagPickerOptions()" data-i18n-placeholder="ph_tag_search" placeholder="🔍 Filter systems, genres, or decades..." style="flex:1;min-width:200px;height:36px" />
+          <button type="button" class="secondary mini-btn" onclick="clearAllTagModal()" data-i18n="btn_tag_clear_all">✨ All (No Filter)</button>
+          <button type="button" class="secondary mini-btn" onclick="selectVisibleTagModal()" data-i18n="btn_tag_select_vis">✓ Select Visible</button>
+        </div>
+      </div>
+      <div class="tag-modal-body" id="tag-modal-body"></div>
+      <div class="tag-modal-foot">
+        <span id="tag-modal-count" style="font-size:0.82rem;color:var(--muted)">0 selected</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="secondary" onclick="closeTagPickerModal()" data-i18n="btn_cancel">Cancel</button>
+          <button type="button" onclick="applyTagPickerModal()" data-i18n="btn_apply_tags">✓ Apply Selection</button>
         </div>
       </div>
     </div>
@@ -1820,7 +2124,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         studio_badge_full_0ms: "🎬 Full Sequence (0ms Queue)",
         studio_dmd_idle: "Idle / Ready for broadcast",
         studio_dmd_res_mismatch: "Note: Studio is {sw}×{sh} while '{d}' is {dw}×{dh} (will adapt on queue).",
-        pill_sim_studio: "🎨 Studio Sim"
+        pill_sim_studio: "🎨 Studio Sim",
+        prof_rotation_hint: "💡 Pick Systems, Genres & Decades with visual tags (empty = All). Video duration, framing, color boost, and Mode 2B Card layout are configured per domain inside Studio — click any domain's Studio button on the right to customize it.",
+        th_pl_systems_tags: "Systems (Games)",
+        th_pl_genres_tags: "Genres & Decades",
+        th_pl_studio_link: "Studio Profile (Card, Framing & Video)",
+        tag_all_systems: "✨ All systems",
+        tag_all_genres: "✨ All genres & eras",
+        btn_pick_tags: "+ Filter",
+        btn_edit_tags: "✎ Tags",
+        btn_open_dom_studio: "🎨 Studio {d} →",
+        tag_modal_sys_title: "🏷️ Select Game Systems",
+        tag_modal_gen_title: "🏷️ Select Genres & Decades — {d}",
+        tag_sec_systems: "🕹️ Arcade & Console Platforms",
+        tag_sec_genres: "🎭 Categories & Genres",
+        tag_sec_decades: "📅 Decades & Eras",
+        ph_tag_search: "🔍 Filter systems, genres, or decades...",
+        btn_tag_clear_all: "✨ All (No Filter)",
+        btn_tag_select_vis: "✓ Select Visible",
+        btn_cancel: "Cancel",
+        btn_apply_tags: "✓ Apply Selection",
+        tag_selected_count: "{n} tag(s) selected (0 = All)",
+        tag_more_fmt: "+{n} more",
+        studio_prof_bar_title: "🎯 Domain Profiles on DMD:",
+        btn_back_rotation: "← Back to DMD Rotation",
+        studio_btn_save_dom_prof: "💾 Save Domain Profile to DMD",
+        studio_btn_copy_all_doms: "📋 Apply to All 4 Domains",
+        dom_prof_games: "🕹️ Games Profile",
+        dom_prof_movies: "🎬 Movies Profile",
+        dom_prof_series: "📺 Series Profile",
+        dom_prof_anime: "⛩️ Anime Profile",
+        studio_lbl_vid_type: "Preferred Clip Type (video_type)",
+        opt_vtype_any: "Any (Gameplay / Trailer / Clip)",
+        opt_vtype_trailer: "Official Trailer (Movies / Series)",
+        opt_vtype_opening: "Opening Theme OP (Anime)",
+        opt_vtype_ending: "Ending Theme ED (Anime)",
+        opt_vtype_pv: "Promotional Video PV",
+        msg_studio_dom_saved: "✓ Saved '{dom}' Studio profile on DMD '{d}'!",
+        msg_studio_all_doms_saved: "✓ Applied Studio profile across all 4 domains on DMD '{d}'!"
       },
       fr: {
         header_sub: "MQTT Retain (:1883) + UDP Temps Réel • Consume-Once • Matrices LED HUB75",
@@ -2091,7 +2432,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         studio_badge_full_0ms: "🎬 Séquence Complète (Queue 0ms)",
         studio_dmd_idle: "En attente / Prêt à diffuser",
         studio_dmd_res_mismatch: "Note : le Studio est en {sw}×{sh} alors que « {d} » est en {dw}×{dh} (adaptation auto à l'envoi).",
-        pill_sim_studio: "🎨 Sim Studio"
+        pill_sim_studio: "🎨 Sim Studio",
+        prof_rotation_hint: "💡 Sélectionne les Systèmes, Genres et Époques par tags visuels (vide = Tous). La durée vidéo, le cadrage, le boost couleur et le design de la Card Mode 2B se règlent par domaine dans le Studio via le bouton à droite de chaque ligne.",
+        th_pl_systems_tags: "Systèmes (Jeux)",
+        th_pl_genres_tags: "Genres & Époques",
+        th_pl_studio_link: "Profil Studio (Card, Cadrage & Vidéo)",
+        tag_all_systems: "✨ Tous les systèmes",
+        tag_all_genres: "✨ Tous genres & époques",
+        btn_pick_tags: "+ Filtrer",
+        btn_edit_tags: "✎ Tags",
+        btn_open_dom_studio: "🎨 Studio {d} →",
+        tag_modal_sys_title: "🏷️ Choisir les Systèmes de Jeux",
+        tag_modal_gen_title: "🏷️ Choisir Genres & Époques — {d}",
+        tag_sec_systems: "🕹️ Bornes d'Arcade & Consoles Rétro",
+        tag_sec_genres: "🎭 Catégories & Genres",
+        tag_sec_decades: "📅 Décennies & Époques",
+        ph_tag_search: "🔍 Filtrer un système, genre ou décennie...",
+        btn_tag_clear_all: "✨ Tous (Aucun filtre)",
+        btn_tag_select_vis: "✓ Cocher visibles",
+        btn_cancel: "Annuler",
+        btn_apply_tags: "✓ Valider les tags",
+        tag_selected_count: "{n} tag(s) sélectionné(s) (0 = Tous)",
+        tag_more_fmt: "+{n} autres",
+        studio_prof_bar_title: "🎯 Profils par Domaine du DMD :",
+        btn_back_rotation: "← Retour à la Rotation du DMD",
+        studio_btn_save_dom_prof: "💾 Sauver ce Profil Domaine sur le DMD",
+        studio_btn_copy_all_doms: "📋 Appliquer aux 4 Domaines",
+        dom_prof_games: "🕹️ Profil Jeux",
+        dom_prof_movies: "🎬 Profil Films",
+        dom_prof_series: "📺 Profil Séries",
+        dom_prof_anime: "⛩️ Profil Anime",
+        studio_lbl_vid_type: "Type d'Extrait Préféré (video_type)",
+        opt_vtype_any: "Tous (Gameplay / Trailer / Extrait)",
+        opt_vtype_trailer: "Bande-Annonce Officielle (Films / Séries)",
+        opt_vtype_opening: "Générique Opening OP (Anime)",
+        opt_vtype_ending: "Générique Ending ED (Anime)",
+        opt_vtype_pv: "Vidéo Promo PV",
+        msg_studio_dom_saved: "✓ Profil Studio « {dom} » enregistré sur le DMD « {d} » !",
+        msg_studio_all_doms_saved: "✓ Profil Studio appliqué aux 4 domaines sur le DMD « {d} » !"
       },
       es: {
         header_sub: "MQTT Retain (:1883) + UDP en Tiempo Real • Consume-Once • Matrices LED HUB75",
@@ -2362,7 +2740,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         studio_badge_full_0ms: "🎬 Secuencia Completa (Cola 0ms)",
         studio_dmd_idle: "En espera / Listo para emitir",
         studio_dmd_res_mismatch: "Nota: el Estudio usa {sw}×{sh} y '{d}' usa {dw}×{dh} (se adaptará al encolar).",
-        pill_sim_studio: "🎨 Sim Estudio"
+        pill_sim_studio: "🎨 Sim Estudio",
+        prof_rotation_hint: "💡 Elige Sistemas, Géneros y Décadas con etiquetas visuales (vacío = Todos). La duración de vídeo, encuadre, realce de color y diseño de Card Modo 2B se configuran por dominio en el Estudio pulsando el botón derecho de cada fila.",
+        th_pl_systems_tags: "Sistemas (Juegos)",
+        th_pl_genres_tags: "Géneros y Décadas",
+        th_pl_studio_link: "Perfil Estudio (Card, Encuadre y Vídeo)",
+        tag_all_systems: "✨ Todos los sistemas",
+        tag_all_genres: "✨ Todos los géneros y épocas",
+        btn_pick_tags: "+ Filtrar",
+        btn_edit_tags: "✎ Etiquetas",
+        btn_open_dom_studio: "🎨 Estudio {d} →",
+        tag_modal_sys_title: "🏷️ Elegir Sistemas de Juegos",
+        tag_modal_gen_title: "🏷️ Elegir Géneros y Décadas — {d}",
+        tag_sec_systems: "🕹️ Plataformas Arcade y Consolas Retro",
+        tag_sec_genres: "🎭 Categorías y Géneros",
+        tag_sec_decades: "📅 Décadas y Épocas",
+        ph_tag_search: "🔍 Filtrar sistemas, géneros o décadas...",
+        btn_tag_clear_all: "✨ Todos (Sin filtro)",
+        btn_tag_select_vis: "✓ Marcar visibles",
+        btn_cancel: "Cancelar",
+        btn_apply_tags: "✓ Aplicar selección",
+        tag_selected_count: "{n} etiqueta(s) seleccionada(s) (0 = Todos)",
+        tag_more_fmt: "+{n} más",
+        studio_prof_bar_title: "🎯 Perfiles por Dominio del DMD:",
+        btn_back_rotation: "← Volver a la Rotación del DMD",
+        studio_btn_save_dom_prof: "💾 Guardar Perfil de Dominio en DMD",
+        studio_btn_copy_all_doms: "📋 Aplicar a los 4 Dominios",
+        dom_prof_games: "🕹️ Perfil Juegos",
+        dom_prof_movies: "🎬 Perfil Películas",
+        dom_prof_series: "📺 Perfil Series",
+        dom_prof_anime: "⛩️ Perfil Anime",
+        studio_lbl_vid_type: "Tipo de Clip Preferido (video_type)",
+        opt_vtype_any: "Cualquiera (Gameplay / Tráiler / Clip)",
+        opt_vtype_trailer: "Tráiler Oficial (Películas / Series)",
+        opt_vtype_opening: "Opening OP (Anime)",
+        opt_vtype_ending: "Ending ED (Anime)",
+        opt_vtype_pv: "Vídeo Promocional PV",
+        msg_studio_dom_saved: "✓ ¡Perfil Estudio '{dom}' guardado en el DMD '{d}'!",
+        msg_studio_all_doms_saved: "✓ ¡Perfil Estudio aplicado a los 4 dominios en el DMD '{d}'!"
       }
     };
 
@@ -2518,7 +2933,12 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       loadDomainFilters();
       loadStudioFilters();
       updateStudioSliderLabels();
+      if (typeof updateStudioDomainTabsUi === 'function') updateStudioDomainTabsUi();
       renderStudioActiveDmdBanner();
+      const profCard = document.getElementById('dmd-profile-editor-card');
+      if (profCard && profCard.style.display !== 'none' && typeof renderPlaylistEditorRows === 'function') {
+        renderPlaylistEditorRows();
+      }
     }
 
     function switchTab(name) {
@@ -3115,22 +3535,30 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       const stSel = document.getElementById('studio-target-dmd');
+      const stTopSel = document.getElementById('studio-top-dmd-select');
       if (stSel) {
-        const stPrev = stSel.value;
+        const stPrev = stSel.value || (stTopSel ? stTopSel.value : '');
         let stHtml = `<option value="">${esc(t('studio_opt_no_dmd'))}</option>`;
         known.forEach((lbl, id) => {
           stHtml += `<option value="${esc(id)}">📺 ${esc(lbl)}</option>`;
         });
         stSel.innerHTML = stHtml;
+        if (stTopSel) stTopSel.innerHTML = stHtml;
+        let chosen = '';
         if (stPrev && known.has(stPrev)) {
-          stSel.value = stPrev;
+          chosen = stPrev;
         } else if (known.size > 0) {
           const activeCli = (lastClients || []).find(
             c => c && c.dmd_id && (c.udp_streaming || c.is_playing || c.playing_title)
           );
-          stSel.value = (activeCli && known.has(activeCli.dmd_id))
+          chosen = (activeCli && known.has(activeCli.dmd_id))
             ? activeCli.dmd_id
             : Array.from(known.keys())[0];
+        }
+        stSel.value = chosen;
+        if (stTopSel) stTopSel.value = chosen;
+        if (chosen && typeof studioLoadedDmdId !== 'undefined' && studioLoadedDmdId !== chosen) {
+          hydrateStudioDraftStylesFromCache(chosen);
         }
       }
     }
@@ -3150,66 +3578,459 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    /* =========================================================================
+       LOCALIZED FILTER CATALOG CACHE, VISUAL TAG PICKER & PER-DOMAIN PROFILES
+       ========================================================================= */
+    const filterCatalogCache = new Map();
+
+    async function ensureDomainFilterCatalog(dom, lang) {
+      const l = lang || 'fr';
+      const key = `${dom}:${l}`;
+      if (filterCatalogCache.has(key)) return filterCatalogCache.get(key);
+      const entry = {
+        systems: [],
+        genres: [],
+        decades: [],
+        sysMap: new Map(),
+        genMap: new Map(),
+        decMap: new Map()
+      };
+      try {
+        const r = await apiFetch(`/api/v1/${dom}/filters?lang=${encodeURIComponent(l)}`);
+        if (r.ok) {
+          const d = await r.json();
+          entry.systems = Array.isArray(d.systems) ? d.systems : [];
+          entry.genres = Array.isArray(d.genres) ? d.genres : [];
+          entry.decades = Array.isArray(d.decades) ? d.decades : [];
+          entry.systems.forEach(s => { if (s && s.id) entry.sysMap.set(s.id, s.label || s.id); });
+          entry.genres.forEach(g => { if (g && g.id) entry.genMap.set(g.id, g.label || g.id); });
+          entry.decades.forEach(dc => { if (dc && dc.id) entry.decMap.set(dc.id, dc.label || dc.id); });
+          filterCatalogCache.set(key, entry);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      return entry;
+    }
+
+    async function preloadAllDomainFilterCatalogs(lang) {
+      await Promise.all(CANONICAL_DOMAINS.map(d => ensureDomainFilterCatalog(d, lang)));
+    }
+
+    function defaultStudioStyleForDomain(dom) {
+      const base = {
+        include_card_intro: true,
+        card_layout: 'classic_split',
+        card_theme: 'tinted',
+        card_font: 'arcade_pixel',
+        card_accent_color: 'auto',
+        include_poster: true,
+        show_badge: true,
+        show_year: true,
+        show_rating: true,
+        include_synopsis: true,
+        text_scroll_speed: '4',
+        card_hold_s: 0.9,
+        jacket_panorama: true,
+        marquee_panorama: false,
+        snapshot_panorama_count: 1,
+        panorama_duration_s: 3.5,
+        include_video: true,
+        video_type: 'any',
+        video_max_duration_s: 10.0,
+        video_fps: 15,
+        video_mode: 'auto_action',
+        color_boost: 'auto'
+      };
+      const overrides = {
+        games: {
+          card_layout: 'classic_split',
+          card_theme: 'tinted',
+          card_font: 'arcade_pixel',
+          marquee_panorama: true,
+          snapshot_panorama_count: 2,
+          video_max_duration_s: 10.0,
+          color_boost: 'pixel_art',
+          video_type: 'any'
+        },
+        movies: {
+          card_layout: 'poster_right',
+          card_theme: 'poster_wash',
+          card_font: 'clean_sans',
+          snapshot_panorama_count: 1,
+          video_max_duration_s: 12.0,
+          color_boost: 'cinema',
+          video_type: 'trailer'
+        },
+        series: {
+          card_layout: 'classic_split',
+          card_theme: 'tinted',
+          card_font: 'clean_sans',
+          snapshot_panorama_count: 1,
+          video_max_duration_s: 10.0,
+          color_boost: 'cinema',
+          video_type: 'trailer'
+        },
+        anime: {
+          card_layout: 'badge_header',
+          card_theme: 'neon_border',
+          card_font: 'clean_sans',
+          snapshot_panorama_count: 2,
+          video_max_duration_s: 12.0,
+          color_boost: 'anime',
+          video_type: 'opening'
+        }
+      };
+      return Object.assign(base, overrides[dom] || {});
+    }
+
+    function normalizeDomainStylesObj(rawDomainStyles, fallbackCardStyle) {
+      const out = {};
+      CANONICAL_DOMAINS.forEach(dom => {
+        const base = defaultStudioStyleForDomain(dom);
+        if (fallbackCardStyle && typeof fallbackCardStyle === 'object') {
+          Object.assign(base, fallbackCardStyle);
+        }
+        if (rawDomainStyles && rawDomainStyles[dom] && typeof rawDomainStyles[dom] === 'object') {
+          Object.assign(base, rawDomainStyles[dom]);
+        }
+        out[dom] = base;
+      });
+      return out;
+    }
+
+    function shortDomainDisplayName(dom) {
+      const names = {
+        games: t('opt_dom_games'),
+        movies: t('opt_dom_movies'),
+        series: t('opt_dom_series'),
+        anime: t('opt_dom_anime')
+      };
+      return String(names[dom] || dom.toUpperCase()).split(' (')[0].trim();
+    }
+
     function defaultPlaylistRows(lang) {
       const l = lang || 'fr';
       return [
-        {enabled: true, domain: 'games', count: 2, lang: l, systems: ['arcade', 'mame', 'neogeo', 'cps2', 'snes', 'megadrive'], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0},
-        {enabled: true, domain: 'movies', count: 1, lang: l, systems: [], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0},
-        {enabled: false, domain: 'series', count: 1, lang: l, systems: [], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0},
-        {enabled: false, domain: 'anime', count: 1, lang: l, systems: [], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0}
+        {enabled: true, domain: 'games', count: 2, lang: l, systems: ['arcade', 'mame', 'neogeo', 'cps2', 'snes', 'megadrive'], genres: [], decades: []},
+        {enabled: true, domain: 'movies', count: 1, lang: l, systems: [], genres: [], decades: []},
+        {enabled: false, domain: 'series', count: 1, lang: l, systems: [], genres: [], decades: []},
+        {enabled: false, domain: 'anime', count: 1, lang: l, systems: [], genres: [], decades: []}
       ];
     }
 
-    function renderPlaylistEditorRows(playlist) {
-      const tb = document.getElementById('prof-playlist-tbody');
-      if (!tb) return;
+    function toUniqueTokenArray(val) {
+      const raw = Array.isArray(val) ? val : (typeof val === 'string' && val.trim() ? val.split(',') : []);
+      const seen = new Set();
+      const out = [];
+      raw.forEach(item => {
+        const tok = String(item || '').trim();
+        if (tok && !seen.has(tok)) {
+          seen.add(tok);
+          out.push(tok);
+        }
+      });
+      return out;
+    }
+
+    let editingProfileDmdId = '';
+    let editingProfileCardStyle = null;
+    let editingProfileDomainStyles = normalizeDomainStylesObj(null, null);
+    let editingProfileSlots = {};
+
+    function hydrateEditingProfileSlots(playlist, lang) {
       const byDom = {};
       (playlist || []).forEach(s => { if (s && s.domain) byDom[s.domain] = s; });
-      const rows = CANONICAL_DOMAINS.map(dom => byDom[dom] || {
-        enabled: dom === 'games',
-        domain: dom,
-        count: 1,
-        systems: dom === 'games' ? ['arcade', 'neogeo', 'snes', 'megadrive'] : [],
-        genres: [],
-        video_mode: 'auto_action',
-        color_boost: 'auto',
-        video_max_duration_s: 8.0
+      const defaults = {};
+      defaultPlaylistRows(lang).forEach(d => { defaults[d.domain] = d; });
+      const nextSlots = {};
+      CANONICAL_DOMAINS.forEach(dom => {
+        const src = byDom[dom] || defaults[dom];
+        nextSlots[dom] = {
+          enabled: src.enabled !== false,
+          domain: dom,
+          count: Math.max(1, Math.min(10, parseInt(src.count, 10) || 1)),
+          systems: dom === 'games' ? toUniqueTokenArray(src.systems) : [],
+          genres: toUniqueTokenArray(src.genres),
+          decades: toUniqueTokenArray(src.decades),
+          min_rating: Number(src.min_rating != null ? src.min_rating : 6.0)
+        };
       });
-      tb.innerHTML = rows.map(s => {
-        const dom = s.domain;
+      editingProfileSlots = nextSlots;
+    }
+
+    function onPlSlotToggle(dom, checked) {
+      if (editingProfileSlots[dom]) {
+        editingProfileSlots[dom].enabled = Boolean(checked);
+      }
+    }
+
+    function onPlSlotCount(dom, val) {
+      if (editingProfileSlots[dom]) {
+        editingProfileSlots[dom].count = Math.max(1, Math.min(10, parseInt(val, 10) || 1));
+      }
+    }
+
+    function removeSlotTag(dom, field, tagId) {
+      const slot = editingProfileSlots[dom];
+      if (!slot || !Array.isArray(slot[field])) return;
+      slot[field] = slot[field].filter(x => x !== tagId);
+      renderPlaylistEditorRows();
+    }
+
+    function summarizeDomainStudioStyleBadges(st) {
+      const s = st || defaultStudioStyleForDomain('games');
+      const cardTag = s.include_card_intro !== false ? s.card_layout : 'card:off';
+      const vidTag = s.include_video !== false
+        ? `🎬 ≤${Number(s.video_max_duration_s != null ? s.video_max_duration_s : 10).toFixed(0)}s`
+        : '🎬 OFF';
+      const snapCnt = Number(s.snapshot_panorama_count || 0);
+      const snapTag = snapCnt > 0 ? `<span class="pill info">📸×${snapCnt}</span>` : '';
+      return `
+        <span class="pill info">${esc(cardTag)}</span>
+        <span class="pill info">${esc(s.card_theme || 'tinted')}</span>
+        <span class="pill warn">${esc(s.color_boost || 'auto')} • ${esc(s.video_mode || 'auto_action')}</span>
+        <span class="pill ok">${esc(vidTag)}</span>
+        ${snapTag}
+      `;
+    }
+
+    function renderPlaylistEditorRows() {
+      const tb = document.getElementById('prof-playlist-tbody');
+      if (!tb) return;
+      if (!Object.keys(editingProfileSlots).length) {
+        hydrateEditingProfileSlots(defaultPlaylistRows('fr'), 'fr');
+      }
+      const profLang = (document.getElementById('prof-lang') || {}).value || 'fr';
+      const maxVisibleChips = 4;
+
+      tb.innerHTML = CANONICAL_DOMAINS.map(dom => {
+        const s = editingProfileSlots[dom] || {enabled: false, domain: dom, count: 1, systems: [], genres: [], decades: []};
         const isGames = dom === 'games';
-        const sysStr = Array.isArray(s.systems) ? s.systems.join(',') : (s.systems || '');
-        const genStr = Array.isArray(s.genres) ? s.genres.join(',') : (s.genres || '');
-        const vm = s.video_mode || 'auto_action';
-        const cb = String(s.color_boost || 'auto');
-        const dur = Number(s.video_max_duration_s != null ? s.video_max_duration_s : 8.0);
+        const cat = filterCatalogCache.get(`${dom}:${profLang}`);
+        const sysList = isGames ? (s.systems || []) : [];
+        const genList = s.genres || [];
+        const decList = s.decades || [];
+
+        let sysCellHtml = '<span style="color:var(--muted);font-size:0.82rem">—</span>';
+        if (isGames) {
+          let chips = '';
+          if (!sysList.length) {
+            chips = `<span class="tag-all-pill">${esc(t('tag_all_systems'))}</span>`;
+          } else {
+            chips = sysList.slice(0, maxVisibleChips).map(id => {
+              const lbl = (cat && cat.sysMap.get(id)) || id;
+              const safeId = esc(id).replace(/'/g, "\\'");
+              return `<span class="tag-chip" title="${esc(id)}">${esc(lbl)}<button type="button" class="tag-chip-rm" onclick="removeSlotTag('games','systems','${safeId}')">✕</button></span>`;
+            }).join('');
+            if (sysList.length > maxVisibleChips) {
+              chips += `<span class="pill info">${esc(t('tag_more_fmt', {n: sysList.length - maxVisibleChips}))}</span>`;
+            }
+          }
+          const btnLbl = sysList.length ? t('btn_edit_tags') : t('btn_pick_tags');
+          sysCellHtml = `<div class="tag-cell">${chips}<button type="button" class="tag-pick-btn" onclick="openTagPickerModal('games','systems')">${esc(btnLbl)}</button></div>`;
+        }
+
+        const combinedGenDec = [
+          ...genList.map(id => ({field: 'genres', id, isDec: false, lbl: (cat && cat.genMap.get(id)) || id})),
+          ...decList.map(id => ({field: 'decades', id, isDec: true, lbl: '📅 ' + ((cat && cat.decMap.get(id)) || id)}))
+        ];
+        let genChips = '';
+        if (!combinedGenDec.length) {
+          genChips = `<span class="tag-all-pill">${esc(t('tag_all_genres'))}</span>`;
+        } else {
+          genChips = combinedGenDec.slice(0, maxVisibleChips).map(it => {
+            const safeId = esc(it.id).replace(/'/g, "\\'");
+            const cls = it.isDec ? 'tag-chip decade' : 'tag-chip';
+            return `<span class="${cls}" title="${esc(it.id)}">${esc(it.lbl)}<button type="button" class="tag-chip-rm" onclick="removeSlotTag('${dom}','${it.field}','${safeId}')">✕</button></span>`;
+          }).join('');
+          if (combinedGenDec.length > maxVisibleChips) {
+            genChips += `<span class="pill info">${esc(t('tag_more_fmt', {n: combinedGenDec.length - maxVisibleChips}))}</span>`;
+          }
+        }
+        const genBtnLbl = combinedGenDec.length ? t('btn_edit_tags') : t('btn_pick_tags');
+        const genCellHtml = `<div class="tag-cell">${genChips}<button type="button" class="tag-pick-btn" onclick="openTagPickerModal('${dom}','genres_decades')">${esc(genBtnLbl)}</button></div>`;
+
+        const domStyle = (editingProfileDomainStyles && editingProfileDomainStyles[dom]) || defaultStudioStyleForDomain(dom);
+        const studioBtnText = t('btn_open_dom_studio', {d: dom.toUpperCase()});
+        const studioCellHtml = `<div class="studio-link-cell">
+          <div class="studio-summary-badges">${summarizeDomainStudioStyleBadges(domStyle)}</div>
+          <button type="button" class="studio-jump-btn" onclick="openStudioForDmdDomainFromEditor('${dom}')">${esc(studioBtnText)}</button>
+        </div>`;
+
         return `<tr data-pl-domain="${esc(dom)}">
-          <td><input type="checkbox" class="pl-enabled" style="width:20px;height:20px" ${s.enabled !== false ? 'checked' : ''} /></td>
-          <td><b>${esc(dom.toUpperCase())}</b></td>
-          <td><input type="number" class="pl-count" min="1" max="10" value="${esc(s.count || 1)}" style="width:70px" /></td>
-          <td><input type="text" class="pl-systems" value="${esc(sysStr)}" placeholder="${isGames ? 'arcade,neogeo,megadrive' : '—'}" ${isGames ? '' : 'disabled'} /></td>
-          <td><input type="text" class="pl-genres" value="${esc(genStr)}" placeholder="fighting,action..." /></td>
-          <td>
-            <select class="pl-vmode">
-              <option value="auto_action" ${vm === 'auto_action' ? 'selected' : ''}>auto_action</option>
-              <option value="panorama" ${vm === 'panorama' ? 'selected' : ''}>panorama</option>
-              <option value="center_crop" ${vm === 'center_crop' ? 'selected' : ''}>center_crop</option>
-            </select>
-          </td>
-          <td>
-            <select class="pl-cboost">
-              <option value="auto" ${cb === 'auto' ? 'selected' : ''}>auto</option>
-              <option value="pixel_art" ${cb === 'pixel_art' ? 'selected' : ''}>pixel_art</option>
-              <option value="anime" ${cb === 'anime' ? 'selected' : ''}>anime</option>
-              <option value="cinema" ${cb === 'cinema' ? 'selected' : ''}>cinema</option>
-            </select>
-          </td>
-          <td><input type="number" class="pl-vdur" min="1.5" max="120" step="0.5" value="${esc(dur)}" style="width:82px" /></td>
+          <td><input type="checkbox" class="pl-enabled" style="width:20px;height:20px" ${s.enabled !== false ? 'checked' : ''} onchange="onPlSlotToggle('${dom}', this.checked)" /></td>
+          <td><b>${esc(shortDomainDisplayName(dom))}</b></td>
+          <td><input type="number" class="pl-count" min="1" max="10" value="${esc(s.count || 1)}" style="width:70px" onchange="onPlSlotCount('${dom}', this.value)" /></td>
+          <td>${sysCellHtml}</td>
+          <td>${genCellHtml}</td>
+          <td>${studioCellHtml}</td>
         </tr>`;
       }).join('');
     }
 
-    let editingProfileCardStyle = null;
+    async function onProfileLangChange() {
+      const lang = (document.getElementById('prof-lang') || {}).value || 'fr';
+      await preloadAllDomainFilterCatalogs(lang);
+      renderPlaylistEditorRows();
+    }
+
+    /* ----- Multi-Select Tag Picker Modal ----- */
+    let tagModalState = {
+      open: false,
+      domain: 'games',
+      mode: 'systems',
+      catalog: {systems: [], genres: [], decades: []},
+      selectedSystems: new Set(),
+      selectedGenres: new Set(),
+      selectedDecades: new Set()
+    };
+
+    async function openTagPickerModal(dom, mode) {
+      const lang = (document.getElementById('prof-lang') || {}).value || 'fr';
+      const cat = await ensureDomainFilterCatalog(dom, lang);
+      const slot = editingProfileSlots[dom] || {systems: [], genres: [], decades: []};
+      tagModalState = {
+        open: true,
+        domain: dom,
+        mode: mode,
+        catalog: cat,
+        selectedSystems: new Set(slot.systems || []),
+        selectedGenres: new Set(slot.genres || []),
+        selectedDecades: new Set(slot.decades || [])
+      };
+      const titleEl = document.getElementById('tag-modal-title');
+      if (titleEl) {
+        titleEl.textContent = mode === 'systems'
+          ? t('tag_modal_sys_title')
+          : t('tag_modal_gen_title', {d: shortDomainDisplayName(dom)});
+      }
+      const searchEl = document.getElementById('tag-modal-search');
+      if (searchEl) searchEl.value = '';
+      renderTagPickerOptions();
+      const modal = document.getElementById('tag-picker-modal');
+      if (modal) modal.classList.add('open');
+      if (searchEl) setTimeout(() => searchEl.focus(), 30);
+    }
+
+    function closeTagPickerModal() {
+      tagModalState.open = false;
+      const modal = document.getElementById('tag-picker-modal');
+      if (modal) modal.classList.remove('open');
+    }
+
+    function filterTagItemsByQuery(items, q) {
+      if (!q) return items;
+      const low = q.toLowerCase();
+      return items.filter(it =>
+        String(it.label || '').toLowerCase().includes(low) ||
+        String(it.id || '').toLowerCase().includes(low)
+      );
+    }
+
+    function renderTagPickerOptions() {
+      const body = document.getElementById('tag-modal-body');
+      const countEl = document.getElementById('tag-modal-count');
+      if (!body) return;
+      const q = ((document.getElementById('tag-modal-search') || {}).value || '').trim();
+
+      let html = '';
+      let totalSelected = 0;
+
+      if (tagModalState.mode === 'systems') {
+        totalSelected = tagModalState.selectedSystems.size;
+        const visSys = filterTagItemsByQuery(tagModalState.catalog.systems || [], q);
+        html += `<div class="tag-group-title">${esc(t('tag_sec_systems'))} (${visSys.length})</div>`;
+        html += `<div class="tag-options-grid">` + visSys.map(it => {
+          const sel = tagModalState.selectedSystems.has(it.id);
+          const safeId = esc(it.id).replace(/'/g, "\\'");
+          return `<button type="button" class="tag-option-btn${sel ? ' selected' : ''}" onclick="toggleTagModalItem('systems','${safeId}')" title="${esc(it.id)}">
+            <span class="tag-opt-check">${sel ? '✓' : ''}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.label)} <small style="color:var(--muted)">(${esc(it.id)})</small></span>
+          </button>`;
+        }).join('') + `</div>`;
+      } else {
+        totalSelected = tagModalState.selectedGenres.size + tagModalState.selectedDecades.size;
+        const visGen = filterTagItemsByQuery(tagModalState.catalog.genres || [], q);
+        const visDec = filterTagItemsByQuery(tagModalState.catalog.decades || [], q);
+
+        html += `<div class="tag-group-title">${esc(t('tag_sec_genres'))} (${visGen.length})</div>`;
+        html += `<div class="tag-options-grid">` + visGen.map(it => {
+          const sel = tagModalState.selectedGenres.has(it.id);
+          const safeId = esc(it.id).replace(/'/g, "\\'");
+          return `<button type="button" class="tag-option-btn${sel ? ' selected' : ''}" onclick="toggleTagModalItem('genres','${safeId}')" title="${esc(it.id)}">
+            <span class="tag-opt-check">${sel ? '✓' : ''}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.label)}</span>
+          </button>`;
+        }).join('') + `</div>`;
+
+        if ((tagModalState.catalog.decades || []).length) {
+          html += `<div class="tag-group-title">${esc(t('tag_sec_decades'))} (${visDec.length})</div>`;
+          html += `<div class="tag-options-grid">` + visDec.map(it => {
+            const sel = tagModalState.selectedDecades.has(it.id);
+            const safeId = esc(it.id).replace(/'/g, "\\'");
+            return `<button type="button" class="tag-option-btn${sel ? ' selected' : ''}" onclick="toggleTagModalItem('decades','${safeId}')" title="${esc(it.id)}">
+              <span class="tag-opt-check">${sel ? '✓' : ''}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📅 ${esc(it.label)}</span>
+            </button>`;
+          }).join('') + `</div>`;
+        }
+      }
+
+      body.innerHTML = html;
+      if (countEl) {
+        countEl.textContent = t('tag_selected_count', {n: totalSelected});
+      }
+    }
+
+    function toggleTagModalItem(group, id) {
+      const targetSet = group === 'systems'
+        ? tagModalState.selectedSystems
+        : (group === 'decades' ? tagModalState.selectedDecades : tagModalState.selectedGenres);
+      if (targetSet.has(id)) targetSet.delete(id);
+      else targetSet.add(id);
+      renderTagPickerOptions();
+    }
+
+    function clearAllTagModal() {
+      if (tagModalState.mode === 'systems') {
+        tagModalState.selectedSystems.clear();
+      } else {
+        tagModalState.selectedGenres.clear();
+        tagModalState.selectedDecades.clear();
+      }
+      renderTagPickerOptions();
+    }
+
+    function selectVisibleTagModal() {
+      const q = ((document.getElementById('tag-modal-search') || {}).value || '').trim();
+      if (tagModalState.mode === 'systems') {
+        filterTagItemsByQuery(tagModalState.catalog.systems || [], q).forEach(it => tagModalState.selectedSystems.add(it.id));
+      } else {
+        filterTagItemsByQuery(tagModalState.catalog.genres || [], q).forEach(it => tagModalState.selectedGenres.add(it.id));
+        filterTagItemsByQuery(tagModalState.catalog.decades || [], q).forEach(it => tagModalState.selectedDecades.add(it.id));
+      }
+      renderTagPickerOptions();
+    }
+
+    function applyTagPickerModal() {
+      const dom = tagModalState.domain;
+      if (!editingProfileSlots[dom]) return;
+      if (tagModalState.mode === 'systems') {
+        editingProfileSlots[dom].systems = Array.from(tagModalState.selectedSystems);
+      } else {
+        editingProfileSlots[dom].genres = Array.from(tagModalState.selectedGenres);
+        editingProfileSlots[dom].decades = Array.from(tagModalState.selectedDecades);
+      }
+      closeTagPickerModal();
+      renderPlaylistEditorRows();
+    }
+
+    document.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape' && tagModalState.open) {
+        closeTagPickerModal();
+      }
+    });
 
     async function openProfileEditor(dmdId) {
       const card = document.getElementById('dmd-profile-editor-card');
@@ -3228,6 +4049,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         } catch (_) {}
       }
       if (!prof) {
+        const defLang = (lastServerConfig && lastServerConfig.default_lang) || 'fr';
         prof = {
           dmd_id: dmdId || 'esp32_passive_1',
           display_name: dmdId || 'ESP32 Passive DMD',
@@ -3238,19 +4060,23 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           height: 32,
           udp_ip: '',
           udp_port: 4210,
-          lang: (lastServerConfig && lastServerConfig.default_lang) || 'fr',
+          lang: defLang,
           inter_item_gap_s: 1.0,
-          playlist: defaultPlaylistRows((lastServerConfig && lastServerConfig.default_lang) || 'fr')
+          domain_styles: normalizeDomainStylesObj(null, null),
+          playlist: defaultPlaylistRows(defLang)
         };
       }
+      editingProfileDmdId = prof.dmd_id || '';
       editingProfileCardStyle = prof.card_style || null;
+      editingProfileDomainStyles = normalizeDomainStylesObj(prof.domain_styles, prof.card_style);
       document.getElementById('prof-dmd-id').value = prof.dmd_id || '';
       document.getElementById('prof-display-name').value = prof.display_name || prof.dmd_id || '';
       const modeVal = prof.config_source === 'client'
         ? 'client'
         : (prof.supports_local_card === false ? 'server_passive' : 'server_hybrid');
       document.getElementById('prof-mode').value = modeVal;
-      document.getElementById('prof-lang').value = prof.lang || 'fr';
+      const profLang = prof.lang || 'fr';
+      document.getElementById('prof-lang').value = profLang;
       const resVal = `${prof.width || 128}x${prof.height || 32}`;
       const resEl = document.getElementById('prof-res');
       if (Array.from(resEl.options).some(o => o.value === resVal)) {
@@ -3260,7 +4086,9 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('prof-udp-ip').value = prof.udp_ip || '';
       document.getElementById('prof-udp-port').value = String(prof.udp_port || 4210);
       document.getElementById('prof-gap-s').value = String(prof.inter_item_gap_s != null ? prof.inter_item_gap_s : 1.0);
-      renderPlaylistEditorRows(prof.playlist || defaultPlaylistRows(prof.lang));
+      hydrateEditingProfileSlots(prof.playlist || defaultPlaylistRows(profLang), profLang);
+      await preloadAllDomainFilterCatalogs(profLang);
+      renderPlaylistEditorRows();
       card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
     }
 
@@ -3283,21 +4111,28 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       const [w, h] = document.getElementById('prof-res').value.split('x').map(Number);
       const lang = document.getElementById('prof-lang').value || 'fr';
 
-      const playlist = Array.from(document.querySelectorAll('#prof-playlist-tbody tr')).map(tr => {
-        const dom = tr.getAttribute('data-pl-domain') || 'games';
-        const sysRaw = tr.querySelector('.pl-systems').value.trim();
-        const genRaw = tr.querySelector('.pl-genres').value.trim();
+      const playlist = CANONICAL_DOMAINS.map(dom => {
+        const s = editingProfileSlots[dom] || {enabled: false, count: 1, systems: [], genres: [], decades: []};
+        const ds = (editingProfileDomainStyles && editingProfileDomainStyles[dom]) || defaultStudioStyleForDomain(dom);
         return {
-          enabled: tr.querySelector('.pl-enabled').checked,
+          enabled: Boolean(s.enabled),
           domain: dom,
-          count: Math.max(1, Math.min(10, parseInt(tr.querySelector('.pl-count').value, 10) || 1)),
+          count: Math.max(1, Math.min(10, parseInt(s.count, 10) || 1)),
           lang: lang,
-          systems: dom === 'games' && sysRaw ? sysRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
-          genres: genRaw ? genRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
-          decades: [],
-          video_mode: tr.querySelector('.pl-vmode').value,
-          color_boost: tr.querySelector('.pl-cboost').value,
-          video_max_duration_s: Math.max(1.5, Math.min(120, parseFloat(tr.querySelector('.pl-vdur').value) || 8.0))
+          systems: dom === 'games' ? toUniqueTokenArray(s.systems) : [],
+          genres: toUniqueTokenArray(s.genres),
+          decades: toUniqueTokenArray(s.decades),
+          min_rating: Number(s.min_rating != null ? s.min_rating : 6.0),
+          video_type: ds.video_type || 'any',
+          jacket_panorama: ds.jacket_panorama !== false,
+          marquee_panorama: Boolean(ds.marquee_panorama),
+          snapshot_panorama_count: Number(ds.snapshot_panorama_count != null ? ds.snapshot_panorama_count : 1),
+          panorama_duration_s: Number(ds.panorama_duration_s != null ? ds.panorama_duration_s : 3.5),
+          include_video: ds.include_video !== false,
+          video_max_duration_s: Number(ds.video_max_duration_s != null ? ds.video_max_duration_s : 10.0),
+          video_fps: Number(ds.video_fps != null ? ds.video_fps : 15),
+          video_mode: ds.video_mode || 'auto_action',
+          color_boost: ds.color_boost || 'auto'
         };
       });
 
@@ -3313,11 +4148,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         udp_port: Math.max(1, Math.min(65535, parseInt(document.getElementById('prof-udp-port').value, 10) || 4210)),
         lang: lang,
         inter_item_gap_s: Math.max(0, Math.min(10, parseFloat(document.getElementById('prof-gap-s').value) || 0)),
+        domain_styles: editingProfileDomainStyles,
+        card_style: (editingProfileDomainStyles && editingProfileDomainStyles.games) || editingProfileCardStyle || undefined,
         playlist: playlist
       };
-      if (editingProfileCardStyle) {
-        payload.card_style = editingProfileCardStyle;
-      }
 
       try {
         const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`, {
@@ -3326,6 +4160,11 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           body: JSON.stringify(payload)
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
+        editingProfileDmdId = dmdId;
+        if (typeof studioLoadedDmdId !== 'undefined' && studioLoadedDmdId === dmdId) {
+          studioDraftDomainStyles = normalizeDomainStylesObj(editingProfileDomainStyles, null);
+          if (typeof updateStudioDomainTabsUi === 'function') updateStudioDomainTabsUi();
+        }
         msgEl.style.color = 'var(--green)';
         msgEl.textContent = t('msg_prof_saved', {d: dmdId});
         loadHealthAndConfig(false);
@@ -3574,6 +4413,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     let studioWidth = 128;
     let studioHeight = 32;
     let studioCardLayout = 'classic_split';
+    let studioActiveDomain = 'games';
+    let studioLoadedDmdId = '';
+    let studioReturnToRotationDmd = '';
+    let studioDraftDomainStyles = normalizeDomainStylesObj(null, null);
     let studioCandidates = [];
     let studioActiveCandIdx = -1;
     let studioFullPreviewId = '';
@@ -3660,9 +4503,143 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       return STUDIO_DEMO_FALLBACKS[dom] || STUDIO_DEMO_FALLBACKS.games;
     }
 
+    function captureCurrentControlsIntoStudioStyle() {
+      const fps = parseInt((document.getElementById('st-vid-fps') || {}).value || '15', 10) || 15;
+      const st = {
+        include_card_intro: document.getElementById('st-inc-card').checked,
+        card_layout: studioCardLayout,
+        card_theme: document.getElementById('studio-theme').value,
+        card_font: document.getElementById('studio-font').value,
+        card_accent_color: getStudioAccentValue(),
+        include_poster: document.getElementById('st-inc-poster').checked,
+        show_badge: document.getElementById('st-show-badge').checked,
+        show_year: document.getElementById('st-show-year').checked,
+        show_rating: document.getElementById('st-show-rating').checked,
+        include_synopsis: document.getElementById('st-inc-synopsis').checked,
+        text_scroll_speed: String(document.getElementById('st-scroll-speed').value || '4'),
+        card_hold_s: parseFloat(document.getElementById('st-card-hold').value || '0.9'),
+        jacket_panorama: document.getElementById('st-jacket-pan').checked,
+        marquee_panorama: document.getElementById('st-marquee-pan').checked,
+        snapshot_panorama_count: parseInt(document.getElementById('st-snap-count').value || '0', 10) || 0,
+        panorama_duration_s: Math.max(1.5, Math.min(15.0, parseFloat(document.getElementById('st-pan-dur').value || '3.5') || 3.5)),
+        include_video: document.getElementById('st-inc-video').checked,
+        video_type: (document.getElementById('st-video-type') || {}).value || 'any',
+        video_max_duration_s: Math.max(1.5, Math.min(60.0, parseFloat(document.getElementById('st-vid-dur').value || '8.0') || 8.0)),
+        video_fps: fps,
+        video_mode: document.getElementById('st-video-mode').value,
+        color_boost: document.getElementById('st-color-boost').value
+      };
+      if (studioActiveDomain && CANONICAL_DOMAINS.includes(studioActiveDomain)) {
+        studioDraftDomainStyles[studioActiveDomain] = Object.assign({}, st);
+      }
+      return st;
+    }
+
+    function applyStudioStyleToControls(styleObj) {
+      const s = Object.assign(defaultStudioStyleForDomain(studioActiveDomain || 'games'), styleObj || {});
+      studioCardLayout = s.card_layout || 'classic_split';
+      document.querySelectorAll('#studio-layout-grid .layout-card-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-layout') === studioCardLayout);
+      });
+      if (s.card_theme) document.getElementById('studio-theme').value = s.card_theme;
+      if (s.card_font) document.getElementById('studio-font').value = s.card_font;
+
+      const accMode = document.getElementById('studio-accent-mode');
+      const accPick = document.getElementById('studio-accent-picker');
+      if (accMode && accPick) {
+        const isHex = typeof s.card_accent_color === 'string' && s.card_accent_color.startsWith('#') && s.card_accent_color.length === 7;
+        accMode.value = isHex ? 'custom' : 'auto';
+        accPick.disabled = !isHex;
+        if (isHex) accPick.value = s.card_accent_color;
+      }
+
+      document.getElementById('st-inc-card').checked = s.include_card_intro !== false;
+      document.getElementById('st-inc-poster').checked = s.include_poster !== false;
+      document.getElementById('st-show-badge').checked = s.show_badge !== false;
+      document.getElementById('st-show-year').checked = s.show_year !== false;
+      document.getElementById('st-show-rating').checked = s.show_rating !== false;
+      document.getElementById('st-inc-synopsis').checked = s.include_synopsis !== false;
+      if (s.text_scroll_speed && !Number.isNaN(parseInt(s.text_scroll_speed, 10))) {
+        document.getElementById('st-scroll-speed').value = String(s.text_scroll_speed);
+      }
+      if (s.card_hold_s != null) {
+        document.getElementById('st-card-hold').value = String(s.card_hold_s);
+      }
+      updateStudioSliderLabels();
+
+      document.getElementById('st-jacket-pan').checked = s.jacket_panorama !== false;
+      document.getElementById('st-marquee-pan').checked = Boolean(s.marquee_panorama);
+      document.getElementById('st-inc-video').checked = s.include_video !== false;
+      document.getElementById('st-snap-count').value = String(s.snapshot_panorama_count != null ? s.snapshot_panorama_count : 1);
+      document.getElementById('st-pan-dur').value = String(s.panorama_duration_s != null ? s.panorama_duration_s : 3.5);
+      document.getElementById('st-vid-dur').value = String(s.video_max_duration_s != null ? s.video_max_duration_s : 10.0);
+      const fpsEl = document.getElementById('st-vid-fps');
+      if (fpsEl && s.video_fps != null) {
+        fpsEl.value = String(s.video_fps);
+      }
+      const vtypeEl = document.getElementById('st-video-type');
+      if (vtypeEl && s.video_type) {
+        vtypeEl.value = s.video_type;
+      }
+      if (s.video_mode) document.getElementById('st-video-mode').value = s.video_mode;
+      if (s.color_boost) document.getElementById('st-color-boost').value = s.color_boost;
+    }
+
+    function updateStudioDomainTabsUi() {
+      document.querySelectorAll('#studio-dom-tabs .studio-dom-tab').forEach(btn => {
+        const d = btn.getAttribute('data-st-dom');
+        btn.classList.toggle('active', d === studioActiveDomain);
+        const subEl = document.getElementById('st-dom-sub-' + d);
+        if (subEl && d) {
+          const st = (studioDraftDomainStyles && studioDraftDomainStyles[d]) || defaultStudioStyleForDomain(d);
+          const lay = st.include_card_intro !== false ? st.card_layout : 'card:off';
+          const vid = st.include_video !== false
+            ? `🎬${Number(st.video_max_duration_s != null ? st.video_max_duration_s : 10).toFixed(0)}s`
+            : '🎬off';
+          subEl.textContent = `${lay} • ${st.card_theme || 'tinted'} • ${st.color_boost || 'auto'} • ${vid}`;
+        }
+      });
+    }
+
+    function hydrateStudioDraftStylesFromCache(dmdId) {
+      if (!dmdId) return;
+      const prof = (lastDmdProfiles || []).find(p => p && p.dmd_id === dmdId);
+      studioLoadedDmdId = dmdId;
+      studioDraftDomainStyles = normalizeDomainStylesObj(prof && prof.domain_styles, prof && prof.card_style);
+      applyStudioStyleToControls(studioDraftDomainStyles[studioActiveDomain]);
+      updateStudioDomainTabsUi();
+    }
+
+    async function selectStudioDomainProfile(dom, opts = {}) {
+      if (!CANONICAL_DOMAINS.includes(dom)) dom = 'games';
+      if (!opts.skipSaveCurrent && studioInitialized) {
+        captureCurrentControlsIntoStudioStyle();
+      }
+      studioActiveDomain = dom;
+      const domEl = document.getElementById('studio-domain');
+      if (domEl) domEl.value = dom;
+      applyStudioStyleToControls(studioDraftDomainStyles[dom]);
+      updateStudioDomainTabsUi();
+
+      if (!opts.keepCandidates) {
+        const curCand = studioActiveCandIdx >= 0 ? studioCandidates[studioActiveCandIdx] : null;
+        if (!curCand || curCand.domain !== dom) {
+          studioCandidates = [];
+          studioActiveCandIdx = -1;
+          renderStudioCandidateStrip();
+        }
+      }
+      markStudioFullDirty();
+      await loadStudioFilters();
+      if (studioInitialized) {
+        requestStudioCardPreviewNow();
+      }
+    }
+
     function initStudioIfNeeded() {
       updateStudioResUi();
       updateStudioSliderLabels();
+      updateStudioDomainTabsUi();
       renderStudioActiveDmdBanner();
       loadStudioDmdQueue();
       if (!studioInitialized) {
@@ -3671,6 +4648,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         if (langEl && lastServerConfig && lastServerConfig.default_lang) {
           langEl.value = lastServerConfig.default_lang;
         }
+        applyStudioStyleToControls(studioDraftDomainStyles[studioActiveDomain]);
+        updateStudioDomainTabsUi();
         loadStudioFilters();
         requestStudioCardPreviewNow();
       }
@@ -3690,9 +4669,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }
       try {
         const lang = (document.getElementById('studio-lang') || {}).value || currentUiLang;
-        const r = await apiFetch(`/api/v1/${dom}/filters?lang=${encodeURIComponent(lang)}`);
-        if (!r.ok) return;
-        const d = await r.json();
+        const d = await ensureDomainFilterCatalog(dom, lang);
         const allOpt = `<option value="">${esc(t('opt_all'))}</option>`;
         if (isGames) {
           sysEl.innerHTML = allOpt + (d.systems || []).map(
@@ -3704,9 +4681,6 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         ).join('');
       } catch (err) {
         console.error(err);
-      }
-      if (studioActiveCandIdx < 0 && studioInitialized) {
-        scheduleStudioCardPreview();
       }
     }
 
@@ -3784,29 +4758,97 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       requestStudioCardPreviewNow();
     }
 
-    function openCandidateInStudio(idx) {
+    async function openCandidateInStudio(idx) {
       const c = lastSearchCandidates[idx];
       if (!c) return;
       switchTab('studio');
-      const domEl = document.getElementById('studio-domain');
       const langEl = document.getElementById('studio-lang');
-      if (domEl && c.domain) domEl.value = c.domain;
       if (langEl && c.lang) langEl.value = c.lang;
       studioCandidates = lastSearchCandidates.slice();
       studioActiveCandIdx = idx;
-      markStudioFullDirty();
+      await selectStudioDomainProfile(c.domain || 'games', {keepCandidates: true});
       renderStudioCandidateStrip();
-      requestStudioCardPreviewNow();
     }
 
     async function openStudioForDmd(dmdId) {
+      const backBtn = document.getElementById('btn-studio-back-rotation');
+      if (backBtn) backBtn.style.display = 'none';
+      studioReturnToRotationDmd = '';
       switchTab('studio');
       syncTargetDmdSelector();
       const stSel = document.getElementById('studio-target-dmd');
-      if (stSel && dmdId) {
-        stSel.value = dmdId;
+      const topSel = document.getElementById('studio-top-dmd-select');
+      if (dmdId) {
+        if (stSel) stSel.value = dmdId;
+        if (topSel) topSel.value = dmdId;
         await onStudioTargetDmdChange();
         syncStudioResFromActiveDmd();
+      }
+    }
+
+    async function openStudioForDmdDomain(dmdId, dom) {
+      studioReturnToRotationDmd = dmdId || '__editor__';
+      const backBtn = document.getElementById('btn-studio-back-rotation');
+      if (backBtn) backBtn.style.display = 'inline-flex';
+      switchTab('studio');
+      syncTargetDmdSelector();
+      const stSel = document.getElementById('studio-target-dmd');
+      const topSel = document.getElementById('studio-top-dmd-select');
+      if (dmdId) {
+        if (stSel && Array.from(stSel.options).some(o => o.value === dmdId)) stSel.value = dmdId;
+        if (topSel && Array.from(topSel.options).some(o => o.value === dmdId)) topSel.value = dmdId;
+        await onStudioTargetDmdChange();
+        syncStudioResFromActiveDmd();
+      }
+      await selectStudioDomainProfile(dom || 'games', {skipSaveCurrent: true});
+    }
+
+    async function openStudioForDmdDomainFromEditor(dom) {
+      const dmdId = (document.getElementById('prof-dmd-id') || {}).value.trim();
+      const [ew, eh] = ((document.getElementById('prof-res') || {}).value || '128x32').split('x').map(Number);
+      const edLang = (document.getElementById('prof-lang') || {}).value || 'fr';
+
+      studioReturnToRotationDmd = dmdId || '__editor__';
+      const backBtn = document.getElementById('btn-studio-back-rotation');
+      if (backBtn) backBtn.style.display = 'inline-flex';
+
+      switchTab('studio');
+      syncTargetDmdSelector();
+      const stSel = document.getElementById('studio-target-dmd');
+      const topSel = document.getElementById('studio-top-dmd-select');
+      if (dmdId) {
+        if (stSel) {
+          if (!Array.from(stSel.options).some(o => o.value === dmdId)) {
+            const opt = `<option value="${esc(dmdId)}">📺 ${esc(dmdId)} (${ew || 128}×${eh || 32})</option>`;
+            stSel.insertAdjacentHTML('beforeend', opt);
+            if (topSel) topSel.insertAdjacentHTML('beforeend', opt);
+          }
+          stSel.value = dmdId;
+        }
+        if (topSel) topSel.value = dmdId;
+        studioLoadedDmdId = dmdId;
+      }
+      const langEl = document.getElementById('studio-lang');
+      if (langEl) langEl.value = edLang;
+      if (ew && eh) {
+        studioWidth = ew;
+        studioHeight = eh;
+        updateStudioResUi();
+      }
+      studioDraftDomainStyles = normalizeDomainStylesObj(editingProfileDomainStyles, editingProfileCardStyle);
+      await selectStudioDomainProfile(dom || 'games', {skipSaveCurrent: true});
+      await loadStudioDmdQueue();
+    }
+
+    function returnToDmdRotationEditor() {
+      captureCurrentControlsIntoStudioStyle();
+      editingProfileDomainStyles = normalizeDomainStylesObj(studioDraftDomainStyles, editingProfileCardStyle);
+      switchTab('overview');
+      const card = document.getElementById('dmd-profile-editor-card');
+      if (card) {
+        card.style.display = 'block';
+        renderPlaylistEditorRows();
+        card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
       }
     }
 
@@ -3896,6 +4938,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 
     function markStudioFullDirty() {
       studioFullPreviewId = '';
+      if (studioInitialized) {
+        captureCurrentControlsIntoStudioStyle();
+        updateStudioDomainTabsUi();
+      }
       const badge = document.getElementById('studio-sim-badge');
       if (badge) {
         badge.className = 'pill info';
@@ -3907,7 +4953,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       const cand = getActiveStudioCandidate();
       const dom = (document.getElementById('studio-domain') || {}).value || cand.domain || 'games';
       const lang = (document.getElementById('studio-lang') || {}).value || cand.lang || 'fr';
-      const fps = parseInt((document.getElementById('st-vid-fps') || {}).value || '15', 10) || 15;
+      const st = captureCurrentControlsIntoStudioStyle();
+      updateStudioDomainTabsUi();
       return {
         domain: dom,
         candidate_id: cand.candidate_id || '',
@@ -3915,8 +4962,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         lang: lang,
         width: studioWidth,
         height: studioHeight,
-        fps: fps,
-        video_fps: fps,
+        fps: st.video_fps,
+        video_fps: st.video_fps,
         title: cand.title || 'Metal Slug X',
         year: cand.year || '',
         badge: cand.badge || dom.toUpperCase(),
@@ -3925,26 +4972,27 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         rating: cand.rating || '',
         synopsis: cand.synopsis || '',
         poster_url: cand.poster_url || '',
-        include_card_intro: document.getElementById('st-inc-card').checked,
-        card_layout: studioCardLayout,
-        card_theme: document.getElementById('studio-theme').value,
-        card_font: document.getElementById('studio-font').value,
-        card_accent_color: getStudioAccentValue(),
-        include_poster: document.getElementById('st-inc-poster').checked,
-        show_badge: document.getElementById('st-show-badge').checked,
-        show_year: document.getElementById('st-show-year').checked,
-        show_rating: document.getElementById('st-show-rating').checked,
-        include_synopsis: document.getElementById('st-inc-synopsis').checked,
-        text_scroll_speed: String(document.getElementById('st-scroll-speed').value || '4'),
-        card_hold_s: parseFloat(document.getElementById('st-card-hold').value || '0.9'),
-        jacket_panorama: document.getElementById('st-jacket-pan').checked,
-        marquee_panorama: document.getElementById('st-marquee-pan').checked,
-        snapshot_panorama_count: parseInt(document.getElementById('st-snap-count').value || '0', 10) || 0,
-        panorama_duration_s: Math.max(1.5, Math.min(15.0, parseFloat(document.getElementById('st-pan-dur').value || '3.5') || 3.5)),
-        include_video: document.getElementById('st-inc-video').checked,
-        video_max_duration_s: Math.max(1.5, Math.min(60.0, parseFloat(document.getElementById('st-vid-dur').value || '8.0') || 8.0)),
-        video_mode: document.getElementById('st-video-mode').value,
-        color_boost: document.getElementById('st-color-boost').value
+        include_card_intro: st.include_card_intro,
+        card_layout: st.card_layout,
+        card_theme: st.card_theme,
+        card_font: st.card_font,
+        card_accent_color: st.card_accent_color,
+        include_poster: st.include_poster,
+        show_badge: st.show_badge,
+        show_year: st.show_year,
+        show_rating: st.show_rating,
+        include_synopsis: st.include_synopsis,
+        text_scroll_speed: st.text_scroll_speed,
+        card_hold_s: st.card_hold_s,
+        jacket_panorama: st.jacket_panorama,
+        marquee_panorama: st.marquee_panorama,
+        snapshot_panorama_count: st.snapshot_panorama_count,
+        panorama_duration_s: st.panorama_duration_s,
+        include_video: st.include_video,
+        video_type: st.video_type,
+        video_max_duration_s: st.video_max_duration_s,
+        video_mode: st.video_mode,
+        color_boost: st.color_boost
       };
     }
 
@@ -4280,7 +5328,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         supports_local_card: prof ? prof.supports_local_card !== false : (cli ? cli.supports_local_card !== false : true),
         playing_title: (cli && (cli.playing_title || cli.active_title || cli.ready_title)) || '',
         udp_streaming: Boolean(cli && cli.udp_streaming),
-        card_style: (prof && prof.card_style) || null
+        card_style: (prof && prof.card_style) || null,
+        domain_styles: (prof && prof.domain_styles) || null
       };
     }
 
@@ -4312,28 +5361,49 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </div>${mismatchHtml}`;
     }
 
-    async function onStudioTargetDmdChange() {
-      const sel = document.getElementById('studio-target-dmd');
-      const meta = sel ? findTargetDmdMeta(sel.value) : null;
-      if (meta && meta.card_style) {
-        const cs = meta.card_style;
-        if (cs.card_layout) selectStudioLayout(cs.card_layout);
-        if (cs.card_theme) document.getElementById('studio-theme').value = cs.card_theme;
-        if (cs.card_font) document.getElementById('studio-font').value = cs.card_font;
-        document.getElementById('st-inc-card').checked = cs.include_card_intro !== false;
-        document.getElementById('st-inc-poster').checked = cs.include_poster !== false;
-        document.getElementById('st-show-badge').checked = cs.show_badge !== false;
-        document.getElementById('st-show-year').checked = cs.show_year !== false;
-        document.getElementById('st-show-rating').checked = cs.show_rating !== false;
-        document.getElementById('st-inc-synopsis').checked = cs.include_synopsis !== false;
-        if (cs.card_hold_s != null) document.getElementById('st-card-hold').value = String(cs.card_hold_s);
-        if (cs.text_scroll_speed && !Number.isNaN(parseInt(cs.text_scroll_speed, 10))) {
-          document.getElementById('st-scroll-speed').value = String(cs.text_scroll_speed);
-        }
-        updateStudioSliderLabels();
+    async function loadDmdDomainStylesIntoStudio(dmdId) {
+      const stSel = document.getElementById('studio-target-dmd');
+      const topSel = document.getElementById('studio-top-dmd-select');
+      if (stSel && stSel.value !== dmdId) stSel.value = dmdId;
+      if (topSel && topSel.value !== dmdId) topSel.value = dmdId;
+      if (!dmdId) {
+        studioLoadedDmdId = '';
+        studioDraftDomainStyles = normalizeDomainStylesObj(null, null);
+        applyStudioStyleToControls(studioDraftDomainStyles[studioActiveDomain]);
+        updateStudioDomainTabsUi();
+        return;
       }
+      let prof = (lastDmdProfiles || []).find(p => p && p.dmd_id === dmdId) || null;
+      try {
+        const rp = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`);
+        if (rp.ok) {
+          prof = (await rp.json()).profile || prof;
+        }
+      } catch (_) {}
+      studioLoadedDmdId = dmdId;
+      studioDraftDomainStyles = normalizeDomainStylesObj(prof && prof.domain_styles, prof && prof.card_style);
+      if (prof && prof.lang) {
+        const langEl = document.getElementById('studio-lang');
+        if (langEl) langEl.value = prof.lang;
+      }
+      applyStudioStyleToControls(studioDraftDomainStyles[studioActiveDomain]);
+      updateStudioDomainTabsUi();
+    }
+
+    async function onStudioTopDmdChange(dmdId) {
+      await loadDmdDomainStylesIntoStudio(dmdId || '');
       renderStudioActiveDmdBanner();
       await loadStudioDmdQueue();
+      scheduleStudioCardPreview();
+    }
+
+    async function onStudioTargetDmdChange() {
+      const sel = document.getElementById('studio-target-dmd');
+      const dmdId = sel ? sel.value : '';
+      await loadDmdDomainStylesIntoStudio(dmdId);
+      renderStudioActiveDmdBanner();
+      await loadStudioDmdQueue();
+      scheduleStudioCardPreview();
     }
 
     function syncStudioResFromActiveDmd() {
@@ -4416,6 +5486,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         lang: p.lang,
         mode: mode,
         mark_seen: markSeen,
+        video_type: p.video_type || 'any',
         include_card_intro: p.include_card_intro,
         card_layout: p.card_layout,
         card_theme: p.card_theme,
@@ -4470,15 +5541,26 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
-    async function saveStudioStyleToDmdProfile() {
-      const dmdId = (document.getElementById('studio-target-dmd') || {}).value || '';
-      const msgEl = document.getElementById('studio-queue-action-msg');
+    function setStudioSaveToast(msg, color) {
+      ['studio-top-save-msg', 'studio-queue-action-msg'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.color = color;
+        el.textContent = msg;
+      });
+    }
+
+    async function saveStudioStyleToDmdProfile(applyAllDomains = false) {
+      const dmdId = (document.getElementById('studio-target-dmd') || {}).value
+        || (document.getElementById('studio-top-dmd-select') || {}).value
+        || '';
       if (!dmdId) {
-        msgEl.style.color = 'var(--amber)';
-        msgEl.textContent = t('msg_need_target_dmd');
+        setStudioSaveToast(t('msg_need_target_dmd'), 'var(--amber)');
         return;
       }
       const p = buildStudioCommonPayload();
+      const curStyle = captureCurrentControlsIntoStudioStyle();
+
       let prof = null;
       try {
         const rp = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`);
@@ -4487,48 +5569,75 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         }
       } catch (_) {}
 
+      const mergedDomainStyles = normalizeDomainStylesObj(prof && prof.domain_styles, prof && prof.card_style);
+      CANONICAL_DOMAINS.forEach(dom => {
+        if (studioDraftDomainStyles && studioDraftDomainStyles[dom]) {
+          mergedDomainStyles[dom] = Object.assign({}, mergedDomainStyles[dom], studioDraftDomainStyles[dom]);
+        }
+      });
+
+      if (applyAllDomains) {
+        CANONICAL_DOMAINS.forEach(dom => {
+          mergedDomainStyles[dom] = Object.assign({}, curStyle);
+        });
+      } else {
+        mergedDomainStyles[studioActiveDomain] = Object.assign({}, curStyle);
+      }
+      studioDraftDomainStyles = mergedDomainStyles;
+      updateStudioDomainTabsUi();
+
       const baseMeta = findTargetDmdMeta(dmdId) || {width: studioWidth, height: studioHeight, lang: p.lang};
       const existingPl = (prof && Array.isArray(prof.playlist) && prof.playlist.length)
         ? prof.playlist
-        : defaultPlaylistRows(p.lang);
+        : defaultPlaylistRows((prof && prof.lang) || p.lang);
 
-      const updatedPl = existingPl.map(slot => Object.assign({}, slot, {
-        jacket_panorama: p.jacket_panorama,
-        marquee_panorama: p.marquee_panorama,
-        snapshot_panorama_count: p.snapshot_panorama_count,
-        panorama_duration_s: p.panorama_duration_s,
-        include_video: p.include_video,
-        video_max_duration_s: p.video_max_duration_s,
-        video_fps: p.video_fps,
-        video_mode: p.video_mode,
-        color_boost: p.color_boost
-      }));
+      const updatedPl = existingPl.map(slot => {
+        const dom = slot.domain || 'games';
+        const ds = mergedDomainStyles[dom] || curStyle;
+        return Object.assign({}, slot, {
+          video_type: ds.video_type || slot.video_type || 'any',
+          jacket_panorama: ds.jacket_panorama,
+          marquee_panorama: ds.marquee_panorama,
+          snapshot_panorama_count: ds.snapshot_panorama_count,
+          panorama_duration_s: ds.panorama_duration_s,
+          include_video: ds.include_video,
+          video_max_duration_s: ds.video_max_duration_s,
+          video_fps: ds.video_fps,
+          video_mode: ds.video_mode,
+          color_boost: ds.color_boost
+        });
+      });
+
+      const supportsLocal = (prof && prof.config_source === 'server')
+        ? Boolean(prof.supports_local_card)
+        : false;
 
       const putPayload = {
         dmd_id: dmdId,
         display_name: (prof && prof.display_name) || dmdId,
         config_source: 'server',
-        supports_local_card: false,
+        supports_local_card: supportsLocal,
         always_stream_udp: Boolean(prof && prof.always_stream_udp),
         width: (prof && prof.width) || baseMeta.width || studioWidth,
         height: (prof && prof.height) || baseMeta.height || studioHeight,
         udp_ip: (prof && prof.udp_ip) || '',
         udp_port: (prof && prof.udp_port) || 4210,
-        lang: p.lang,
+        lang: (prof && prof.lang) || p.lang,
         inter_item_gap_s: (prof && prof.inter_item_gap_s != null) ? prof.inter_item_gap_s : 1.0,
+        domain_styles: mergedDomainStyles,
         card_style: {
-          include_card_intro: p.include_card_intro,
-          card_layout: p.card_layout,
-          card_theme: p.card_theme,
-          card_font: p.card_font,
-          card_accent_color: p.card_accent_color,
-          include_poster: p.include_poster,
-          show_badge: p.show_badge,
-          show_year: p.show_year,
-          show_rating: p.show_rating,
-          include_synopsis: p.include_synopsis,
-          text_scroll_speed: p.text_scroll_speed,
-          card_hold_s: p.card_hold_s
+          include_card_intro: curStyle.include_card_intro,
+          card_layout: curStyle.card_layout,
+          card_theme: curStyle.card_theme,
+          card_font: curStyle.card_font,
+          card_accent_color: curStyle.card_accent_color,
+          include_poster: curStyle.include_poster,
+          show_badge: curStyle.show_badge,
+          show_year: curStyle.show_year,
+          show_rating: curStyle.show_rating,
+          include_synopsis: curStyle.include_synopsis,
+          text_scroll_speed: curStyle.text_scroll_speed,
+          card_hold_s: curStyle.card_hold_s
         },
         playlist: updatedPl
       };
@@ -4540,12 +5649,18 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           body: JSON.stringify(putPayload)
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        msgEl.style.color = 'var(--green)';
-        msgEl.textContent = t('msg_studio_2b_saved', {d: dmdId});
+        studioLoadedDmdId = dmdId;
+        if (editingProfileDmdId === dmdId || studioReturnToRotationDmd === dmdId) {
+          editingProfileDomainStyles = normalizeDomainStylesObj(mergedDomainStyles, null);
+          renderPlaylistEditorRows();
+        }
+        const okMsg = applyAllDomains
+          ? t('msg_studio_all_doms_saved', {d: dmdId})
+          : t('msg_studio_dom_saved', {dom: shortDomainDisplayName(studioActiveDomain), d: dmdId});
+        setStudioSaveToast(okMsg, 'var(--green)');
         loadHealthAndConfig(false);
       } catch (err) {
-        msgEl.style.color = 'var(--red)';
-        msgEl.textContent = '⚠️ ' + (err.message || String(err));
+        setStudioSaveToast('⚠️ ' + (err.message || String(err)), 'var(--red)');
       }
     }
 

@@ -495,3 +495,205 @@ async def test_studio_endpoints_zero_retranscode_queue_promotion_and_profile_per
             assert any(c[:2] == (64, 128) and c[2:] == ("poster_right", "amber_dmd") for c in transcode_calls)
     finally:
         await isolated_co.stop_server_managed_profiles()
+
+
+@pytest.mark.asyncio
+async def test_per_domain_studio_profiles_persistence_partial_merge_and_passive_rotation(
+    tmp_path: Path, monkeypatch
+):
+    """
+    Verify:
+    1. `PUT /api/v1/clients/{dmd_id}/profile` persists 4 independent per-domain Studio profiles
+       (`domain_styles.games`, `movies`, `series`, `anime`), each owning its Card layout, theme,
+       panoramas, screenshot count, framing (`video_mode`), `color_boost`, `video_max_duration_s`,
+       and `video_type`.
+    2. Updating a single domain in `domain_styles` preserves the other 3 domains intact.
+    3. Passive rotation (`_next_playlist_slot_criteria`) combines each slot's visual tag arrays
+       (`systems`, `genres`, `decades`) with that domain's authoritative `domain_styles[dom]`.
+    """
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache_dom")
+    seen_repo = JsonSeenHistoryRepository(file_path=tmp_path / "data_dom" / "seen_history.json")
+    prof_store = DmdProfileStore(file_path=tmp_path / "data_dom" / "dmd_profiles.json")
+
+    class _NoopChain:
+        async def acquire_unseen_candidates(self, criteria: FilterCriteria, count: int = 1, extra_exclude_ids=None):
+            return []
+
+    class _NoopMqtt:
+        is_running = False
+
+        def set_handlers(self, **kwargs):
+            return None
+
+        async def publish_json(self, topic: str, payload: dict, retain: bool = False):
+            return None
+
+    class _NoopStreamer:
+        active_streams_count = 0
+
+        async def start_udp_clock_stream(self, **kwargs):
+            return True
+
+        async def stop_stream(self, dmd_id: str):
+            return None
+
+    isolated_co = ConsumeOnceOrchestrator(
+        chain_service=_NoopChain(),  # type: ignore[arg-type]
+        transcoder=DmdConverterTranscoderAdapter(),
+        seen_repo=seen_repo,
+        mqtt_gateway=_NoopMqtt(),  # type: ignore[arg-type]
+        streamer=_NoopStreamer(),  # type: ignore[arg-type]
+        profile_store=prof_store,
+    )
+    monkeypatch.setattr("app.main.consume_once_orchestrator", isolated_co)
+    monkeypatch.setattr("app.main.dmd_profile_store", prof_store)
+
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r_put = await client.put(
+                "/api/v1/clients/esp32_arcade_room/profile",
+                json={
+                    "dmd_id": "esp32_arcade_room",
+                    "display_name": "Arcade Room DMD",
+                    "config_source": "server",
+                    "supports_local_card": False,
+                    "paused": True,
+                    "width": 128,
+                    "height": 32,
+                    "lang": "fr",
+                    "domain_styles": {
+                        "games": {
+                            "card_layout": "classic_split",
+                            "card_theme": "amber_dmd",
+                            "card_font": "arcade_pixel",
+                            "snapshot_panorama_count": 3,
+                            "video_max_duration_s": 9.0,
+                            "video_mode": "auto_action",
+                            "color_boost": "pixel_art",
+                            "video_type": "any",
+                        },
+                        "movies": {
+                            "card_layout": "poster_right",
+                            "card_theme": "poster_wash",
+                            "card_font": "clean_sans",
+                            "snapshot_panorama_count": 1,
+                            "video_max_duration_s": 14.0,
+                            "video_mode": "panorama",
+                            "color_boost": "cinema",
+                            "video_type": "trailer",
+                        },
+                        "series": {
+                            "card_layout": "hero_banner",
+                            "card_theme": "tinted",
+                            "card_font": "clean_sans",
+                            "snapshot_panorama_count": 2,
+                            "video_max_duration_s": 11.0,
+                            "video_mode": "center_crop",
+                            "color_boost": "cinema",
+                            "video_type": "trailer",
+                        },
+                        "anime": {
+                            "card_layout": "badge_header",
+                            "card_theme": "neon_border",
+                            "card_font": "clean_sans",
+                            "snapshot_panorama_count": 4,
+                            "video_max_duration_s": 15.0,
+                            "video_mode": "auto_action",
+                            "color_boost": "anime",
+                            "video_type": "opening",
+                        },
+                    },
+                    "playlist": [
+                        {
+                            "enabled": True,
+                            "domain": "games",
+                            "count": 1,
+                            "systems": ["neogeo", "cps2"],
+                            "genres": ["fighting"],
+                            "decades": ["1990s"],
+                        },
+                        {
+                            "enabled": True,
+                            "domain": "movies",
+                            "count": 1,
+                            "systems": [],
+                            "genres": ["sci-fi"],
+                            "decades": ["1980s"],
+                        },
+                        {"enabled": False, "domain": "series", "count": 1},
+                        {
+                            "enabled": True,
+                            "domain": "anime",
+                            "count": 1,
+                            "systems": [],
+                            "genres": ["mecha"],
+                            "decades": ["1990s"],
+                        },
+                    ],
+                },
+            )
+            assert r_put.status_code == 200
+            prof = r_put.json()["profile"]
+            assert set(prof["domain_styles"].keys()) == {"games", "movies", "series", "anime"}
+            assert prof["domain_styles"]["games"]["card_theme"] == "amber_dmd"
+            assert prof["domain_styles"]["movies"]["card_layout"] == "poster_right"
+            assert prof["domain_styles"]["anime"]["video_type"] == "opening"
+
+            # Partial update on `anime` only must NOT overwrite `games` or `movies`
+            prof_after = prof_store.upsert_profile(
+                "esp32_arcade_room",
+                {
+                    "domain_styles": {
+                        "anime": {
+                            "card_layout": "minimal_arcade",
+                            "card_theme": "pure_black",
+                            "video_max_duration_s": 16.5,
+                            "video_type": "ending",
+                        }
+                    }
+                },
+            )
+            assert prof_after["domain_styles"]["games"]["card_theme"] == "amber_dmd"
+            assert prof_after["domain_styles"]["movies"]["card_layout"] == "poster_right"
+            assert prof_after["domain_styles"]["anime"]["card_layout"] == "minimal_arcade"
+            assert prof_after["domain_styles"]["anime"]["card_theme"] == "pure_black"
+            assert prof_after["domain_styles"]["anime"]["video_type"] == "ending"
+
+            # Verify passive rotation pulls tag filters from `playlist` AND rendering profile from `domain_styles[dom]`
+            await isolated_co.stop_server_managed_profiles()
+            isolated_co._director_playlist_cursors.clear()
+            dom1, _geom1, crit1 = isolated_co._next_playlist_slot_criteria("esp32_arcade_room", prof_after)  # type: ignore[misc]
+            assert dom1 == "games"
+            assert crit1.systems == ["neogeo", "cps2"]
+            assert crit1.genres == ["fighting"]
+            assert crit1.decades == ["1990s"]
+            assert crit1.card_layout == "classic_split"
+            assert crit1.card_theme == "amber_dmd"
+            assert crit1.color_boost == "pixel_art"
+            assert crit1.video_max_duration_s == 9.0
+            assert crit1.snapshot_panorama_count == 3
+            assert crit1.render_card_in_stream is True
+
+            dom2, _geom2, crit2 = isolated_co._next_playlist_slot_criteria("esp32_arcade_room", prof_after)  # type: ignore[misc]
+            assert dom2 == "movies"
+            assert crit2.genres == ["scifi"]
+            assert crit2.decades == ["1980s"]
+            assert crit2.card_layout == "poster_right"
+            assert crit2.card_theme == "poster_wash"
+            assert crit2.video_mode == "panorama"
+            assert crit2.color_boost == "cinema"
+            assert crit2.video_max_duration_s == 14.0
+            assert crit2.video_type == "trailer"
+
+            dom3, _geom3, crit3 = isolated_co._next_playlist_slot_criteria("esp32_arcade_room", prof_after)  # type: ignore[misc]
+            assert dom3 == "anime"
+            assert crit3.genres == ["mecha"]
+            assert crit3.decades == ["1990s"]
+            assert crit3.card_layout == "minimal_arcade"
+            assert crit3.card_theme == "pure_black"
+            assert crit3.video_max_duration_s == 16.5
+            assert crit3.video_type == "ending"
+            assert crit3.snapshot_panorama_count == 4
+    finally:
+        await isolated_co.stop_server_managed_profiles()

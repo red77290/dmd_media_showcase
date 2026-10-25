@@ -2003,9 +2003,11 @@ class ConsumeOnceOrchestrator:
                 (s for s in (prof.get("playlist") or []) if s.get("domain") == eff_domain),
                 {},
             )
+            domain_style = dict((prof.get("domain_styles") or {}).get(eff_domain) or {})
             raw_merged: Dict[str, Any] = {
                 **(prof.get("card_style") or {}),
                 **matching_slot,
+                **domain_style,
             }
             render_card = bool(
                 is_server_managed and not bool(prof.get("supports_local_card", True))
@@ -2458,10 +2460,12 @@ class ConsumeOnceOrchestrator:
             width=int(prof.get("width") or 128),
             height=int(prof.get("height") or 32),
         )
+        domain_style = dict((prof.get("domain_styles") or {}).get(dom) or {})
         base_card_style = dict(prof.get("card_style") or {})
         raw_slot = {
             **base_card_style,
             **slot,
+            **domain_style,
             "lang": slot.get("lang") or prof.get("lang") or "fr",
             "render_card_in_stream": not bool(prof.get("supports_local_card", True)),
         }
