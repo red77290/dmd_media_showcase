@@ -55,10 +55,26 @@ class ScraperRegistry:
     def describe_active_chains(self) -> Dict[str, str]:
         """Return a summary of configured `[primary -> fallback]` chains for `/api/v1/health`."""
         summary: Dict[str, str] = {}
-        for dom, chain in self._chains.items():
+        for dom in ("games", "movies", "series", "anime"):
+            chain = self._chains.get(dom, [])
             active = [s.source_id for s in chain if s.is_configured()]
             summary[dom] = " -> ".join(active) if active else "none"
         return summary
+
+    def describe_chains_detailed(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Return structured `[primary, fallback, ...]` adapter metadata per domain for the Admin UI."""
+        detailed: Dict[str, List[Dict[str, Any]]] = {}
+        for dom in ("games", "movies", "series", "anime"):
+            chain = self._chains.get(dom, [])
+            detailed[dom] = [
+                {
+                    "source_id": s.source_id,
+                    "role": s.role,
+                    "configured": bool(s.is_configured()),
+                }
+                for s in chain
+            ]
+        return detailed
 
     def available_filters(self, domain: DomainType, lang: str = "fr") -> Dict[str, Any]:
         """

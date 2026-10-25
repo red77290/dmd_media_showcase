@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.application.source_chain_service import DomainSourceChainService, source_chain_service
 from app.config import settings
@@ -59,6 +61,68 @@ VALID_SCROLL_SPEEDS = {
     "9",
     "10",
 }
+
+
+_PER_ENGINE_DMD_ID_RE = re.compile(
+    r"^(?P<prefix>rpi|esp32|http)_(?P<domain>games|movies|series|anime)_(?P<geom>\d+x\d+)(?:_\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def strip_mqtt_gen_suffix(client_id: str) -> str:
+    """Normalize an MQTT client ID (e.g. `rpi_games_128x32_3`) back to its logical `dmd_id`."""
+    raw = str(client_id or "").strip()
+    m = _PER_ENGINE_DMD_ID_RE.match(raw)
+    if m:
+        return f"{m.group('prefix').lower()}_{m.group('domain').lower()}_{m.group('geom').lower()}"
+    return raw
+
+
+def _is_usable_physical_lan_ip(ip: str) -> bool:
+    """
+    Return True when `ip` identifies a physical DMD on the LAN (excluding loopback,
+    wildcard, test placeholders, and Docker bridge `.1` NAT gateways like `172.18.0.1`).
+    """
+    val = str(ip or "").strip().lower()
+    if not val or val in (
+        "0.0.0.0",
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "unknown",
+        "auto",
+        "testclient",
+    ):
+        return False
+    if val.startswith("127."):
+        return False
+    parts = val.split(".")
+    if len(parts) == 4 and parts[0] == "172" and parts[3] == "1":
+        try:
+            second = int(parts[1])
+            if 16 <= second <= 31:
+                return False
+        except ValueError:
+            pass
+    return True
+
+
+def canonical_dmd_board_key(dmd_id: str, client_ip: str = "") -> str:
+    """
+    Compute a stable deduplication key representing one physical DMD matrix board:
+    - Both `ArcadeMatrix` (ESP32) and `ArcadeMatrix_RPi` instantiate up to 4 per-domain
+      runners (`rpi_games_128x32`, `rpi_movies_128x32`, ...) on the same physical board.
+    - Grouping by real LAN `client_ip` (when non-loopback / non-Docker-NAT) or by
+      `{platform}_{WxH}` ensures 1 physical board with 4 Showcase engines is counted as
+      1 DMD client with 4 domain slots rather than 4 separate boards.
+    """
+    if _is_usable_physical_lan_ip(client_ip):
+        return f"ip:{client_ip.strip()}"
+    raw = str(dmd_id or "").strip()
+    m = _PER_ENGINE_DMD_ID_RE.match(raw)
+    if m:
+        return f"board:{m.group('prefix').lower()}_{m.group('geom').lower()}"
+    return f"id:{raw or 'default_dmd'}"
 
 
 def _select_best_udp_ip(
@@ -100,16 +164,101 @@ class ConsumeOnceOrchestrator:
         # Per `(dmd_id, domain)` configuration, ready slot (N), standby slot (N+1), active playing slot, and prep task
         self.client_configs: Dict[Tuple[str, DomainType], Tuple[PanelGeometry, FilterCriteria]] = {}
         self.client_udp_ips: Dict[str, str] = {}
+        self.client_transports: Dict[Tuple[str, DomainType], str] = {}
+        self.client_last_seen: Dict[Tuple[str, DomainType], float] = {}
+        self.last_played_titles: Dict[Tuple[str, DomainType], str] = {}
+        self.last_claimed_until: Dict[Tuple[str, DomainType], float] = {}
         self.ready_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
         self.standby_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
         self.active_packages: Dict[str, PreparedShowcasePackage] = {}
         self._prep_tasks: Dict[Tuple[str, DomainType], asyncio.Task[None]] = {}
         self._transcode_sem: Optional[asyncio.Semaphore] = None
         self._transcode_sem_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._active_workers: int = 0
+        self._queued_jobs: int = 0
+        self._fairness_waiting_jobs: int = 0
+        self._completed_jobs_total: int = 0
+        self._total_job_duration_s: float = 0.0
         self.mqtt.set_handlers(
             on_client_config=self.handle_mqtt_client_config,
             on_client_event=self.handle_mqtt_client_event,
         )
+
+    @property
+    def active_workers(self) -> int:
+        return self._active_workers
+
+    @property
+    def queue_depth(self) -> int:
+        return self._queued_jobs + self._fairness_waiting_jobs
+
+    @property
+    def completed_jobs_total(self) -> int:
+        return self._completed_jobs_total
+
+    @property
+    def total_job_duration_s(self) -> float:
+        return self._total_job_duration_s
+
+    @property
+    def avg_job_duration_s(self) -> float:
+        if self._completed_jobs_total <= 0:
+            return 0.0
+        return round(self._total_job_duration_s / self._completed_jobs_total, 2)
+
+    @property
+    def ready_slots_count(self) -> int:
+        return len(self.ready_packages)
+
+    @property
+    def standby_slots_count(self) -> int:
+        return len(self.standby_packages)
+
+    def distinct_board_keys(self) -> Set[str]:
+        return {
+            canonical_dmd_board_key(dmd_id, self.client_udp_ips.get(dmd_id, ""))
+            for (dmd_id, _dom) in self.client_configs
+        }
+
+    @property
+    def distinct_dmd_count(self) -> int:
+        return len(self.distinct_board_keys())
+
+    @property
+    def active_broadcasts_count(self) -> int:
+        now = time.time()
+        playing_boards: Set[str] = set()
+        for pkg in self.active_packages.values():
+            if pkg.consumed:
+                playing_boards.add(
+                    canonical_dmd_board_key(pkg.dmd_id, self.client_udp_ips.get(pkg.dmd_id, ""))
+                )
+        for (dmd_id, _dom), until_ts in list(self.last_claimed_until.items()):
+            if now < until_ts:
+                playing_boards.add(
+                    canonical_dmd_board_key(dmd_id, self.client_udp_ips.get(dmd_id, ""))
+                )
+        udp_cnt = getattr(self.streamer, "active_streams_count", 0)
+        return max(udp_cnt, len(playing_boards))
+
+    def record_completed_job(self, duration_s: float, count: int = 1) -> None:
+        if count <= 0:
+            return
+        self._completed_jobs_total += count
+        self._total_job_duration_s += max(0.0, float(duration_s))
+
+    def record_http_client(
+        self,
+        dmd_id: str,
+        domain: DomainType,
+        client_ip: Optional[str] = None,
+    ) -> None:
+        key = (dmd_id, domain)
+        self.client_transports.setdefault(key, "HTTP")
+        self.client_last_seen[key] = time.time()
+        ip = str(client_ip or "").strip()
+        if ip and ip not in ("0.0.0.0", "unknown", "testclient"):
+            self.client_udp_ips.setdefault(dmd_id, ip)
 
     def _get_transcode_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
@@ -121,18 +270,49 @@ class ConsumeOnceOrchestrator:
     def describe_connected_clients(self) -> List[Dict[str, Any]]:
         """Return a summary of currently registered DMD clients and their prepared queue slots."""
         out: List[Dict[str, Any]] = []
+        now = time.time()
         for (dmd_id, domain), (geom, crit) in sorted(self.client_configs.items()):
-            ready_pkg = self.ready_packages.get((dmd_id, domain))
-            standby_pkg = self.standby_packages.get((dmd_id, domain))
-            prep_task = self._prep_tasks.get((dmd_id, domain))
-            active_pkg = next(
-                (p for p in self.active_packages.values() if p.dmd_id == dmd_id and p.domain == domain),
+            key = (dmd_id, domain)
+            ready_pkg = self.ready_packages.get(key)
+            standby_pkg = self.standby_packages.get(key)
+            prep_task = self._prep_tasks.get(key)
+            consumed_pkg = next(
+                (
+                    p
+                    for p in self.active_packages.values()
+                    if p.dmd_id == dmd_id and p.domain == domain and p.consumed
+                ),
                 None,
             )
+            stream_meta = (
+                self.streamer.get_active_stream(dmd_id)
+                if hasattr(self.streamer, "get_active_stream")
+                else None
+            )
+            is_domain_streaming = bool(
+                stream_meta
+                and (
+                    consumed_pkg is None
+                    or stream_meta.get("item_id") == consumed_pkg.item_id
+                )
+            )
+            is_playing_now = bool(
+                is_domain_streaming
+                or consumed_pkg is not None
+                or now < self.last_claimed_until.get(key, 0.0)
+            )
+            last_title = self.last_played_titles.get(key)
+            playing_title = (
+                consumed_pkg.card.title
+                if consumed_pkg is not None
+                else (last_title if is_playing_now else None)
+            )
+            last_seen = self.client_last_seen.get(key)
             out.append(
                 {
                     "dmd_id": dmd_id,
                     "domain": domain,
+                    "transport": self.client_transports.get(key, "MQTT+UDP"),
                     "client_ip": self.client_udp_ips.get(dmd_id, ""),
                     "width": geom.width,
                     "height": geom.height,
@@ -142,10 +322,15 @@ class ConsumeOnceOrchestrator:
                     "systems": list(crit.systems),
                     "genres": list(crit.genres),
                     "decades": list(crit.decades),
-                    "active_title": active_pkg.card.title if active_pkg else None,
+                    "active_title": playing_title or last_title,
+                    "playing_title": playing_title,
+                    "last_played_title": last_title,
+                    "is_playing": is_playing_now,
+                    "udp_streaming": is_domain_streaming,
                     "ready_title": ready_pkg.card.title if ready_pkg else None,
                     "standby_title": standby_pkg.card.title if standby_pkg else None,
                     "preparing": bool(prep_task and not prep_task.done()),
+                    "last_seen_ago_s": int(max(0.0, now - last_seen)) if last_seen else None,
                 }
             )
         return out
@@ -259,6 +444,10 @@ class ConsumeOnceOrchestrator:
         if payload.get("unregister"):
             for dom_key in VALID_DOMAINS:
                 self.client_configs.pop((dmd_id, dom_key), None)
+                self.client_transports.pop((dmd_id, dom_key), None)
+                self.client_last_seen.pop((dmd_id, dom_key), None)
+                self.last_played_titles.pop((dmd_id, dom_key), None)
+                self.last_claimed_until.pop((dmd_id, dom_key), None)
                 t = self._prep_tasks.pop((dmd_id, dom_key), None)
                 if t and not t.done():
                     t.cancel()
@@ -274,17 +463,22 @@ class ConsumeOnceOrchestrator:
                 if other_dmd_id != dmd_id and other_ip == best_ip:
                     await self.streamer.stop_stream(other_dmd_id)
 
+        now_ts = time.time()
         engines_map = payload.get("domains") or payload.get("engines")
         if isinstance(engines_map, dict):
             for dom_key, dom_cfg in engines_map.items():
                 if dom_key in VALID_DOMAINS and isinstance(dom_cfg, dict):
                     dom: DomainType = dom_key  # type: ignore[assignment]
+                    self.client_transports[(dmd_id, dom)] = "MQTT+UDP"
+                    self.client_last_seen[(dmd_id, dom)] = now_ts
                     criteria = self._parse_domain_criteria(dom, dom_cfg, top_lang=top_lang)
                     await self.register_client_domain(dmd_id, dom, geometry, criteria)
         else:
             dom_raw = str(payload.get("domain") or "games")
             if dom_raw in VALID_DOMAINS:
                 dom_single: DomainType = dom_raw  # type: ignore[assignment]
+                self.client_transports[(dmd_id, dom_single)] = "MQTT+UDP"
+                self.client_last_seen[(dmd_id, dom_single)] = now_ts
                 criteria = self._parse_domain_criteria(dom_single, payload, top_lang=top_lang)
                 await self.register_client_domain(dmd_id, dom_single, geometry, criteria)
 
@@ -294,6 +488,8 @@ class ConsumeOnceOrchestrator:
         package in `self.active_packages` that was waiting for `start_stream` before a DMD reboot.
         """
         await self.streamer.stop_stream(dmd_id)
+        for dom_key in VALID_DOMAINS:
+            self.last_claimed_until.pop((dmd_id, dom_key), None)
         abandoned_ids = [
             item_id
             for item_id, pkg in list(self.active_packages.items())
@@ -427,7 +623,11 @@ class ConsumeOnceOrchestrator:
                         for other_k in list(self.client_configs.keys())
                     )
                     if sibling_missing_ready:
-                        await asyncio.sleep(0.05)
+                        self._fairness_waiting_jobs += 1
+                        try:
+                            await asyncio.sleep(0.05)
+                        finally:
+                            self._fairness_waiting_jobs = max(0, self._fairness_waiting_jobs - 1)
                         continue
 
                 cfg_pair = self.client_configs.get(key)
@@ -446,23 +646,42 @@ class ConsumeOnceOrchestrator:
                         active_exclude.add(slot_pkg.candidate.id)
 
                 chosen_pkg: Optional[PreparedShowcasePackage] = None
-                async with self._get_transcode_semaphore():
-                    candidates = await self.chain_service.acquire_unseen_candidates(
-                        criteria, count=1, extra_exclude_ids=active_exclude
-                    )
-                    if candidates:
-                        cand = candidates[0]
-                        active_exclude.add(cand.id)
-                        item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
-                        item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
-                        files_map = await self.transcoder.transcode_candidate(
-                            cand, criteria, geometry, item_dir
+                sem = self._get_transcode_semaphore()
+                self._queued_jobs += 1
+                queued_decremented = False
+                try:
+                    await sem.acquire()
+                    self._queued_jobs = max(0, self._queued_jobs - 1)
+                    queued_decremented = True
+                    self._active_workers += 1
+                    t_job_start = time.monotonic()
+                    try:
+                        candidates = await self.chain_service.acquire_unseen_candidates(
+                            criteria, count=1, extra_exclude_ids=active_exclude
                         )
-                    else:
-                        cand = None
-                        item_id = ""
-                        item_dir = settings.cache_dir
-                        files_map = {}
+                        if candidates:
+                            cand = candidates[0]
+                            active_exclude.add(cand.id)
+                            item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
+                            item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
+                            files_map = await self.transcoder.transcode_candidate(
+                                cand, criteria, geometry, item_dir
+                            )
+                        else:
+                            cand = None
+                            item_id = ""
+                            item_dir = settings.cache_dir
+                            files_map = {}
+                    finally:
+                        elapsed_s = max(0.0, time.monotonic() - t_job_start)
+                        self._active_workers = max(0, self._active_workers - 1)
+                        if candidates:
+                            self._completed_jobs_total += 1
+                            self._total_job_duration_s += elapsed_s
+                        sem.release()
+                finally:
+                    if not queued_decremented:
+                        self._queued_jobs = max(0, self._queued_jobs - 1)
 
                 if self.client_configs.get(key) != (geometry, criteria):
                     if candidates and cand is not None:
@@ -587,7 +806,20 @@ class ConsumeOnceOrchestrator:
             self._schedule_preparation(dmd_id, domain)
             return None
 
+        now_ts = time.time()
         pkg.consumed = True
+        self.last_played_titles[key] = pkg.card.title
+        self.client_last_seen[key] = now_ts
+        board_key = canonical_dmd_board_key(dmd_id, self.client_udp_ips.get(dmd_id, ""))
+        for other_key in list(self.last_claimed_until.keys()):
+            if other_key != key:
+                other_board = canonical_dmd_board_key(
+                    other_key[0], self.client_udp_ips.get(other_key[0], "")
+                )
+                if other_board == board_key:
+                    self.last_claimed_until.pop(other_key, None)
+        display_window_s = max(10.0, float(pkg.card.stream_duration_s or 0.0) + 8.0)
+        self.last_claimed_until[key] = now_ts + display_window_s
         self.seen_repo.mark_consumed(domain, pkg.candidate.id)
 
         standby_pkg = self.standby_packages.pop(key, None)
@@ -649,6 +881,9 @@ class ConsumeOnceOrchestrator:
         declared_ip = str(event_payload.get("udp_ip") or event_payload.get("client_ip") or "").strip()
         if declared_ip and declared_ip not in ("0.0.0.0", "127.0.0.1"):
             self.client_udp_ips[dmd_id] = declared_ip
+        if (dmd_id, domain) in self.client_configs:
+            self.client_transports[(dmd_id, domain)] = "MQTT+UDP"
+            self.client_last_seen[(dmd_id, domain)] = time.time()
 
         if ev_type == "start_card":
             pkg = await self.claim_next_package(dmd_id, domain, item_id=item_id)
@@ -703,6 +938,7 @@ class ConsumeOnceOrchestrator:
             await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=False)
 
             async def _on_stream_eof(client_dmd_id: str, finished_item_id: str, _ok: bool) -> None:
+                self.last_claimed_until.pop((client_dmd_id, domain), None)
                 eof_msg = {"event": "stream_eof", "item_id": finished_item_id, "domain": domain}
                 await self.mqtt.publish_json(
                     f"dmd_showcase/clients/{client_dmd_id}/{domain}/events",
@@ -730,9 +966,18 @@ class ConsumeOnceOrchestrator:
 
         elif ev_type == "stop_stream":
             logger.info("[ORCHESTRATOR] Event 'stop_stream' from dmd='%s' item='%s'", dmd_id, item_id)
+            self.last_claimed_until.pop((dmd_id, domain), None)
             await self.streamer.stop_stream(dmd_id)
             if item_id:
                 await self.purge_consumed_package(item_id)
+            else:
+                consumed_ids = [
+                    aid
+                    for aid, pkg in list(self.active_packages.items())
+                    if pkg.dmd_id == dmd_id and pkg.domain == domain and pkg.consumed
+                ]
+                for aid in consumed_ids:
+                    await self.purge_consumed_package(aid)
 
         elif ev_type == "client_offline":
             logger.info(

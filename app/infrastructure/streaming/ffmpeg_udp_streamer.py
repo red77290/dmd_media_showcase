@@ -16,8 +16,9 @@ import asyncio
 import logging
 import socket
 import struct
+import time
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.domain.ports.frame_streamer import IFrameStreamerPort
 from app.portable_env import get_ffmpeg_binary
@@ -70,9 +71,28 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
     ) -> None:
         self._active_tasks: Dict[str, asyncio.Task[None]] = {}
         self._active_procs: Dict[str, asyncio.subprocess.Process] = {}
+        self._active_meta: Dict[str, Dict[str, Any]] = {}
         self._packet_sink = packet_sink
 
+    @property
+    def active_streams_count(self) -> int:
+        return sum(1 for t in self._active_tasks.values() if not t.done())
+
+    def get_active_stream(self, dmd_id: str) -> Optional[Dict[str, Any]]:
+        task = self._active_tasks.get(dmd_id)
+        if task is None or task.done():
+            return None
+        return self._active_meta.get(dmd_id)
+
+    def describe_active_streams(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            dmd_id: dict(meta)
+            for dmd_id, meta in self._active_meta.items()
+            if (task := self._active_tasks.get(dmd_id)) is not None and not task.done()
+        }
+
     async def stop_stream(self, dmd_id: str) -> None:
+        self._active_meta.pop(dmd_id, None)
         proc = self._active_procs.pop(dmd_id, None)
         if proc is not None and proc.returncode is None:
             try:
@@ -105,6 +125,16 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 await on_eof(dmd_id, item_id, True)
             return False
 
+        effective_fps = max(6, min(30, int(fps)))
+        self._active_meta[dmd_id] = {
+            "item_id": item_id,
+            "width": width,
+            "height": height,
+            "fps": effective_fps,
+            "udp_ip": udp_ip,
+            "udp_port": int(udp_port),
+            "started_at": time.time(),
+        }
         loop = asyncio.get_running_loop()
         task = loop.create_task(
             self._run_ffmpeg_udp_loop(
@@ -113,7 +143,7 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 stream_path=stream_path,
                 width=width,
                 height=height,
-                fps=max(6, min(30, int(fps))),
+                fps=effective_fps,
                 udp_ip=udp_ip,
                 udp_port=int(udp_port),
                 on_eof=on_eof,
@@ -227,6 +257,7 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
         except Exception as exc:
             logger.warning("[UDP STREAM] Error streaming to %s:%d (%s)", udp_ip, udp_port, exc)
         finally:
+            self._active_meta.pop(dmd_id, None)
             self._active_procs.pop(dmd_id, None)
             self._active_tasks.pop(dmd_id, None)
             sock.close()

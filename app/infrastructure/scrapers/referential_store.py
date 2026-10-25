@@ -30,6 +30,8 @@ from app.domain.taxonomy import (
     CANONICAL_DECADES,
     GAME_GENRE_CATALOG,
     RETRO_SYSTEM_CATALOG,
+    is_disallowed_non_fighting_title,
+    normalize_category_slug,
     resolve_canonical_genre,
     resolve_canonical_system,
 )
@@ -37,20 +39,61 @@ from app.portable_env import get_data_dir
 
 logger = logging.getLogger("dmd_showcase.scrapers.referential")
 
+_SYS_RNG = random.SystemRandom()
+
 # Dynamically generated 2-letter alphanumeric search syllables for live catalog harvesting
 _VOWELS = "aeiou"
 _CONSONANTS = "bcdfghjklmnpqrstvwxz"
 _ADB_ROM_LINK_RE = re.compile(r"dettaglio_mame\.php\?[^>]*?\bgame_name=([a-z0-9_]+)", re.IGNORECASE)
 _IGNORED_MAME_PREFIXES = ("bios", "neogeo", "cvs", "playch10", "nss", "megatech", "stvbios", "cpzn")
-_REGION_TAG_RE = re.compile(r"\s*\([^)]*\)")
+_REGION_TAG_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_SUBTITLE_SPLIT_RE = re.compile(r"\s*(?::|\s[-–~]\s)\s*")
+_EDITION_SUBTITLE_SLUGS: Set[str] = {
+    "the_new_challengers",
+    "special_champion_edition",
+    "champion_edition",
+    "hyper_fighting",
+    "the_world_warrior",
+    "turbo",
+    "turbo_hyper_fighting",
+    "special",
+    "dash",
+    "plus",
+    "plus_champion_edition",
+}
 
 
 def random_search_syllable() -> str:
     """Generate a natural 2-letter syllable (`ca`, `ma`, `st`, `ra`, `so`, ...) for live index harvesting."""
-    if random.random() < 0.75:
-        return random.choice(_CONSONANTS) + random.choice(_VOWELS)
-    return random.choice(_VOWELS) + random.choice(_CONSONANTS)
+    if _SYS_RNG.random() < 0.75:
+        return _SYS_RNG.choice(_CONSONANTS) + _SYS_RNG.choice(_VOWELS)
+    return _SYS_RNG.choice(_VOWELS) + _SYS_RNG.choice(_CONSONANTS)
+
+
+def _is_excluded_nointro_filename(filename: str) -> bool:
+    """Return True if a Libretro / Archive.org filename is a hack, bootleg, unlicensed, demo, beta, or VC dump."""
+    low = (filename or "").lower()
+    return any(
+        bad in low
+        for bad in (
+            "virtual console",
+            "[hack",
+            "(hack",
+            "arcade hack",
+            "(unl)",
+            "(pirate",
+            "(bootleg",
+            "[b]",
+            "[t+",
+            "(proto",
+            "(beta",
+            "(sample",
+            "(demo",
+            "hyper champion edition",
+            "remastered edition",
+        )
+    )
 
 
 def normalize_game_lookup_key(title: str) -> str:
@@ -217,6 +260,7 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
     """
 
     source_id = "libretro_wikidata"
+    SCHEMA_VERSION = 3
 
     def __init__(self) -> None:
         self.store = LiveReferentialStore(self.source_id, ttl_seconds=86400)
@@ -330,9 +374,59 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         if not target_key:
             return {"boxart": None, "title": None, "snap": None, "video": None}
 
-        # Also prepare base key without subtitle (before ':' or ' - ')
-        short_title = re.split(r"[:\-–]", game_title)[0].strip()
-        short_key = normalize_game_lookup_key(short_title) if len(short_title) >= 4 else target_key
+        # Only allow stripping a subtitle from `game_title` when it is an edition suffix
+        # (e.g. "Super Street Fighter II: The New Challengers" -> "Super Street Fighter II"),
+        # NEVER splitting on bare '-' inside "X-Men" / "Spider-Man" and NEVER collapsing
+        # distinct games like "X-Men: Children of the Atom" or "X-Men: Mutant Academy" onto "X-Men.png"!
+        title_parts = _SUBTITLE_SPLIT_RE.split(game_title, maxsplit=1)
+        short_key = ""
+        if len(title_parts) > 1:
+            sub_slug = normalize_category_slug(title_parts[1])
+            if sub_slug in _EDITION_SUBTITLE_SLUGS:
+                cand_short = normalize_game_lookup_key(title_parts[0])
+                if len(cand_short) >= 6:
+                    short_key = cand_short
+
+        def _classify_asset_match(asset_fname: str) -> int:
+            """Return 2 for exact/edition-short match, 1 for safe file-edition match, 0 for no match."""
+            if _is_excluded_nointro_filename(asset_fname):
+                return 0
+            fkey = normalize_game_lookup_key(asset_fname)
+            if not fkey:
+                return 0
+            if fkey == target_key or (short_key and fkey == short_key):
+                return 2
+            if len(target_key) >= 6:
+                stem = asset_fname
+                low_s = stem.lower()
+                if low_s.endswith(".ia.mp4"):
+                    stem = stem[:-7]
+                elif low_s.endswith((".png", ".mp4")):
+                    stem = stem[:-4]
+                stem = _REGION_TAG_RE.sub("", stem).strip()
+                f_parts = _SUBTITLE_SPLIT_RE.split(stem, maxsplit=1)
+                if len(f_parts) > 1:
+                    f_base_key = normalize_game_lookup_key(f_parts[0])
+                    f_sub_slug = normalize_category_slug(f_parts[1])
+                    if f_base_key == target_key and not any(
+                        bad in f_sub_slug
+                        for bad in (
+                            "venom",
+                            "x_men",
+                            "revenge",
+                            "carnage",
+                            "anxiety",
+                            "clone",
+                            "arcade_game",
+                            "mythologies",
+                            "sub_zero",
+                            "shredder",
+                            "hyperstone",
+                            "turtles_in_time",
+                        )
+                    ):
+                        return 1
+            return 0
 
         out: Dict[str, Optional[str]] = {"boxart": None, "title": None, "snap": None, "video": None}
         folder_map = {
@@ -346,19 +440,15 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
             if not file_list:
                 continue
             exact_matches: List[Tuple[int, str]] = []
-            prefix_matches: List[Tuple[int, str]] = []
+            edition_matches: List[Tuple[int, str]] = []
             for fname in file_list:
-                if "virtual console" in fname.lower():
-                    continue
-                fkey = normalize_game_lookup_key(fname)
-                if not fkey:
-                    continue
-                if fkey == target_key or (short_key and fkey == short_key):
+                tier = _classify_asset_match(fname)
+                if tier == 2:
                     exact_matches.append((score_libretro_filename_for_lang(fname, lang), fname))
-                elif len(target_key) >= 5 and (fkey.startswith(target_key) or target_key.startswith(fkey)):
-                    prefix_matches.append((score_libretro_filename_for_lang(fname, lang) - 15, fname))
+                elif tier == 1:
+                    edition_matches.append((score_libretro_filename_for_lang(fname, lang) - 10, fname))
 
-            chosen_pool = exact_matches if exact_matches else prefix_matches
+            chosen_pool = exact_matches if exact_matches else edition_matches
             if chosen_pool:
                 chosen_pool.sort(key=lambda item: item[0], reverse=True)
                 best_fname = chosen_pool[0][1]
@@ -371,18 +461,18 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         video_list = folders.get("Video_Snaps") or []
         if archive_video_repo and video_list:
             v_exact: List[Tuple[int, str]] = []
-            v_prefix: List[Tuple[int, str]] = []
+            v_edition: List[Tuple[int, str]] = []
             for vname in video_list:
-                vkey = normalize_game_lookup_key(vname)
-                if not vkey:
+                tier = _classify_asset_match(vname)
+                if tier == 0:
                     continue
                 ia_bonus = 5 if vname.lower().endswith(".ia.mp4") else 0
                 base_score = score_libretro_filename_for_lang(vname, lang) + ia_bonus
-                if vkey == target_key or (short_key and vkey == short_key):
+                if tier == 2:
                     v_exact.append((base_score, vname))
-                elif len(target_key) >= 5 and (vkey.startswith(target_key) or target_key.startswith(vkey)):
-                    v_prefix.append((base_score - 15, vname))
-            v_pool = v_exact if v_exact else v_prefix
+                else:
+                    v_edition.append((base_score - 10, vname))
+            v_pool = v_exact if v_exact else v_edition
             if v_pool:
                 v_pool.sort(key=lambda item: item[0], reverse=True)
                 best_vname = v_pool[0][1]
@@ -401,7 +491,8 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         """
         Query Wikidata SPARQL (or CirrusSearch fallback) for strictly verified Video Games (`wd:Q7889`)
         released on platform `sys_key` (`wdt:P400`) and matching `genre_key` (`wdt:P136/wdt:P279*`),
-        returning localized titles (`fr`, `en`, `es`), year, and Wikipedia sitelinks.
+        excluding incompatible subgenres (e.g. Beat 'em up / Hack-and-slash / Platformer when querying
+        1v1 `fighting`), returning localized titles (`fr`, `en`, `es`), year, and Wikipedia sitelinks.
         """
         canon_sys = resolve_canonical_system(sys_key)
         canon_genre = resolve_canonical_genre("games", genre_key) if genre_key else ""
@@ -409,8 +500,13 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
 
         data = self.store.load()
         meta = data.get("metadata") or {}
-        by_bucket = (meta.get("by_system_genre") or {}) if meta.get("schema_version") == 2 else {}
-        cached_list = by_bucket.get(cache_bucket)
+        is_fresh = not self.store.is_expired()
+        by_bucket = (
+            dict(meta.get("by_system_genre") or {})
+            if meta.get("schema_version") == self.SCHEMA_VERSION
+            else {}
+        )
+        cached_list = by_bucket.get(cache_bucket) if is_fresh else None
         if isinstance(cached_list, list) and len(cached_list) >= 5:
             return cached_list
 
@@ -423,6 +519,9 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
             if gmeta
             else []
         )
+        excluded_genre_qids: List[str] = (
+            list(gmeta.get("wikidata_excluded_qids") or []) if gmeta else []
+        )
 
         if genre_qids:
             values_str = " ".join(f"wd:{q}" for q in genre_qids if q)
@@ -430,16 +529,26 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         else:
             genre_clause = ""
 
+        if excluded_genre_qids:
+            excl_str = " ".join(f"wd:{q}" for q in excluded_genre_qids if q)
+            exclude_clause = (
+                f"FILTER NOT EXISTS {{ VALUES ?exclGenre {{ {excl_str} }} "
+                "?game wdt:P136/wdt:P279* ?exclGenre . } "
+            )
+        else:
+            exclude_clause = ""
+
         sparql = (
             "SELECT DISTINCT ?game ?titleFr ?titleEn ?year ?frTitle ?enTitle WHERE { "
             f"?game wdt:P31/wdt:P279* wd:Q7889 ; wdt:P400 wd:{platform_qid} . "
             f"{genre_clause}"
+            f"{exclude_clause}"
             "OPTIONAL { ?game wdt:P577 ?pubDate . BIND(YEAR(?pubDate) AS ?year) } "
             "OPTIONAL { ?game rdfs:label ?titleFr . FILTER(LANG(?titleFr) = 'fr') } "
             "OPTIONAL { ?game rdfs:label ?titleEn . FILTER(LANG(?titleEn) = 'en') } "
             "OPTIONAL { ?frArticle schema:about ?game ; schema:isPartOf <https://fr.wikipedia.org/> ; schema:name ?frTitle . } "
             "OPTIONAL { ?enArticle schema:about ?game ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?enTitle . } "
-            "} LIMIT 100"
+            "} LIMIT 250"
         )
 
         games_by_qid: Dict[str, Dict[str, Any]] = {}
@@ -463,6 +572,11 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                         continue
                     # Skip raw QID labels
                     if re.fullmatch(r"Q\d+", title_en or title_fr):
+                        continue
+                    if canon_genre == "fighting" and (
+                        is_disallowed_non_fighting_title(title_en)
+                        or is_disallowed_non_fighting_title(title_fr)
+                    ):
                         continue
                     yr_raw = str(((b.get("year") or {}).get("value")) or "").strip()
                     yr = yr_raw[:4] if len(yr_raw) >= 4 and yr_raw[:4].isdigit() else ""
@@ -502,9 +616,10 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                     canon_genre=canon_genre,
                     platform_qid=platform_qid,
                     genre_qid=g_qid,
+                    excluded_genre_qids=excluded_genre_qids,
                     games_by_qid=games_by_qid,
                 )
-                if len(games_by_qid) >= 40:
+                if len(games_by_qid) >= 60:
                     break
 
         harvested = list(games_by_qid.values())
@@ -513,7 +628,7 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
             tokens = [f"{canon_sys}:{g['qid']}" for g in harvested]
             self.store.save(
                 tokens=tokens,
-                metadata={"schema_version": 2, "by_system_genre": by_bucket},
+                metadata={"schema_version": self.SCHEMA_VERSION, "by_system_genre": by_bucket},
             )
             logger.info(
                 "[REFERENTIAL:wikidata] Harvested %d verified '%s' games for genre '%s'",
@@ -530,13 +645,14 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         canon_genre: str,
         platform_qid: str,
         genre_qid: Optional[str],
+        excluded_genre_qids: List[str],
         games_by_qid: Dict[str, Dict[str, Any]],
     ) -> None:
         """
         Query `https://www.wikidata.org/w/api.php` using `haswbstatement` CirrusSearch
         (`haswbstatement:P31=Q7889 haswbstatement:P400={platform_qid} haswbstatement:P136={genre_qid}`)
-        followed by `wbgetentities` to retrieve localized `fr`/`en` labels, release year (`P577`),
-        and `frwiki`/`enwiki` sitelinks without touching `query.wikidata.org/sparql`.
+        followed by `wbgetentities` claim verification to retrieve localized `fr`/`en` labels,
+        release year (`P577`), and `frwiki`/`enwiki` sitelinks.
         """
         sr_parts = [
             "haswbstatement:P31=Q7889",
@@ -544,6 +660,9 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
         ]
         if genre_qid:
             sr_parts.append(f"haswbstatement:P136={genre_qid}")
+        for excl_qid in excluded_genre_qids:
+            if excl_qid:
+                sr_parts.append(f"-haswbstatement:P136={excl_qid}")
         srsearch = " ".join(sr_parts)
         try:
             s_resp = await client.get(
@@ -583,9 +702,38 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
             if e_resp.status_code != 200:
                 return
             entities = (e_resp.json().get("entities")) or {}
+            excluded_set = set(excluded_genre_qids)
             for qid, ent in entities.items():
                 if not isinstance(ent, dict):
                     continue
+                claims = ent.get("claims") or {}
+                # Verify exact P400 platform claim if P400 claims are present
+                p400 = claims.get("P400") or []
+                if p400:
+                    claimed_platforms = {
+                        str(
+                            (((c.get("mainsnak") or {}).get("datavalue") or {}).get("value") or {}).get("id")
+                            or ""
+                        )
+                        for c in p400
+                        if isinstance(c, dict)
+                    }
+                    if claimed_platforms and platform_qid not in claimed_platforms:
+                        continue
+                # Reject entities carrying an excluded P136 genre (e.g. Beat 'em up / Platformer)
+                if excluded_set:
+                    p136 = claims.get("P136") or []
+                    claimed_genres = {
+                        str(
+                            (((c.get("mainsnak") or {}).get("datavalue") or {}).get("value") or {}).get("id")
+                            or ""
+                        )
+                        for c in p136
+                        if isinstance(c, dict)
+                    }
+                    if claimed_genres & excluded_set:
+                        continue
+
                 labels = ent.get("labels") or {}
                 title_fr = str(((labels.get("fr") or {}).get("value")) or "").strip()
                 title_en = str(((labels.get("en") or {}).get("value")) or "").strip()
@@ -593,12 +741,17 @@ class LibretroWikidataReferentialStrategy(IScraperReferentialStrategy):
                     continue
                 if re.fullmatch(r"Q\d+", title_en or title_fr):
                     continue
+                if canon_genre == "fighting" and (
+                    is_disallowed_non_fighting_title(title_en)
+                    or is_disallowed_non_fighting_title(title_fr)
+                ):
+                    continue
                 sitelinks = ent.get("sitelinks") or {}
                 fr_wiki = str(((sitelinks.get("frwiki") or {}).get("title")) or "").strip()
                 en_wiki = str(((sitelinks.get("enwiki") or {}).get("title")) or "").strip()
 
                 yr = ""
-                p577 = (ent.get("claims") or {}).get("P577") or []
+                p577 = claims.get("P577") or []
                 for claim in p577:
                     tval = (
                         (((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value") or {}).get("time")
@@ -909,7 +1062,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             if g and g.lower() != "all"
         ]
         specific_sys = next((s for s in req_sys if s in self._SYSTEM_SEARCH_STEMS), None)
-        chosen_genre = random.choice(req_genres) if req_genres else None
+        chosen_genre = _SYS_RNG.choice(req_genres) if req_genres else None
 
         if chosen_genre and chosen_genre in self._GENRE_SEARCH_STEMS:
             g_map = self._GENRE_SEARCH_STEMS[chosen_genre]
@@ -931,7 +1084,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
                     unseen_stems = [
                         s for s in stems_pool if s not in sg_tokens and f"games_adb_{s}" not in seen_ids
                     ] or list(stems_pool)
-                    random.shuffle(unseen_stems)
+                    _SYS_RNG.shuffle(unseen_stems)
                     for stem in unseen_stems[:4]:
                         fresh = await self._harvest_from_lista_mame(client, stem, sys_key=specific_sys)
                         for rom in fresh:
@@ -946,7 +1099,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
                     unseen_sg = [r for r in sg_tokens if f"games_adb_{r}" not in seen_ids]
                 pool = unseen_sg if unseen_sg else sg_tokens
                 if pool:
-                    return random.sample(pool, k=min(len(pool), max(6, count)))
+                    return _SYS_RNG.sample(pool, k=min(len(pool), max(6, count)))
 
         if specific_sys:
             by_system = dict(((ref_data.get("metadata") or {}).get("by_system")) or {})
@@ -962,7 +1115,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
                     for s in self._SYSTEM_SEARCH_STEMS[specific_sys]
                     if s not in sys_tokens and f"games_adb_{s}" not in seen_ids
                 ] or list(self._SYSTEM_SEARCH_STEMS[specific_sys])
-                random.shuffle(stems)
+                _SYS_RNG.shuffle(stems)
                 for stem in stems[:4]:
                     fresh = await self._harvest_from_lista_mame(client, stem, sys_key=specific_sys)
                     for rom in fresh:
@@ -975,7 +1128,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
                 unseen_sys = [r for r in sys_tokens if f"games_adb_{r}" not in seen_ids]
             pool = unseen_sys if unseen_sys else sys_tokens
             if pool:
-                return random.sample(pool, k=min(len(pool), max(1, count)))
+                return _SYS_RNG.sample(pool, k=min(len(pool), max(1, count)))
 
         all_tokens: List[str] = list(ref_data.get("tokens") or [])
         unseen = [r for r in all_tokens if f"games_adb_{r}" not in seen_ids]
@@ -991,7 +1144,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             unseen = all_tokens
         if not unseen:
             return []
-        return random.sample(unseen, k=min(len(unseen), max(1, count)))
+        return _SYS_RNG.sample(unseen, k=min(len(unseen), max(1, count)))
 
 
 class JikanReferentialStrategy(IScraperReferentialStrategy):

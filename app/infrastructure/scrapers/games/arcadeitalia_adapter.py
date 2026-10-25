@@ -24,10 +24,13 @@ from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.referential_strategy import IScraperReferentialStrategy
 from app.domain.ports.scraper_source import IScraperSource
 from app.domain.taxonomy import (
+    CANONICAL_DECADES,
     GAME_GENRE_CATALOG,
     RETRO_SYSTEM_CATALOG,
     ReferentialConsolidator,
+    build_game_fingerprint,
     is_arcade_system,
+    is_disallowed_non_fighting_title,
     localize_label,
     resolve_canonical_genre,
     resolve_canonical_system,
@@ -44,6 +47,8 @@ from app.infrastructure.scrapers.referential_store import (
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.arcadeitalia")
+
+_SYS_RNG = random.SystemRandom()
 
 ADB_HTTPS_URL = "https://adb.arcadeitalia.net/service_scraper.php"
 
@@ -278,11 +283,16 @@ class ArcadeItaliaAdapter(IScraperSource):
             )
 
         results: List[MediaCandidate] = []
+        req_decs_clean = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() != "all"
+        ]
         async with create_async_http_client(timeout=6.0) as client:
             for _ in range(max(3, count * 2)):
                 if len(results) >= count:
                     break
-                sys_key = random.choice(req_systems)
+                sys_key = _SYS_RNG.choice(req_systems)
                 if not is_arcade_system(sys_key):
                     console_criteria = FilterCriteria(
                         domain="games",
@@ -325,7 +335,7 @@ class ArcadeItaliaAdapter(IScraperSource):
                     if parent_roms_to_fetch:
                         parent_rows = await self._query_adb_roms(client, list(dict.fromkeys(parent_roms_to_fetch))[:8])
                         rows = parent_rows + rows
-                    random.shuffle(rows)
+                    _SYS_RNG.shuffle(rows)
                     # Prioritize parent ROMs with shortplay video over clones
                     rows.sort(
                         key=lambda r: (
@@ -343,14 +353,47 @@ class ArcadeItaliaAdapter(IScraperSource):
                         cand_id = f"games_adb_{rom}"
                         if not rom or cand_id in seen_ids:
                             continue
+                        clone_parent = str(row.get("cloneof") or "").strip()
+                        if clone_parent and f"games_adb_{clone_parent}" in seen_ids:
+                            seen_ids.add(cand_id)
+                            continue
                         if not self._is_row_valid_for_system(row, sys_key):
                             seen_ids.add(cand_id)
                             continue
+                        if req_decs_clean:
+                            yr_str = str(row.get("year") or "").strip()[:4]
+                            if not yr_str.isdigit():
+                                seen_ids.add(cand_id)
+                                continue
+                            yr_val = int(yr_str)
+                            dec_ok = False
+                            for dec_c in req_decs_clean:
+                                if dec_c in CANONICAL_DECADES:
+                                    lo_b, hi_b = CANONICAL_DECADES[dec_c]["bounds"]
+                                    if lo_b <= yr_val <= hi_b:
+                                        dec_ok = True
+                                        break
+                                elif len(dec_c) >= 4 and dec_c[:4].isdigit():
+                                    base_y = int(dec_c[:4])
+                                    if base_y <= yr_val <= base_y + 9:
+                                        dec_ok = True
+                                        break
+                            if not dec_ok:
+                                seen_ids.add(cand_id)
+                                continue
                         if req_genres:
                             row_genre = resolve_canonical_genre(
                                 "games", str(row.get("genre") or "").strip()
                             )
                             if row_genre not in req_genres:
+                                seen_ids.add(cand_id)
+                                continue
+                            if (
+                                "fighting" in req_genres
+                                and "platform" not in req_genres
+                                and "beatemup" not in req_genres
+                                and is_disallowed_non_fighting_title(str(row.get("title") or ""))
+                            ):
                                 seen_ids.add(cand_id)
                                 continue
                         if (
@@ -364,13 +407,19 @@ class ArcadeItaliaAdapter(IScraperSource):
                         if not cand:
                             seen_ids.add(cand_id)
                             continue
+                        cand_sys = str((cand.extra_meta or {}).get("system") or sys_key)
                         title_slug = re.sub(r"[^a-z0-9]+", "_", cand.title.lower()).strip("_")
                         title_key = f"games_adb_title_{title_slug}"
-                        if title_key in seen_ids:
+                        fp_key = build_game_fingerprint(cand_sys, cand.title)
+                        if title_key in seen_ids or (fp_key and fp_key in seen_ids):
                             seen_ids.add(cand.id)
                             continue
                         seen_ids.add(cand.id)
                         seen_ids.add(title_key)
+                        if fp_key:
+                            seen_ids.add(fp_key)
+                        if clone_parent:
+                            seen_ids.add(f"games_adb_{clone_parent}")
                         results.append(cand)
                         if len(results) >= count:
                             break

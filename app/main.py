@@ -17,9 +17,10 @@ enforce_hermetic_environment()
 
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional, Set, Tuple
 
 import dmd_gif_converter
 from dmd_gif_converter import truncate_gif_bytes, truncate_rgb565_stream
@@ -29,7 +30,11 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from app import __version__
-from app.application.consume_once_orchestrator import consume_once_orchestrator
+from app.application.consume_once_orchestrator import (
+    canonical_dmd_board_key,
+    consume_once_orchestrator,
+    strip_mqtt_gen_suffix,
+)
 from app.asyncapi_spec import ASYNCAPI_YAML
 from app.config import settings
 from app.domain.entities import PanelGeometry
@@ -210,6 +215,16 @@ async def get_asyncapi_spec() -> Response:
     return Response(content=ASYNCAPI_YAML, media_type="application/yaml; charset=utf-8")
 
 
+ALL_SHOWCASE_DOMAINS: Tuple[DomainType, ...] = ("games", "movies", "series", "anime")
+_session_client_meta: Dict[Tuple[str, str], Tuple[str, float]] = {}
+
+
+def _normalized_seen_stats() -> Dict[str, int]:
+    """Always return all 4 canonical Showcase domains even when `seen_history.json` is empty."""
+    raw = seen_repository.stats() or {}
+    return {dom: int(raw.get(dom, 0)) for dom in ALL_SHOWCASE_DOMAINS}
+
+
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["System & Admin"])
 async def get_health() -> HealthResponse:
@@ -221,20 +236,79 @@ async def get_health() -> HealthResponse:
         if showcase_mqtt_gateway.embedded_broker
         else int(srv_cfg.get("mqtt_port") or 1883)
     )
+    co = consume_once_orchestrator
+    board_keys: Set[str] = set(co.distinct_board_keys())
+
+    mqtt_tcp_sessions = 0
+    if showcase_mqtt_gateway.embedded_broker is not None:
+        for cid, mqtt_sess in list(showcase_mqtt_gateway.embedded_broker.clients.items()):
+            if cid == "dmd_media_showcase_server":
+                continue
+            mqtt_tcp_sessions += 1
+            base_id = strip_mqtt_gen_suffix(cid)
+            best_ip = co.client_udp_ips.get(base_id) or mqtt_sess.peer_ip
+            board_keys.add(canonical_dmd_board_key(base_id, best_ip))
+    elif showcase_mqtt_gateway.external_client is not None:
+        mqtt_tcp_sessions = 1
+
+    non_tester_sessions = [
+        s
+        for s in batch_manager.sessions.values()
+        if (s.request.client_id or s.session_id) != "webui_tester"
+    ]
+    slot_keys: Set[Tuple[str, str]] = {(dmd_id, dom) for (dmd_id, dom) in co.client_configs}
+    for s in non_tester_sessions:
+        cid = s.request.client_id or s.session_id
+        slot_keys.add((cid, s.domain))
+        meta = _session_client_meta.get((cid, s.domain))
+        sess_ip = meta[0] if meta else ""
+        board_keys.add(canonical_dmd_board_key(cid, sess_ip))
+
+    distinct_dmds = len(board_keys)
+    total_completed = batch_manager.completed_jobs_total + co.completed_jobs_total
+    total_duration = batch_manager._total_job_duration_s + co.total_job_duration_s
+    combined_avg_s = round(total_duration / total_completed, 2) if total_completed > 0 else 0.0
+    active_udp = (
+        co.streamer.active_streams_count
+        if hasattr(co.streamer, "active_streams_count")
+        else 0
+    )
+    ready_slots = co.ready_slots_count + sum(
+        1 for s in non_tester_sessions if s.current_batch.is_ready
+    )
+    standby_slots = co.standby_slots_count + sum(
+        1 for s in non_tester_sessions if s.next_batch is not None and s.next_batch.is_ready
+    )
+    legacy_playing = sum(
+        1 for s in non_tester_sessions if s.current_batch.served_count > 0
+    )
+    active_broadcasts = max(active_udp, co.active_broadcasts_count + legacy_playing)
+
     return HealthResponse(
         status="ok",
         version=__version__,
         converter_version=getattr(dmd_gif_converter, "__version__", "8.0.0"),
-        active_workers=batch_manager.active_workers,
+        active_workers=min(
+            settings.effective_max_workers,
+            batch_manager.active_workers + co.active_workers,
+        ),
         max_workers=settings.effective_max_workers,
-        queue_depth=batch_manager.queue_depth,
-        active_sessions=len(batch_manager.sessions) + len(consume_once_orchestrator.client_configs),
-        completed_jobs_total=batch_manager.completed_jobs_total,
-        avg_job_duration_s=batch_manager.avg_job_duration_s,
+        queue_depth=batch_manager.queue_depth + co.queue_depth,
+        active_sessions=max(distinct_dmds, len(slot_keys)),
+        completed_jobs_total=total_completed,
+        avg_job_duration_s=combined_avg_s,
         providers_configured=scraper_registry.describe_active_chains(),
+        providers_detailed=scraper_registry.describe_chains_detailed(),
         mqtt_mode=str(srv_cfg.get("mqtt_mode") or "embedded"),
         mqtt_port=mqtt_port,
-        seen_history_counts=seen_repository.stats(),
+        mqtt_connected_clients=distinct_dmds,
+        mqtt_tcp_sessions=mqtt_tcp_sessions,
+        registered_dmd_slots=len(slot_keys),
+        ready_slots=ready_slots,
+        standby_slots=standby_slots,
+        active_udp_streams=active_udp,
+        active_broadcasts=active_broadcasts,
+        seen_history_counts=_normalized_seen_stats(),
     )
 
 
@@ -245,12 +319,52 @@ async def get_admin_config() -> Dict[str, Any]:
     active scraper chains, connected DMD clients, and `seen_history.json` counts.
     Developer API keys are never exposed in plaintext.
     """
+    now_ts = time.time()
+    clients = consume_once_orchestrator.describe_connected_clients()
+    existing_keys = {(c["dmd_id"], c["domain"]) for c in clients}
+    for sess in batch_manager.sessions.values():
+        cid = sess.request.client_id or sess.session_id
+        if cid == "webui_tester" or (cid, sess.domain) in existing_keys:
+            continue
+        cur_items = sess.current_batch.items
+        nxt_items = sess.next_batch.items if sess.next_batch else []
+        meta = _session_client_meta.get((cid, sess.domain))
+        sess_ip = meta[0] if meta and meta[0] not in ("unknown", "testclient") else ""
+        last_seen_ago = int(max(0.0, now_ts - meta[1])) if meta else None
+        cur_title = cur_items[0].title if cur_items else None
+        is_served = sess.current_batch.served_count > 0 and cur_title is not None
+        clients.append(
+            {
+                "dmd_id": cid,
+                "domain": sess.domain,
+                "transport": "HTTP",
+                "client_ip": sess_ip,
+                "width": sess.request.width,
+                "height": sess.request.height,
+                "lang": sess.request.lang,
+                "video_mode": sess.request.video_mode,
+                "color_boost": str(sess.request.color_boost),
+                "systems": list(sess.request.systems),
+                "genres": list(sess.request.genres),
+                "decades": list(sess.request.decades),
+                "active_title": cur_title,
+                "playing_title": cur_title if is_served else None,
+                "last_played_title": cur_title,
+                "is_playing": is_served,
+                "udp_streaming": False,
+                "ready_title": cur_title if sess.current_batch.is_ready else None,
+                "standby_title": nxt_items[0].title if nxt_items else None,
+                "preparing": not sess.current_batch.is_ready or sess.next_batch_creating,
+                "last_seen_ago_s": last_seen_ago,
+            }
+        )
     return {
         "config": server_config_store.get_public_admin_config(),
         "vault_status": server_config_store.get_vault_status(),
-        "providers": scraper_registry.describe_active_chains(),
-        "seen_history": seen_repository.stats(),
-        "clients": consume_once_orchestrator.describe_connected_clients(),
+        "providers": scraper_registry.describe_chains_detailed(),
+        "providers_summary": scraper_registry.describe_active_chains(),
+        "seen_history": _normalized_seen_stats(),
+        "clients": clients,
     }
 
 
@@ -263,7 +377,8 @@ async def update_admin_config(payload: AdminServerConfigPayload) -> Dict[str, An
         "status": "saved",
         "config": updated,
         "vault_status": server_config_store.get_vault_status(),
-        "providers": scraper_registry.describe_active_chains(),
+        "providers": scraper_registry.describe_chains_detailed(),
+        "providers_summary": scraper_registry.describe_active_chains(),
     }
 
 
@@ -277,7 +392,7 @@ async def reset_seen_history(
         "status": "reset",
         "domain": domain or "all",
         "cleared_count": cleared,
-        "seen_history": seen_repository.stats(),
+        "seen_history": _normalized_seen_stats(),
     }
 
 
@@ -324,6 +439,7 @@ async def get_domain_filters(
 async def register_consume_once_config(
     domain: DomainType,
     req: SessionRegisterRequest,
+    request: Request,
 ) -> Dict[str, Any]:
     """
     HTTP equivalent of publishing `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
@@ -331,6 +447,8 @@ async def register_consume_once_config(
     preparation of 1 unseen `PreparedShowcasePackage`.
     """
     dmd_id = req.client_id or f"http_{domain}_{req.width}x{req.height}"
+    peer_ip = request.client.host if request.client else ""
+    consume_once_orchestrator.record_http_client(dmd_id, domain, peer_ip)
     geometry = PanelGeometry(
         width=req.width,
         height=req.height,
@@ -355,6 +473,7 @@ async def register_consume_once_config(
 @app.get("/api/v1/{domain}/next", tags=["Consume-Once Protocol"])
 async def claim_next_consume_once_item(
     domain: DomainType,
+    request: Request,
     background_tasks: BackgroundTasks,
     dmd_id: str = Query(default="default_dmd", description="DMD client identifier"),
     client_id: Optional[str] = Query(default=None, description="Alias for dmd_id"),
@@ -369,6 +488,8 @@ async def claim_next_consume_once_item(
       and returns the JSON Card + `stream_url` (`/api/v1/{domain}/stream/{item_id}.rgb565.stream`).
     """
     effective_id = (client_id or "").strip() or dmd_id
+    peer_ip = request.client.host if request.client else ""
+    consume_once_orchestrator.record_http_client(effective_id, domain, peer_ip)
     key = (effective_id, domain)
     if key not in consume_once_orchestrator.client_configs:
         geometry = PanelGeometry(width=width, height=height)
@@ -496,7 +617,16 @@ async def register_domain_session(
         req.width,
         req.height,
     )
-    return await batch_manager.register_session(domain, req)
+    ses_id = batch_manager._make_session_id(domain, req)
+    existed_before = ses_id in batch_manager.sessions
+    t0 = time.monotonic()
+    reg = await batch_manager.register_session(domain, req)
+    cid = req.client_id or reg.session_id
+    if cid != "webui_tester":
+        _session_client_meta[(cid, domain)] = (client_ip, time.time())
+    if not req.include_video and not existed_before and reg.ready_count > 0:
+        consume_once_orchestrator.record_completed_job(time.monotonic() - t0, count=reg.ready_count)
+    return reg
 
 
 @app.get(
@@ -522,6 +652,11 @@ async def get_domain_batch(
             status_code=404,
             detail=f"Unknown or expired session_id '{session_id}' for domain '{domain}'.",
         )
+    sess_state = batch_manager.sessions.get(session_id)
+    if sess_state is not None:
+        cid = sess_state.request.client_id or session_id
+        if cid != "webui_tester":
+            _session_client_meta[(cid, domain)] = (client_ip, time.time())
     return res
 
 
@@ -550,6 +685,7 @@ async def get_domain_random(
     genres: Optional[str] = Query(default=None),
     decade: Optional[str] = Query(default=None),
 ) -> BatchStatusResponse:
+    client_ip = request.client.host if request.client else "unknown"
     eff_snaps = snapshot_panorama_count if snapshot_panorama_count > 0 else (image_count or 0)
     req = SessionRegisterRequest(
         client_id=client_id,
@@ -569,12 +705,17 @@ async def get_domain_random(
         genres=[g.strip() for g in genres.split(",") if g.strip()] if genres else [],
         decade=decade,
     )
+    if client_id != "webui_tester":
+        _session_client_meta[(client_id, domain)] = (client_ip, time.time())
     ses_id = batch_manager._make_session_id(domain, req)
     if ses_id in batch_manager.sessions:
         existing = await batch_manager.get_batch_status(domain, ses_id)
         if existing is not None:
             return existing
+    t0 = time.monotonic()
     reg = await batch_manager.register_session(domain, req)
+    if not include_video and reg.ready_count > 0:
+        consume_once_orchestrator.record_completed_job(time.monotonic() - t0, count=reg.ready_count)
     status = await batch_manager.get_batch_status(domain, reg.session_id)
     assert status is not None
     return status
