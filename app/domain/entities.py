@@ -55,15 +55,26 @@ class FilterCriteria:
     video_type: str = "any"
     include_poster: bool = True
     include_synopsis: bool = True
-    text_scroll_speed: Literal["slow", "normal", "fast"] = "normal"
+    text_scroll_speed: str = "normal"
+    include_card_intro: bool = True
+    card_layout: str = "classic_split"
+    card_theme: str = "tinted"
+    card_font: str = "arcade_pixel"
+    card_accent_color: str = "auto"
+    show_badge: bool = True
+    show_year: bool = True
+    show_rating: bool = True
+    card_hold_s: float = 0.9
     jacket_panorama: bool = True
     marquee_panorama: bool = False
     snapshot_panorama_count: int = 0
+    panorama_duration_s: float = 4.0
     include_video: bool = True
     video_max_duration_s: float = 8.0
     video_fps: int = 15
     video_mode: str = "auto_action"
     color_boost: Union[str, bool] = "auto"
+    render_card_in_stream: bool = False
 
 
 @dataclass

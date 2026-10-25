@@ -15,10 +15,11 @@ Keyless public MAME / Arcade & Retro Console adapter implementing `IScraperSourc
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.referential_strategy import IScraperReferentialStrategy
@@ -57,6 +58,22 @@ _NON_CPS_TITLES = (
     "marvel vs capcom 2",
     "capcom vs. snk",
     "capcom vs snk",
+)
+
+_EXCLUDED_ADB_NOISE_TOKENS = (
+    "mahjong",
+    "casino",
+    "slot",
+    "gambling",
+    "poker",
+    "blackjack",
+    "fruit",
+    "pachinko",
+    "electromechanical",
+    "utilities",
+    "bios",
+    "not classified",
+    "print club",
 )
 
 
@@ -146,6 +163,7 @@ class ArcadeItaliaAdapter(IScraperSource):
         info: Dict[str, Any],
         sys_key: str,
         lang: str,
+        fetch_synopsis: bool = True,
     ) -> Optional[MediaCandidate]:
         rom = str(info.get("game_name") or "").strip()
         if not rom:
@@ -221,7 +239,7 @@ class ArcadeItaliaAdapter(IScraperSource):
         if not cand.poster_url and not cand.snapshot_urls:
             return None
 
-        if (not history or short_lang != "en") and client is not None:
+        if fetch_synopsis and (not history or short_lang != "en") and client is not None:
             wiki_syn, wiki_thumb = await fetch_wikipedia_localized_synopsis(
                 client,
                 clean_title,
@@ -254,6 +272,26 @@ class ArcadeItaliaAdapter(IScraperSource):
                     return [r for r in rows if isinstance(r, dict)]
         except Exception as exc:
             logger.debug("[ArcadeItalia] HTTPS query '%s' failed: %s", params["game_name"], exc)
+        return []
+
+    async def _query_adb_by_title(self, client: Any, title_query: str) -> List[Dict[str, Any]]:
+        """Query ArcadeItalia ADB (`ajax=query_mame&title=...`) strictly over HTTPS."""
+        q_val = (title_query or "").strip()
+        if not q_val:
+            return []
+        params = {
+            "ajax": "query_mame",
+            "lang": "en",
+            "title": q_val,
+        }
+        try:
+            resp = await client.get(ADB_HTTPS_URL, params=params)
+            if resp.status_code == 200:
+                rows = resp.json().get("result") or []
+                if isinstance(rows, list) and rows:
+                    return [r for r in rows if isinstance(r, dict)]
+        except Exception as exc:
+            logger.debug("[ArcadeItalia] HTTPS title query '%s' failed: %s", q_val, exc)
         return []
 
     async def fetch_random_unseen(
@@ -434,20 +472,269 @@ class ArcadeItaliaAdapter(IScraperSource):
 
         return results[:count]
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        q_clean = query.strip()
-        if not q_clean:
-            return None
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        q_clean = (query or "").strip()
+        if not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        raw_systems = [
+            resolve_canonical_system(s)
+            for s in (criteria.systems or [])
+            if s and s.strip().lower() != "all" and resolve_canonical_system(s) in RETRO_SYSTEM_CATALOG
+        ]
+        arcade_systems = [s for s in raw_systems if is_arcade_system(s)]
+        console_systems = [s for s in raw_systems if not is_arcade_system(s)]
+
+        if console_systems and not arcade_systems:
+            return await self.console_adapter.search_candidates(
+                query=q_clean,
+                criteria=criteria,
+                limit=target_limit,
+            )
+
+        req_genres = {
+            resolve_canonical_genre("games", g)
+            for g in (criteria.genres or [])
+            if g and g.strip().lower() != "all"
+        }
+        req_decs_clean = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() != "all"
+        ]
+        target_arcade = arcade_systems or ["arcade"]
+        q_low = q_clean.lower()
+        rom_slug = re.sub(r"[^a-z0-9_]+", "", q_low)
+
+        arcade_candidates: List[MediaCandidate] = []
         try:
-            async with create_async_http_client(timeout=5.5) as client:
-                rom_slug = re.sub(r"[^a-z0-9]+", "", q_clean.lower())
-                if rom_slug:
-                    rows = await self._query_adb_roms(client, [rom_slug])
-                    for row in rows:
-                        cand = await self._build_candidate(client, row, "arcade", lang)
-                        if cand:
-                            return cand
-            return await self.console_adapter.search_by_query(q_clean, lang=lang)
-        except Exception:
-            pass
-        return None
+            async with create_async_http_client(timeout=6.0) as client:
+                tasks = [self._query_adb_by_title(client, q_clean)]
+                if 2 <= len(rom_slug) <= 16:
+                    tasks.insert(0, self._query_adb_roms(client, [rom_slug]))
+                batches = await asyncio.gather(*tasks, return_exceptions=True)
+
+                merged_rows: List[Dict[str, Any]] = []
+                seen_roms: Set[str] = set()
+                for b in batches:
+                    if not isinstance(b, list):
+                        continue
+                    for r in b:
+                        if not isinstance(r, dict):
+                            continue
+                        rname = str(r.get("game_name") or "").strip().lower()
+                        if rname and rname not in seen_roms:
+                            seen_roms.add(rname)
+                            merged_rows.append(r)
+
+                if not merged_rows and hasattr(self.referential_strategy, "_harvest_from_lista_mame"):
+                    specific_sys = arcade_systems[0] if len(arcade_systems) == 1 else None
+                    harvested_roms = await self.referential_strategy._harvest_from_lista_mame(  # type: ignore[attr-defined]
+                        client, q_clean, sys_key=specific_sys
+                    )
+                    if harvested_roms:
+                        merged_rows = await self._query_adb_roms(client, harvested_roms[:12])
+
+                # Also fetch missing parent ROMs for top clone hits so parent sets are preferred
+                missing_parents = [
+                    str(r.get("cloneof") or "").strip().lower()
+                    for r in merged_rows[:24]
+                    if r.get("cloneof") and str(r.get("cloneof") or "").strip().lower() not in seen_roms
+                ]
+                if missing_parents:
+                    parent_rows = await self._query_adb_roms(client, list(dict.fromkeys(missing_parents))[:8])
+                    for pr in parent_rows:
+                        pr_name = str(pr.get("game_name") or "").strip().lower()
+                        if pr_name and pr_name not in seen_roms:
+                            seen_roms.add(pr_name)
+                            merged_rows.insert(0, pr)
+
+                def _row_rank(r: Dict[str, Any]) -> Tuple[int, int, int]:
+                    r_rom = str(r.get("game_name") or "").strip().lower()
+                    raw_t = str(r.get("title") or "").strip()
+                    clean_t = re.sub(r"\s*\([^)]*\)\s*$", "", raw_t).strip().lower()
+                    if r_rom == rom_slug or clean_t == q_low:
+                        rel = 0
+                    elif clean_t.startswith(q_low):
+                        rel = 1
+                    elif q_low in clean_t:
+                        rel = 2
+                    else:
+                        rel = 3
+                    is_clone = 0 if not str(r.get("cloneof") or "").strip() else 1
+                    has_vid = 0 if r.get("url_video_shortplay") else 1
+                    return (rel, is_clone, has_vid)
+
+                merged_rows.sort(key=_row_rank)
+
+                matched_row_specs: List[Tuple[Dict[str, Any], str]] = []
+                pre_seen_keys: Set[str] = set()
+
+                for row in merged_rows:
+                    if len(matched_row_specs) >= target_limit + 3:
+                        break
+                    rom = str(row.get("game_name") or "").strip()
+                    if not rom:
+                        continue
+                    cand_id = f"games_adb_{rom}"
+                    clone_parent = str(row.get("cloneof") or "").strip()
+                    if cand_id in pre_seen_keys or (clone_parent and f"games_adb_{clone_parent}" in pre_seen_keys):
+                        continue
+
+                    genre_raw = str(row.get("genre") or "").strip()
+                    genre_low = genre_raw.lower()
+                    title_raw = str(row.get("title") or "").strip()
+                    title_low = title_raw.lower()
+                    if any(noise in genre_low or noise in title_low for noise in _EXCLUDED_ADB_NOISE_TOKENS):
+                        continue
+                    if "pinball" in genre_low and "pinball" not in req_genres:
+                        continue
+                    if "bootleg" in title_low or "hack" in title_low or "prototype" in title_low:
+                        continue
+
+                    matched_sys: Optional[str] = None
+                    for s_cand in target_arcade:
+                        if self._is_row_valid_for_system(row, s_cand):
+                            matched_sys = s_cand
+                            break
+                    if not matched_sys:
+                        continue
+
+                    if req_decs_clean:
+                        yr_str = str(row.get("year") or "").strip()[:4]
+                        if not yr_str.isdigit():
+                            continue
+                        yr_val = int(yr_str)
+                        dec_ok = False
+                        for dec_c in req_decs_clean:
+                            if dec_c in CANONICAL_DECADES:
+                                lo_b, hi_b = CANONICAL_DECADES[dec_c]["bounds"]
+                                if lo_b <= yr_val <= hi_b:
+                                    dec_ok = True
+                                    break
+                            elif len(dec_c) >= 4 and dec_c[:4].isdigit():
+                                base_y = int(dec_c[:4])
+                                if base_y <= yr_val <= base_y + 9:
+                                    dec_ok = True
+                                    break
+                        if not dec_ok:
+                            continue
+
+                    if req_genres:
+                        row_genre = resolve_canonical_genre("games", genre_raw)
+                        if row_genre not in req_genres:
+                            continue
+                        if (
+                            "fighting" in req_genres
+                            and "platform" not in req_genres
+                            and "beatemup" not in req_genres
+                            and is_disallowed_non_fighting_title(title_raw)
+                        ):
+                            continue
+
+                    if (
+                        not row.get("url_image_ingame")
+                        and not row.get("url_image_flyer")
+                        and not row.get("url_image_title")
+                        and not row.get("url_image_cabinet")
+                    ):
+                        continue
+
+                    clean_t = re.sub(r"\s*\([^)]*\)\s*$", "", title_raw).strip() or title_raw
+                    det_sys = self._detect_hardware_system_from_row(row, matched_sys)
+                    fp_key = build_game_fingerprint(det_sys, clean_t)
+                    title_slug = re.sub(r"[^a-z0-9]+", "_", clean_t.lower()).strip("_")
+                    title_key = f"games_adb_title_{title_slug}"
+                    if title_key in pre_seen_keys or (fp_key and fp_key in pre_seen_keys):
+                        continue
+
+                    pre_seen_keys.add(cand_id)
+                    pre_seen_keys.add(title_key)
+                    if fp_key:
+                        pre_seen_keys.add(fp_key)
+                    if clone_parent:
+                        pre_seen_keys.add(f"games_adb_{clone_parent}")
+                    matched_row_specs.append((row, matched_sys))
+
+                if matched_row_specs:
+                    sem = asyncio.Semaphore(4)
+
+                    async def _build_adb_idx(idx: int, spec: Tuple[Dict[str, Any], str]) -> Optional[MediaCandidate]:
+                        r_dict, s_key = spec
+                        async with sem:
+                            return await self._build_candidate(
+                                client,
+                                r_dict,
+                                s_key,
+                                criteria.lang,
+                                fetch_synopsis=(idx < min(target_limit, 4)),
+                            )
+
+                    built = await asyncio.gather(
+                        *(_build_adb_idx(i, sp) for i, sp in enumerate(matched_row_specs)),
+                        return_exceptions=True,
+                    )
+                    for item in built:
+                        if isinstance(item, MediaCandidate):
+                            arcade_candidates.append(item)
+                            if len(arcade_candidates) >= target_limit:
+                                break
+        except Exception as exc:
+            logger.debug("[ArcadeItalia] Search error for '%s': %s", q_clean, exc)
+
+        # When both arcade and console systems are requested, reserve space so console ports also surface;
+        # when criteria.systems is empty and arcade returned fewer than limit, also query console_adapter.
+        if console_systems:
+            console_quota = (
+                max(1, min(target_limit // 2, len(console_systems) * 2))
+                if target_limit >= 2 and arcade_candidates
+                else (target_limit - len(arcade_candidates))
+            )
+            console_criteria = FilterCriteria(
+                domain="games",
+                systems=list(console_systems),
+                genres=list(criteria.genres),
+                decades=list(criteria.decades),
+                lang=criteria.lang,
+            )
+            if console_quota > 0:
+                console_cands = await self.console_adapter.search_candidates(
+                    query=q_clean,
+                    criteria=console_criteria,
+                    limit=max(console_quota, target_limit - len(arcade_candidates)),
+                )
+                primary_arcade = arcade_candidates[: target_limit - min(len(console_cands), console_quota)]
+                combined = primary_arcade + console_cands + arcade_candidates[len(primary_arcade) :]
+                deduped: List[MediaCandidate] = []
+                seen_out: Set[str] = set()
+                for c in combined:
+                    if c.id in seen_out:
+                        continue
+                    seen_out.add(c.id)
+                    deduped.append(c)
+                    if len(deduped) >= target_limit:
+                        break
+                return deduped
+        elif not raw_systems and len(arcade_candidates) < target_limit:
+            console_cands = await self.console_adapter.search_candidates(
+                query=q_clean,
+                criteria=criteria,
+                limit=target_limit - len(arcade_candidates),
+            )
+            arcade_candidates.extend(console_cands)
+
+        return arcade_candidates[:target_limit]
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(domain="games", systems=[], genres=[], decades=[], lang=lang),
+            limit=1,
+        )
+        return cands[0] if cands else None

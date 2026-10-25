@@ -16,11 +16,12 @@ Keyless Console, Handheld & Home Computer adapter implementing `IScraperSource`:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
@@ -41,7 +42,9 @@ from app.infrastructure.scrapers.http_utils import (
 )
 from app.infrastructure.scrapers.referential_store import (
     LibretroWikidataReferentialStrategy,
+    _is_excluded_nointro_filename,
     libretro_wikidata_referential_strategy,
+    normalize_game_lookup_key,
     score_libretro_filename_for_lang,
 )
 
@@ -191,6 +194,7 @@ class LibretroWikidataAdapter(IScraperSource):
         sys_key: str,
         genre_key: str,
         lang: str,
+        fetch_synopsis: bool = True,
     ) -> Optional[MediaCandidate]:
         canon_sys = resolve_canonical_system(sys_key)
         canon_genre = resolve_canonical_genre("games", genre_key) if genre_key else "platform"
@@ -237,23 +241,34 @@ class LibretroWikidataAdapter(IScraperSource):
             year_str = default_dec[:4] if default_dec[:4].isdigit() else "1989"
 
         # Fetch localized synopsis using the exact sitelink (`fr_wiki` when `lang == "fr"`)
-        wiki_query = (
-            str(entry.get("fr_wiki") or display_title)
-            if short_lang == "fr"
-            else str(entry.get("en_wiki") or title_en or display_title)
-        )
-        wiki_syn, wiki_thumb = await fetch_wikipedia_localized_synopsis(
-            client,
-            wiki_query,
-            lang=short_lang,
-            domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
-        )
+        wiki_syn: Optional[str] = None
+        wiki_thumb: Optional[str] = None
+        if fetch_synopsis and client is not None:
+            wiki_query = (
+                str(entry.get("fr_wiki") or display_title)
+                if short_lang == "fr"
+                else str(entry.get("en_wiki") or title_en or display_title)
+            )
+            wiki_syn, wiki_thumb = await fetch_wikipedia_localized_synopsis(
+                client,
+                wiki_query,
+                lang=short_lang,
+                domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
+            )
         genre_label = localize_label(gmeta["labels"], short_lang, "Retro")
         sys_label = localize_label(smeta["labels"], short_lang, smeta["badge"])
+        prep_by_lang = {
+            "fr": "sur",
+            "es": "en",
+            "de": "auf",
+            "it": "su",
+            "pt": "no",
+        }
+        prep = prep_by_lang.get(short_lang, "on")
         default_syn = (
-            f"{display_title} ({year_str}) — {genre_label} sur {sys_label}."
-            if short_lang == "fr"
-            else f"{display_title} ({year_str}) — {genre_label} on {sys_label}."
+            f"{display_title} ({year_str}) — {genre_label} ({sys_label})."
+            if short_lang == "ja"
+            else f"{display_title} ({year_str}) — {genre_label} {prep} {sys_label}."
         )
         synopsis = wiki_syn or default_syn
 
@@ -505,31 +520,254 @@ class LibretroWikidataAdapter(IScraperSource):
 
         return results[:count]
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+    @staticmethod
+    def _score_query_match(q_norm: str, q_tokens: List[str], title_a: str, title_b: str = "") -> int:
+        k1 = normalize_game_lookup_key(title_a)
+        k2 = normalize_game_lookup_key(title_b) if title_b else ""
+        if not k1 and not k2:
+            return 0
+        if q_norm and (k1 == q_norm or (k2 and k2 == q_norm)):
+            return 300
+        if len(q_norm) >= 3 and (k1.startswith(q_norm) or (k2 and k2.startswith(q_norm))):
+            return 220
+        if len(q_norm) >= 3 and (q_norm in k1 or (k2 and q_norm in k2)):
+            return 160
+        if q_tokens:
+            combined_tokens = set(re.findall(r"[a-z0-9]+", f"{title_a} {title_b}".lower()))
+            combined_low = f"{title_a} {title_b}".lower()
+            if all(tok in combined_tokens or (len(tok) >= 3 and tok in combined_low) for tok in q_tokens):
+                return 120
+        return 0
+
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
         q_clean = (query or "").strip()
-        if not q_clean:
-            return None
+        if not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        short_lang = (criteria.lang or "fr").split("-")[0].split("_")[0].lower()
+
+        explicit_systems = [
+            resolve_canonical_system(s)
+            for s in (criteria.systems or [])
+            if s and s.strip().lower() != "all"
+        ]
+        if explicit_systems:
+            target_systems = [
+                s
+                for s in explicit_systems
+                if s in RETRO_SYSTEM_CATALOG
+                and (not RETRO_SYSTEM_CATALOG[s].get("is_arcade") or s == "neogeo")
+            ]
+            if not target_systems:
+                return []
+        else:
+            target_systems = ["snes", "megadrive", "nes", "psx", "gba", "n64", "pcengine", "gb"]
+
+        req_genres = [
+            resolve_canonical_genre("games", g)
+            for g in (criteria.genres or [])
+            if g and g.strip().lower() != "all" and resolve_canonical_genre("games", g) in GAME_GENRE_CATALOG
+        ]
+        req_decades = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() != "all"
+        ]
+
+        q_norm = normalize_game_lookup_key(q_clean)
+        q_tokens = [t for t in re.findall(r"[a-z0-9]+", q_clean.lower()) if len(t) >= 2 or t.isdigit()]
+
+        # Map of (sys_key, normalized_title_key) -> (score, sys_key, genre_key, entry_dict)
+        best_specs: Dict[Tuple[str, str], Tuple[int, str, str, Dict[str, Any]]] = {}
+
+        def _register_spec(
+            score: int,
+            sys_k: str,
+            genre_k: str,
+            entry_d: Dict[str, Any],
+        ) -> None:
+            t_key = normalize_game_lookup_key(
+                str(entry_d.get("title_en") or entry_d.get("title_fr") or "")
+            )
+            if not t_key:
+                return
+            map_key = (sys_k, t_key)
+            prev = best_specs.get(map_key)
+            if prev is None or score > prev[0]:
+                best_specs[map_key] = (score, sys_k, genre_k, entry_d)
+
         try:
             async with create_async_http_client(timeout=6.5) as client:
-                for sys_key in ("nes", "snes", "megadrive", "psx"):
-                    verified = await self.referential_strategy.resolve_verified_libretro_urls(
-                        client, sys_key, q_clean, lang=lang
-                    )
-                    if verified.get("boxart") or verified.get("snap"):
-                        entry = {
-                            "qid": "",
-                            "title_en": q_clean,
-                            "title_fr": q_clean,
-                            "year": "1991",
-                            "fr_wiki": q_clean,
-                            "en_wiki": q_clean,
-                        }
-                        cand = await self._build_candidate_from_wikidata_entry(
-                            client, entry, sys_key=sys_key, genre_key="action", lang=lang
+                cached_ref = self.referential_strategy.store.load()
+                cached_by_sg = dict(((cached_ref.get("metadata") or {}).get("by_system_genre")) or {})
+
+                for sys_idx, sys_key in enumerate(target_systems[:6]):
+                    sys_bonus = max(0, 12 - sys_idx * 2)
+                    smeta = RETRO_SYSTEM_CATALOG.get(sys_key) or RETRO_SYSTEM_CATALOG["nes"]
+                    sys_decades = [str(d).lower() for d in (smeta.get("decades") or ["1990s"])]
+                    default_yr = "1993" if "1990s" in sys_decades else str(sys_decades[0])[:4]
+
+                    if req_genres:
+                        for g_key in req_genres[:2]:
+                            harvested = await self.referential_strategy.harvest_wikidata_games(
+                                client, sys_key=sys_key, genre_key=g_key
+                            )
+                            if not harvested and g_key in _VERIFIED_GENRE_TITLE_SEEDS:
+                                harvested = [
+                                    {
+                                        "qid": "",
+                                        "system": sys_key,
+                                        "genre": g_key,
+                                        "title_en": t,
+                                        "title_fr": t,
+                                        "year": default_yr,
+                                        "fr_wiki": t,
+                                        "en_wiki": t,
+                                    }
+                                    for t in _VERIFIED_GENRE_TITLE_SEEDS[g_key]
+                                ]
+                            for entry in harvested:
+                                yr = str(entry.get("year") or default_yr)
+                                if req_decades and not self._matches_decades(yr, req_decades):
+                                    continue
+                                t_en = str(entry.get("title_en") or "")
+                                t_fr = str(entry.get("title_fr") or "")
+                                m_score = self._score_query_match(q_norm, q_tokens, t_en, t_fr)
+                                if m_score > 0:
+                                    _register_spec(m_score + sys_bonus + 15, sys_key, g_key, entry)
+                    else:
+                        # 1. Check cached Wikidata buckets for this system first (rich localized labels & years)
+                        for b_key, b_entries in cached_by_sg.items():
+                            if not str(b_key).startswith(f"{sys_key}:") or not isinstance(b_entries, list):
+                                continue
+                            b_genre = str(b_key).split(":", 1)[1]
+                            if b_genre == "all":
+                                b_genre = "action"
+                            for entry in b_entries:
+                                if not isinstance(entry, dict):
+                                    continue
+                                yr = str(entry.get("year") or default_yr)
+                                if req_decades and not self._matches_decades(yr, req_decades):
+                                    continue
+                                t_en = str(entry.get("title_en") or "")
+                                t_fr = str(entry.get("title_fr") or "")
+                                m_score = self._score_query_match(q_norm, q_tokens, t_en, t_fr)
+                                if m_score > 0:
+                                    _register_spec(m_score + sys_bonus + 15, sys_key, b_genre, entry)
+
+                        # 2. Search verified Libretro GitHub tree filenames for this system
+                        if not req_decades or any(
+                            self._matches_decades(d[:4], req_decades) for d in sys_decades if len(d) >= 4
+                        ):
+                            folders = await self.referential_strategy.sync_system_libretro_tree(client, sys_key)
+                            file_pool = (
+                                folders.get("Named_Boxarts")
+                                or folders.get("Named_Titles")
+                                or folders.get("Named_Snaps")
+                                or []
+                            )
+                            matched_yr = default_yr
+                            if req_decades:
+                                for dec_s in sys_decades:
+                                    if dec_s in req_decades and dec_s[:4].isdigit():
+                                        matched_yr = str(int(dec_s[:4]) + 3)
+                                        break
+                            for fname in file_pool:
+                                if _is_excluded_nointro_filename(fname):
+                                    continue
+                                clean_t = _clean_display_title_from_nointro(fname)
+                                if not clean_t or clean_t.lower() in _FORBIDDEN_HARDWARE_TITLES:
+                                    continue
+                                m_score = self._score_query_match(q_norm, q_tokens, clean_t)
+                                if m_score <= 0:
+                                    continue
+                                reg_bonus = max(0, score_libretro_filename_for_lang(fname, short_lang)) // 5
+                                entry_from_tree = {
+                                    "qid": "",
+                                    "system": sys_key,
+                                    "genre": "action",
+                                    "title_en": clean_t,
+                                    "title_fr": clean_t,
+                                    "year": matched_yr,
+                                    "fr_wiki": clean_t,
+                                    "en_wiki": clean_t,
+                                }
+                                _register_spec(m_score + sys_bonus + reg_bonus, sys_key, "action", entry_from_tree)
+
+                            # Direct verified lookup fallback when tree list is empty/mocked
+                            if not file_pool and not req_decades:
+                                verified = await self.referential_strategy.resolve_verified_libretro_urls(
+                                    client, sys_key, q_clean, lang=short_lang
+                                )
+                                if verified.get("boxart") or verified.get("snap") or verified.get("title"):
+                                    direct_entry = {
+                                        "qid": "",
+                                        "system": sys_key,
+                                        "genre": "action",
+                                        "title_en": q_clean,
+                                        "title_fr": q_clean,
+                                        "year": matched_yr,
+                                        "fr_wiki": q_clean,
+                                        "en_wiki": q_clean,
+                                    }
+                                    _register_spec(250 + sys_bonus, sys_key, "action", direct_entry)
+
+                if not best_specs:
+                    return []
+
+                ordered_specs = sorted(best_specs.values(), key=lambda item: item[0], reverse=True)
+                selected_specs = ordered_specs[: max(target_limit + 2, target_limit)]
+
+                sem = asyncio.Semaphore(4)
+
+                async def _build_idx(idx: int, spec: Tuple[int, str, str, Dict[str, Any]]) -> Optional[MediaCandidate]:
+                    _, s_key, g_key, ent = spec
+                    async with sem:
+                        return await self._build_candidate_from_wikidata_entry(
+                            client,
+                            entry=ent,
+                            sys_key=s_key,
+                            genre_key=g_key,
+                            lang=short_lang,
+                            fetch_synopsis=(idx < min(target_limit, 4)),
                         )
-                        if cand:
-                            return cand
-        except Exception:
-            pass
-        return None
+
+                built = await asyncio.gather(
+                    *(_build_idx(i, sp) for i, sp in enumerate(selected_specs)),
+                    return_exceptions=True,
+                )
+
+                results: List[MediaCandidate] = []
+                seen_ids: Set[str] = set()
+                for item in built:
+                    if not isinstance(item, MediaCandidate) or item.id in seen_ids:
+                        continue
+                    cand_sys = str((item.extra_meta or {}).get("system") or "")
+                    fp = build_game_fingerprint(cand_sys, item.title)
+                    if fp and fp in seen_ids:
+                        continue
+                    seen_ids.add(item.id)
+                    if fp:
+                        seen_ids.add(fp)
+                    results.append(item)
+                    if len(results) >= target_limit:
+                        break
+                return results
+        except Exception as exc:
+            logger.debug("[LibretroWikidata] Search error for '%s': %s", q_clean, exc)
+        return []
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(domain="games", systems=[], genres=[], decades=[], lang=lang),
+            limit=1,
+        )
+        return cands[0] if cands else None
 

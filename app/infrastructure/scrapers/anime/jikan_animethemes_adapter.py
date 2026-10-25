@@ -9,6 +9,7 @@ Keyless public anime catalog adapter implementing `IScraperSource`:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
+from app.domain.taxonomy import resolve_canonical_genre
 from app.infrastructure.scrapers.catalog_metadata import ANIME_GENRES, DECADE_BOUNDS
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
@@ -137,14 +139,17 @@ class JikanAnimeThemesAdapter(IScraperSource):
         g_meta: Dict[str, Any],
         lang: str,
         video_type: str,
+        enrich_heavy: bool = True,
     ) -> Optional[MediaCandidate]:
+        short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
         mal_id = item.get("mal_id")
         if not mal_id:
             return None
         orig_title = str(item.get("title_english") or item.get("title") or "").strip()
         if not orig_title:
             return None
-        title = orig_title
+        ja_title = str(item.get("title_japanese") or "").strip()
+        title = ja_title if (short_lang == "ja" and ja_title) else orig_title
 
         images = (item.get("images") or {}).get("jpg") or {}
         poster_url = images.get("large_image_url") or images.get("image_url")
@@ -156,13 +161,13 @@ class JikanAnimeThemesAdapter(IScraperSource):
         synopsis = clean_synopsis_text(item.get("synopsis"), max_chars=300)
 
         resolved_trailer: Optional[str] = None
-        if lang != "en" or not synopsis:
+        if enrich_heavy and (short_lang != "en" or not synopsis):
             loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
-                client, orig_title, lang=lang, domain_hint="anime", year=year
+                client, orig_title, lang=short_lang, domain_hint="anime", year=year
             )
             if loc_syn:
                 synopsis = loc_syn
-            if loc_t:
+            if loc_t and short_lang != "ja":
                 title = loc_t
             if loc_tr:
                 resolved_trailer = loc_tr
@@ -190,7 +195,7 @@ class JikanAnimeThemesAdapter(IScraperSource):
             subtitle=f"{g_meta['label']} • {year}"[:28],
             rating=f"{score:.1f}",
             synopsis=synopsis or f"{title} ({year}) — {g_meta['label']} anime.",
-            lang=lang,
+            lang=short_lang,
             poster_url=str(poster_url),
             jacket_url=str(poster_url),
             marquee_url=str(max_img or poster_url),
@@ -201,6 +206,9 @@ class JikanAnimeThemesAdapter(IScraperSource):
         )
         if max_img:
             cand.add_unique_snapshot(str(max_img))
+
+        if not enrich_heavy:
+            return cand
 
         await enrich_with_animethemes_webm(
             client,
@@ -307,23 +315,147 @@ class JikanAnimeThemesAdapter(IScraperSource):
 
         return results
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        if not query.strip():
-            return None
+    @staticmethod
+    def _infer_jikan_genre_meta(
+        item_mal_ids: Set[int],
+        preferred_keys: List[str],
+    ) -> Dict[str, Any]:
+        if preferred_keys:
+            return ANIME_GENRES[preferred_keys[0]]
+        for gk, meta in ANIME_GENRES.items():
+            if int(meta["mal_id"]) in item_mal_ids and not meta.get("anilist_tag"):
+                return meta
+        return ANIME_GENRES["shonen"]
+
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        q_clean = (query or "").strip()
+        if not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        short_lang = (criteria.lang or "fr").split("-")[0].split("_")[0].lower()
+        video_type = (criteria.video_type or "opening").strip().lower()
+
+        valid_genres: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("anime", g)
+            gk = cg if cg in ANIME_GENRES else g.strip().lower()
+            if gk in ANIME_GENRES and gk not in valid_genres:
+                valid_genres.append(gk)
+        allowed_mal_ids = {int(ANIME_GENRES[gk]["mal_id"]) for gk in valid_genres}
+
+        valid_decades = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() in DECADE_BOUNDS
+        ]
+
+        params: Dict[str, str] = {
+            "q": q_clean,
+            "limit": str(min(25, max(10, target_limit * 3))),
+            "sfw": "true",
+        }
+        if len(valid_genres) == 1:
+            params["genres"] = str(ANIME_GENRES[valid_genres[0]]["mal_id"])
+        if len(valid_decades) == 1:
+            start_d, end_d = DECADE_BOUNDS[valid_decades[0]]
+            params["start_date"] = start_d
+            params["end_date"] = end_d
+
         try:
-            async with create_async_http_client(timeout=5.0) as client:
-                resp = await client.get(
-                    "https://api.jikan.moe/v4/anime",
-                    params={"q": query.strip(), "limit": "5", "sfw": "true"},
+            async with create_async_http_client(timeout=5.5) as client:
+                resp = await client.get("https://api.jikan.moe/v4/anime", params=params)
+                if resp.status_code != 200:
+                    return []
+                raw_items = resp.json().get("data") or []
+                matched_specs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+                seen_ids: Set[str] = set()
+
+                for item in raw_items:
+                    if len(matched_specs) >= target_limit:
+                        break
+                    if not isinstance(item, dict) or not item.get("mal_id"):
+                        continue
+                    cid = f"anime_jikan_{item.get('mal_id')}"
+                    if cid in seen_ids:
+                        continue
+
+                    item_genre_objs = (
+                        (item.get("genres") or [])
+                        + (item.get("themes") or [])
+                        + (item.get("demographics") or [])
+                    )
+                    item_mal_ids = {
+                        int(g.get("mal_id"))
+                        for g in item_genre_objs
+                        if isinstance(g, dict) and str(g.get("mal_id") or "").isdigit()
+                    }
+                    if allowed_mal_ids and item_mal_ids and not (item_mal_ids & allowed_mal_ids):
+                        continue
+
+                    if valid_decades:
+                        yr_str = str(
+                            item.get("year") or ((item.get("aired") or {}).get("from") or "")
+                        )[:4]
+                        if not yr_str.isdigit():
+                            continue
+                        yr_val = int(yr_str)
+                        if not any(
+                            int(DECADE_BOUNDS[d][0][:4]) <= yr_val <= int(DECADE_BOUNDS[d][1][:4])
+                            for d in valid_decades
+                        ):
+                            continue
+
+                    seen_ids.add(cid)
+                    g_meta = self._infer_jikan_genre_meta(item_mal_ids, valid_genres)
+                    matched_specs.append((item, g_meta))
+
+                if not matched_specs:
+                    return []
+
+                sem = asyncio.Semaphore(4)
+
+                async def _build_idx(
+                    idx: int,
+                    spec: tuple[Dict[str, Any], Dict[str, Any]],
+                ) -> Optional[MediaCandidate]:
+                    it, gm = spec
+                    async with sem:
+                        return await self._build_jikan_candidate(
+                            client,
+                            it,
+                            gm,
+                            short_lang,
+                            video_type,
+                            enrich_heavy=(idx < min(target_limit, 4)),
+                        )
+
+                built = await asyncio.gather(
+                    *(_build_idx(i, sp) for i, sp in enumerate(matched_specs)),
+                    return_exceptions=True,
                 )
-                if resp.status_code == 200:
-                    for item in resp.json().get("data") or []:
-                        if isinstance(item, dict):
-                            cand = await self._build_jikan_candidate(
-                                client, item, ANIME_GENRES["shonen"], lang, "opening"
-                            )
-                            if cand:
-                                return cand
-        except Exception:
-            pass
-        return None
+                return [c for c in built if isinstance(c, MediaCandidate)][:target_limit]
+        except Exception as exc:
+            logger.debug("[Jikan] Search error for '%s': %s", q_clean, exc)
+        return []
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(
+                domain="anime",
+                genres=[],
+                decades=[],
+                video_type="opening",
+                lang=lang,
+            ),
+            limit=1,
+        )
+        return cands[0] if cands else None

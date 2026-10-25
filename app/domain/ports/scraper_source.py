@@ -48,3 +48,13 @@ class IScraperSource(ABC):
         lang: str = "fr",
     ) -> Optional[MediaCandidate]:
         """Search and return the best matching candidate for an on-demand query."""
+
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        """Search and return up to `limit` matching candidates honoring `criteria`."""
+        cand = await self.search_by_query(query=query, lang=criteria.lang)
+        return [cand] if cand is not None else []

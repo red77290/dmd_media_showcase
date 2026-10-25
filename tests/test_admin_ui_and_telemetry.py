@@ -858,3 +858,59 @@ async def test_realtime_admin_config_updates_workers_video_limits_and_logging(
         for task in list(isolated_co._prep_tasks.values()):
             isolated_co._safe_cancel_task(task)
         await batch_manager.stop()
+
+
+def test_no_user_facing_ddd_jargon_in_ui_readmes_or_openapi():
+    """
+    Ensure architectural 'DDD' jargon never leaks into end-user surfaces
+    (WebUI HTML/I18N, OpenAPI/Swagger descriptions, READMEs, QuickStart, ESP32 guides,
+    Dockerfile, pyproject.toml, or CI release notes), staying strictly in ARCHITECTURE/DEVELOPER docs.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    ddd_re = re.compile(r"\bddd\b", re.IGNORECASE)
+
+    assert not ddd_re.search(ADMIN_DASHBOARD_HTML), "Found 'DDD' in ADMIN_DASHBOARD_HTML"
+    openapi_text = json.dumps(app.openapi(), ensure_ascii=False)
+    assert not ddd_re.search(openapi_text), "Found 'DDD' in live app.openapi() schema"
+
+    user_facing_files = [
+        repo_root / "README.md",
+        repo_root / "README_FR.md",
+        repo_root / "README_ES.md",
+        repo_root / "Dockerfile",
+        repo_root / "pyproject.toml",
+        repo_root / ".github" / "workflows" / "ci.yml",
+        repo_root / "docs" / "QUICKSTART.md",
+        repo_root / "docs" / "QUICKSTART_FR.md",
+        repo_root / "docs" / "QUICKSTART_ES.md",
+        repo_root / "docs" / "ESP32_INTEGRATION.md",
+        repo_root / "docs" / "ESP32_INTEGRATION_FR.md",
+        repo_root / "docs" / "ESP32_INTEGRATION_ES.md",
+        repo_root / "docs" / "openapi.yaml",
+        repo_root / "docs" / "openapi.json",
+    ]
+    for path in user_facing_files:
+        assert path.exists(), f"Expected user-facing file missing: {path}"
+        content = path.read_text(encoding="utf-8")
+        assert not ddd_re.search(content), f"Found user-facing 'DDD' jargon in {path.name}"
+
+
+def test_passive_rotation_tag_picker_and_studio_domain_profiles_ui_coherence():
+    """
+    Verify coherent separation between Tab 1 (visual Multi-Select Tag Picker for rotation slots,
+    zero raw CSV inputs or duplicated framing/color/video columns) and Tab 4 (4-Domain Studio
+    Profile Switcher with bidirectional jump links).
+    """
+    html = ADMIN_DASHBOARD_HTML
+    assert 'id="tag-picker-modal"' in html
+    assert "openTagPickerModal(" in html
+    assert "applyTagPickerModal(" in html
+    assert 'id="studio-dom-tabs"' in html
+    assert "selectStudioDomainProfile(" in html
+    assert "openStudioForDmdDomainFromEditor(" in html
+    assert "returnToDmdRotationEditor(" in html
+
+    for removed_legacy_cls in ("pl-systems", "pl-genres", "pl-vmode", "pl-cboost", "pl-vdur"):
+        assert removed_legacy_cls not in html, f"Legacy duplicated input '{removed_legacy_cls}' still present in HTML"
+
+
