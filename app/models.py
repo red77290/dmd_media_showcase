@@ -449,6 +449,24 @@ class DmdPlaylistSlotPayload(BaseModel):
     color_boost: Union[str, bool] = "auto"
 
 
+class DomainStudioStylePayload(CardStylePayload):
+    """
+    Complete per-domain Studio profile (`games`, `movies`, `series`, `anime`) owning both
+    Phase 1 Info Card appearance and Phases 2 & 3 Panorama / Video rendering parameters.
+    """
+
+    jacket_panorama: bool = True
+    marquee_panorama: bool = False
+    snapshot_panorama_count: int = Field(default=0, ge=0, le=5)
+    panorama_duration_s: float = Field(default=4.0, ge=1.5, le=15.0)
+    include_video: bool = True
+    video_type: str = "any"
+    video_max_duration_s: float = Field(default=10.0, ge=1.5, le=120.0)
+    video_fps: int = Field(default=15, ge=6, le=60)
+    video_mode: str = "auto_action"
+    color_boost: Union[str, bool] = "auto"
+
+
 class DmdProfilePayload(BaseModel):
     """
     Persistent per-DMD profile & server-managed playlist stored in `./data/dmd_profiles.json`.
@@ -478,6 +496,10 @@ class DmdProfilePayload(BaseModel):
     paused: bool = False
     inter_item_gap_s: float = Field(default=1.0, ge=0.0, le=10.0)
     card_style: Optional[CardStylePayload] = None
+    domain_styles: Optional[Dict[DomainType, DomainStudioStylePayload]] = Field(
+        default=None,
+        description="Authoritative per-domain Studio rendering profiles ('games', 'movies', 'series', 'anime') controlling Card layout/theme and Panorama/Video parameters.",
+    )
     playlist: List[DmdPlaylistSlotPayload] = Field(default_factory=list)
 
 
@@ -677,6 +699,7 @@ class StudioFullPreviewRequest(StudioCardPreviewRequest):
     snapshot_panorama_count: int = Field(default=0, ge=0, le=5)
     panorama_duration_s: float = Field(default=4.0, ge=1.5, le=15.0)
     include_video: bool = True
+    video_type: str = "any"
     video_max_duration_s: float = Field(default=8.0, ge=1.5, le=120.0)
     video_fps: int = Field(default=15, ge=6, le=60)
     video_mode: str = "auto_action"

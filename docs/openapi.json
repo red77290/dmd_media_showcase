@@ -2856,6 +2856,29 @@
               }
             ]
           },
+          "domain_styles": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/DomainStudioStylePayload"
+                },
+                "propertyNames": {
+                  "enum": [
+                    "games",
+                    "movies",
+                    "series",
+                    "anime"
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Styles",
+            "description": "Authoritative per-domain Studio rendering profiles ('games', 'movies', 'series', 'anime') controlling Card layout/theme and Panorama/Video parameters."
+          },
           "playlist": {
             "items": {
               "$ref": "#/components/schemas/DmdPlaylistSlotPayload"
@@ -2867,6 +2890,158 @@
         "type": "object",
         "title": "DmdProfilePayload",
         "description": "Persistent per-DMD profile & server-managed playlist stored in `./data/dmd_profiles.json`.\nSupports Mode 1 (`config_source='client'`), Mode 2A (`config_source='server', supports_local_card=True`),\nand Mode 2B (`config_source='server', supports_local_card=False`)."
+      },
+      "DomainStudioStylePayload": {
+        "properties": {
+          "include_card_intro": {
+            "type": "boolean",
+            "title": "Include Card Intro",
+            "default": true
+          },
+          "card_layout": {
+            "type": "string",
+            "enum": [
+              "classic_split",
+              "poster_right",
+              "badge_header",
+              "hero_banner",
+              "minimal_arcade"
+            ],
+            "title": "Card Layout",
+            "default": "classic_split"
+          },
+          "card_theme": {
+            "type": "string",
+            "enum": [
+              "tinted",
+              "pure_black",
+              "neon_border",
+              "poster_wash",
+              "amber_dmd"
+            ],
+            "title": "Card Theme",
+            "default": "tinted"
+          },
+          "card_font": {
+            "type": "string",
+            "enum": [
+              "arcade_pixel",
+              "clean_sans"
+            ],
+            "title": "Card Font",
+            "default": "arcade_pixel"
+          },
+          "card_accent_color": {
+            "type": "string",
+            "title": "Card Accent Color",
+            "default": "auto"
+          },
+          "include_poster": {
+            "type": "boolean",
+            "title": "Include Poster",
+            "default": true
+          },
+          "show_badge": {
+            "type": "boolean",
+            "title": "Show Badge",
+            "default": true
+          },
+          "show_year": {
+            "type": "boolean",
+            "title": "Show Year",
+            "default": true
+          },
+          "show_rating": {
+            "type": "boolean",
+            "title": "Show Rating",
+            "default": true
+          },
+          "include_synopsis": {
+            "type": "boolean",
+            "title": "Include Synopsis",
+            "default": true
+          },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "default": "normal"
+          },
+          "card_hold_s": {
+            "type": "number",
+            "maximum": 5.0,
+            "minimum": 0.2,
+            "title": "Card Hold S",
+            "default": 0.9
+          },
+          "jacket_panorama": {
+            "type": "boolean",
+            "title": "Jacket Panorama",
+            "default": true
+          },
+          "marquee_panorama": {
+            "type": "boolean",
+            "title": "Marquee Panorama",
+            "default": false
+          },
+          "snapshot_panorama_count": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Snapshot Panorama Count",
+            "default": 0
+          },
+          "panorama_duration_s": {
+            "type": "number",
+            "maximum": 15.0,
+            "minimum": 1.5,
+            "title": "Panorama Duration S",
+            "default": 4.0
+          },
+          "include_video": {
+            "type": "boolean",
+            "title": "Include Video",
+            "default": true
+          },
+          "video_type": {
+            "type": "string",
+            "title": "Video Type",
+            "default": "any"
+          },
+          "video_max_duration_s": {
+            "type": "number",
+            "maximum": 120.0,
+            "minimum": 1.5,
+            "title": "Video Max Duration S",
+            "default": 10.0
+          },
+          "video_fps": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 6.0,
+            "title": "Video Fps",
+            "default": 15
+          },
+          "video_mode": {
+            "type": "string",
+            "title": "Video Mode",
+            "default": "auto_action"
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Color Boost",
+            "default": "auto"
+          }
+        },
+        "type": "object",
+        "title": "DomainStudioStylePayload",
+        "description": "Complete per-domain Studio profile (`games`, `movies`, `series`, `anime`) owning both\nPhase 1 Info Card appearance and Phases 2 & 3 Panorama / Video rendering parameters."
       },
       "HTTPValidationError": {
         "properties": {
@@ -4753,6 +4928,11 @@
             "type": "boolean",
             "title": "Include Video",
             "default": true
+          },
+          "video_type": {
+            "type": "string",
+            "title": "Video Type",
+            "default": "any"
           },
           "video_max_duration_s": {
             "type": "number",
