@@ -634,7 +634,7 @@
           "DMD Profiles & Passive Mode"
         ],
         "summary": "Get Dmd Client Profile",
-        "description": "Retrieve the persisted `dmd_profiles.json` configuration for `dmd_id` (or synthesize a live template if connected).",
+        "description": "Retrieve the persisted `dmd_profiles.json` configuration for `dmd_id` (Mode 2A / 2B),\nor synthesize a read-only live inspector profile from the actual MQTT Retain / HTTP Polling\nconfiguration pushed by an active Mode 1 DMD (`ArcadeMatrix` / `ArcadeMatrix_RPi`).",
         "operationId": "get_dmd_client_profile_api_v1_clients__dmd_id__profile_get",
         "parameters": [
           {
@@ -688,6 +688,18 @@
               "type": "string",
               "title": "Dmd Id"
             }
+          },
+          {
+            "name": "force_override",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Explicitly convert an active Mode 1 client-driven DMD into a server-managed profile.",
+              "default": false,
+              "title": "Force Override"
+            },
+            "description": "Explicitly convert an active Mode 1 client-driven DMD into a server-managed profile."
           }
         ],
         "requestBody": {
