@@ -49,8 +49,10 @@ install_ipv4_preference()
 logger = logging.getLogger("dmd_showcase.converter")
 
 
-def _apply_worker_nice(nice_inc: int = 10) -> None:
+def _apply_worker_nice(nice_inc: int = 10, ffmpeg_threads: int = 1) -> None:
     install_ipv4_preference()
+    eff_threads = max(1, min(8, int(ffmpeg_threads)))
+    os.environ["OMP_NUM_THREADS"] = str(eff_threads)
     if nice_inc > 0 and hasattr(os, "nice"):
         try:
             current = os.nice(0)
@@ -59,7 +61,7 @@ def _apply_worker_nice(nice_inc: int = 10) -> None:
         except Exception:
             pass
     try:
-        cv2.setNumThreads(1)
+        cv2.setNumThreads(eff_threads)
     except Exception:
         pass
 
@@ -103,6 +105,7 @@ def _slice_remote_video_ffmpeg(
     out_mp4: Path,
     max_duration_s: float = 10.0,
     start_offset_s: float = 10.0,
+    ffmpeg_threads: int = 1,
 ) -> bool:
     """Slice a clean HD (`720p`) segment directly over HTTP using FFmpeg."""
     return slice_hd_remote_video_ffmpeg(
@@ -110,6 +113,7 @@ def _slice_remote_video_ffmpeg(
         out_mp4=out_mp4,
         max_duration_s=max_duration_s,
         start_offset_s=start_offset_s,
+        ffmpeg_threads=ffmpeg_threads,
     )
 
 
@@ -117,12 +121,14 @@ def _extract_video_clip_ytdlp(
     video_page_url: Optional[str],
     out_mp4: Path,
     max_duration_s: float = 10.0,
+    max_filesize_mb: int = 60,
 ) -> bool:
     """Extract a clean HD (`720p`/`1080p`) MP4 clip from YouTube using `yt-dlp`."""
     return extract_hd_youtube_clip_ytdlp(
         video_page_url=video_page_url,
         out_mp4=out_mp4,
         max_duration_s=max_duration_s,
+        max_filesize_mb=max_filesize_mb,
     )
 
 
@@ -319,6 +325,7 @@ def build_static_assets_sync(
     jacket_url: Optional[str] = None,
     jacket_panorama: bool = True,
     marquee_panorama: bool = False,
+    panorama_duration_s: float = 4.0,
 ) -> Dict[str, object]:
     """
     Build:
@@ -411,6 +418,8 @@ def build_static_assets_sync(
     snapshot_gif_names: List[str] = []
     snapshot_stream_names: List[str] = []
 
+    pan_dur = max(1.5, min(15.0, float(panorama_duration_s)))
+
     # 3a. Jacket Panorama (boolean default True)
     if jacket_panorama:
         j_bytes = poster_bytes or _download_bytes(jacket_url or poster_url, timeout=4.0)
@@ -422,7 +431,7 @@ def build_static_assets_sync(
                 width=width,
                 height=height,
                 fps=max(15, fps),
-                duration_s=3.8,
+                duration_s=pan_dur,
                 color_boost=color_boost_bool,
             )
             if j_res:
@@ -442,7 +451,7 @@ def build_static_assets_sync(
                 width=width,
                 height=height,
                 fps=max(15, fps),
-                duration_s=3.6,
+                duration_s=pan_dur,
                 color_boost=color_boost_bool,
             )
             if m_res:
@@ -475,7 +484,7 @@ def build_static_assets_sync(
                 width=width,
                 height=height,
                 fps=max(15, fps),
-                duration_s=3.8,
+                duration_s=pan_dur,
                 color_boost=color_boost_bool,
             )
             if pan_res:
@@ -554,6 +563,8 @@ def build_video_assets_worker_task(
     video_mode: str = "auto_action",
     color_boost: Union[str, bool] = "auto",
     nice_inc: int = 10,
+    ffmpeg_threads: int = 1,
+    ytdlp_max_filesize_mb: int = 60,
 ) -> Dict[str, object]:
     """
     Top-level worker function executed in the bounded ProcessPoolExecutor.
@@ -563,7 +574,7 @@ def build_video_assets_worker_task(
     3. If unavailable, extracts from `youtube_url` (Dailymotion / YouTube) via `yt-dlp --force-ipv4`.
     4. If neither is available, returns `has_video=False` immediately (NO synthetic grid+ball!).
     """
-    _apply_worker_nice(nice_inc)
+    _apply_worker_nice(nice_inc, ffmpeg_threads=ffmpeg_threads)
     out_dir = Path(item_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     src_video_path = out_dir / "src_trailer.mp4"
@@ -588,7 +599,11 @@ def build_video_assets_worker_task(
             else:
                 offset_s = 12.0
             have_real_video = _slice_remote_video_ffmpeg(
-                video_url, src_video_path, max_duration_s=max_duration_s, start_offset_s=offset_s
+                video_url,
+                src_video_path,
+                max_duration_s=max_duration_s,
+                start_offset_s=offset_s,
+                ffmpeg_threads=ffmpeg_threads,
             )
         if not have_real_video:
             vid_bytes = _download_bytes(video_url, timeout=12.0)
@@ -598,7 +613,10 @@ def build_video_assets_worker_task(
 
     if not have_real_video and youtube_url:
         have_real_video = _extract_video_clip_ytdlp(
-            youtube_url, src_video_path, max_duration_s=max_duration_s
+            youtube_url,
+            src_video_path,
+            max_duration_s=max_duration_s,
+            max_filesize_mb=ytdlp_max_filesize_mb,
         )
 
     if not have_real_video:

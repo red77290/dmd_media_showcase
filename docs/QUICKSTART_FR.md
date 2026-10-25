@@ -72,6 +72,9 @@ docker run -d \
 ## 2. Dashboard Web d'Administration (`http://dmdmediashowcase.local:8890/`)
 
 Ouvrez `http://dmdmediashowcase.local:8890/` (ou `http://<ip-serveur>:8890/`) dans votre navigateur pour :
+- **Ajuster à chaud le Runtime, les Workers & les Limites Vidéo en Temps Réel** (`2. Runtime, Workers & Limites Vidéo`, persisté dans `./data/server_config.json` sans redémarrage) :
+  - Modifier dynamiquement le nombre de workers simultanés (`max_concurrent_jobs` : `0 = Auto borné CPU` ou `1..16`), le mode d'exécuteur (`ProcessPoolExecutor` vs `ThreadPoolExecutor`), les threads FFmpeg par job (`1..8`), la priorité CPU `nice` (`0..19`), la file d'attente (`10..1000`) et le niveau de log serveur en direct (`log_level`).
+  - Plafonner globalement la durée vidéo maximale (`video_max_duration_limit_s`), la cible clip master (`server_master_clip_max_s`), la fréquence maximale (`video_max_fps_limit`), le poids max de téléchargement (`ytdlp_max_filesize_mb`), la durée de défilement des panoramas (`panorama_duration_s`), le cadrage/boost couleur par défaut (`default_video_mode`, `default_color_boost`), le répertoire de cache et les TTL de sessions/batches.
 - Configurer les identifiants **optionnels** des scrapers primaires :
   - **ScreenScraper** (`user`, `pass`, `dev_id`, `dev_pass`) pour `games`. Sans identifiants, `ArcadeItalia` (MAME HTTPS) + `Libretro+Wikidata` (SPARQL Console + Arbre GitHub) prennent le relais automatiquement sans aucune clé.
   - **Clé API TMDB / Jeton v4** (`tmdb_api_key`) et **Clé API TheTVDB v4** (`tvdb_api_key`) pour `movies`, `series` et `anime`. Sans clé, `Apple iTunes`, `TVMaze`, `Jikan + AnimeThemes` et `Wikipédia Interwiki` fonctionnent automatiquement.

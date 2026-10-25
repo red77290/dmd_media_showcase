@@ -628,3 +628,233 @@ def test_batch_manager_survives_closed_event_loop_transitions(tmp_path: Path, mo
         loop_d.run_until_complete(_restart_and_stop_on_fresh_loop())
     finally:
         loop_d.close()
+
+
+@pytest.mark.asyncio
+async def test_realtime_admin_config_updates_workers_video_limits_and_logging(
+    tmp_path: Path, monkeypatch
+):
+    """
+    Verify real-time WebUI runtime configuration (`GET/POST /api/v1/admin/config`) hot-applies:
+    1. Dynamic worker pool scaling (`max_concurrent_jobs`: `1 -> 4 -> 1`) and executor mode
+       (`use_process_pool`: `True -> False`) in `SessionBatchManager` & `ConsumeOnceOrchestrator`
+       without restarting the server.
+    2. Global video ceiling enforcement (`video_max_duration_limit_s`, `video_max_fps_limit`),
+       automatically clamping registered DMD client criteria and invalidating oversized
+       unconsumed standby/ready slots while preserving in-flight (`consumed=True`) streams.
+    3. Panorama duration, FFmpeg thread cap, queue size, default video/color modes, mDNS,
+       and live root/`dmd_showcase.*` logger levels, persisted cleanly in `server_config.json`.
+    """
+    import logging
+    from app.domain.entities import PanelGeometry
+    from app.infrastructure.persistence.server_config_store import (
+        RUNTIME_SETTINGS_KEYS,
+        server_config_store,
+    )
+
+    data_dir = tmp_path / "rt_data"
+    cache_dir = tmp_path / "rt_cache"
+    monkeypatch.setenv("DMD_DATA_DIR", str(data_dir))
+    for k in RUNTIME_SETTINGS_KEYS:
+        monkeypatch.setattr(settings, k, getattr(settings, k))
+    monkeypatch.setattr(settings, "cache_dir", cache_dir)
+    monkeypatch.setattr(settings, "use_process_pool", False)
+    monkeypatch.setattr(settings, "max_concurrent_jobs", 1)
+
+    root_logger = logging.getLogger()
+    orig_root_level = root_logger.level
+
+    png_bytes = _make_sample_png_bytes()
+
+    class _FakeChain:
+        async def acquire_unseen_candidates(self, criteria, count=1, extra_exclude_ids=None):
+            return [
+                MediaCandidate(
+                    id="rt_game_1",
+                    domain="games",
+                    title="OutRun",
+                    year="1986",
+                    badge="ARCADE",
+                    badge_color="#FF6D00",
+                    subtitle="Sega AM2",
+                    rating="8.8",
+                    synopsis="Classic arcade racer.",
+                    source_id="arcadeitalia",
+                    poster_url="http://mock/poster.png",
+                    video_url="http://mock/video.mp4",
+                )
+            ]
+
+    class _FakeTranscoder:
+        def __init__(self) -> None:
+            self.seen_durations: List[float] = []
+            self.seen_fps: List[int] = []
+
+        async def transcode_candidate(self, cand, crit: FilterCriteria, geom, item_dir: Path):
+            self.seen_durations.append(crit.video_max_duration_s)
+            self.seen_fps.append(crit.video_fps)
+            item_dir.mkdir(parents=True, exist_ok=True)
+            stream_file = item_dir / "unified_sequence.rgb565.stream"
+            stream_file.write_bytes(b"DMDS" + b"\x00" * 12 + b"\x11\x22" * (geom.width * geom.height))
+            (item_dir / "poster.png").write_bytes(png_bytes)
+            return {
+                "poster_rgb565_b64": "AA==",
+                "has_panoramas": True,
+                "has_video": True,
+                "stream_frames": 60,
+                "stream_fps": crit.video_fps,
+                "stream_duration_s": crit.video_max_duration_s,
+                "unified_stream_path": str(stream_file),
+            }
+
+    class _NoopMqtt:
+        def set_handlers(self, **_kw):
+            pass
+
+        async def publish_json(self, topic: str, data: dict, retain: bool = False) -> None:
+            pass
+
+    class _NoopStreamer:
+        active_streams_count = 0
+
+        def get_active_stream(self, _dmd_id: str):
+            return None
+
+        async def stop_stream(self, _dmd_id: str) -> None:
+            pass
+
+    fake_transcoder = _FakeTranscoder()
+    isolated_co = ConsumeOnceOrchestrator(
+        chain_service=_FakeChain(),  # type: ignore[arg-type]
+        seen_repo=JsonSeenHistoryRepository(file_path=data_dir / "seen_history.json"),
+        transcoder=fake_transcoder,  # type: ignore[arg-type]
+        streamer=_NoopStreamer(),  # type: ignore[arg-type]
+        mqtt_gateway=_NoopMqtt(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr("app.main.consume_once_orchestrator", isolated_co)
+
+    try:
+        batch_manager.start()
+        assert len(batch_manager._worker_tasks) == 1
+
+        # Register a DMD client originally requesting 18.0s @ 24fps (under default 30s / 30fps ceiling)
+        geom = PanelGeometry(width=128, height=32)
+        crit_init = isolated_co._parse_domain_criteria(
+            "games",
+            {"video_max_duration_s": 18.0, "video_fps": 24},
+        )
+        await isolated_co.register_client_domain("esp32_games_128x32", "games", geom, crit_init)
+        for _ in range(30):
+            if ("esp32_games_128x32", "games") in isolated_co.ready_packages:
+                break
+            await asyncio.sleep(0.02)
+        assert ("esp32_games_128x32", "games") in isolated_co.ready_packages
+        assert fake_transcoder.seen_durations[-1] == 18.0
+        assert fake_transcoder.seen_fps[-1] == 24
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # 1. GET /api/v1/admin/config exposes all real-time tuning fields + CPU metadata
+            r_get = await client.get("/api/v1/admin/config")
+            assert r_get.status_code == 200
+            cfg0 = r_get.json()["config"]
+            assert cfg0["max_concurrent_jobs"] == 1
+            assert cfg0["effective_max_workers"] == 1
+            assert cfg0["detected_cpu_cores"] >= 1
+            assert cfg0["video_max_duration_limit_s"] == 30.0
+            assert cfg0["video_max_fps_limit"] == 30
+            assert cfg0["panorama_duration_s"] == 4.0
+
+            # 2. Hot-scale workers UP to 4 and tighten video ceiling to 5.5s @ 12 FPS + DEBUG logging
+            custom_cache = str(tmp_path / "hot_cache_v2")
+            r_post = await client.post(
+                "/api/v1/admin/config",
+                json={
+                    "max_concurrent_jobs": 4,
+                    "use_process_pool": False,
+                    "ffmpeg_threads_per_job": 2,
+                    "worker_nice_increment": 5,
+                    "max_queue_size": 64,
+                    "video_max_duration_limit_s": 5.5,
+                    "server_master_clip_max_s": 6.0,
+                    "video_max_fps_limit": 12,
+                    "panorama_duration_s": 2.5,
+                    "ytdlp_max_filesize_mb": 35,
+                    "default_video_mode": "panorama",
+                    "default_color_boost": "pixel_art",
+                    "session_ttl_seconds": 1800,
+                    "batch_ttl_seconds": 900,
+                    "cache_dir": custom_cache,
+                    "log_level": "DEBUG",
+                    "mdns_enabled": False,
+                    "mdns_hostname": "arcadedmd",
+                    "trust_proxy_headers": False,
+                },
+            )
+            assert r_post.status_code == 200
+            saved_body = r_post.json()
+            assert saved_body["status"] == "saved"
+            applied = saved_body["applied_live"]
+            assert applied["effective_max_workers"] == 4
+            assert applied["video_max_duration_limit_s"] == 5.5
+            assert applied["video_max_fps_limit"] == 12
+            assert applied["invalidated_slots"] == 1
+            assert applied["log_level"] == "DEBUG"
+
+            # Verify live worker pool scaled immediately to 4 workers on the running loop
+            assert len(batch_manager._worker_tasks) == 4
+            assert all(not t.done() for t in batch_manager._worker_tasks)
+            assert root_logger.level == logging.DEBUG
+            assert Path(custom_cache).exists()
+
+            # Verify /api/v1/health reflects new live worker count & video ceilings immediately
+            h_live = (await client.get("/api/v1/health")).json()
+            assert h_live["max_workers"] == 4
+            assert h_live["video_max_duration_limit_s"] == 5.5
+            assert h_live["video_max_fps_limit"] == 12
+            assert h_live["use_process_pool"] is False
+
+            # Verify the registered DMD client had its criteria clamped to 5.5s @ 12fps and re-prepared!
+            for _ in range(30):
+                if (
+                    ("esp32_games_128x32", "games") in isolated_co.ready_packages
+                    and isolated_co.ready_packages[("esp32_games_128x32", "games")].card.stream_fps == 12
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            _g, clamped_crit = isolated_co.client_configs[("esp32_games_128x32", "games")]
+            assert clamped_crit.video_max_duration_s == 5.5
+            assert clamped_crit.video_fps == 12
+            assert fake_transcoder.seen_durations[-1] == 5.5
+            assert fake_transcoder.seen_fps[-1] == 12
+
+            # Verify new clients omitting video_mode/color_boost inherit updated server defaults
+            crit_defaults = isolated_co._parse_domain_criteria("movies", {})
+            assert crit_defaults.video_mode == "panorama"
+            assert crit_defaults.color_boost == "pixel_art"
+            assert crit_defaults.video_max_duration_s == 5.5
+            assert crit_defaults.video_fps == 12
+
+            # 3. Hot-scale workers DOWN from 4 -> 1 without dropping server state
+            r_scale_down = await client.post(
+                "/api/v1/admin/config",
+                json={"max_concurrent_jobs": 1, "log_level": "INFO"},
+            )
+            assert r_scale_down.status_code == 200
+            await asyncio.sleep(0.02)
+            assert len(batch_manager._worker_tasks) == 1
+            assert isolated_co._get_transcode_semaphore().limit == 1
+            assert root_logger.level == logging.INFO
+
+            # Verify persistence on disk (`server_config.json`)
+            persisted = json.loads(server_config_store.file_path.read_text(encoding="utf-8"))
+            assert persisted["max_concurrent_jobs"] == 1
+            assert persisted["video_max_duration_limit_s"] == 5.5
+            assert persisted["video_max_fps_limit"] == 12
+            assert persisted["panorama_duration_s"] == 2.5
+            assert persisted["ffmpeg_threads_per_job"] == 2
+    finally:
+        root_logger.setLevel(orig_root_level)
+        for task in list(isolated_co._prep_tasks.values()):
+            isolated_co._safe_cancel_task(task)
+        await batch_manager.stop()

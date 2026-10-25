@@ -30,11 +30,17 @@ class Settings(BaseSettings):
     max_queue_size: int = 200
     use_process_pool: bool = True
 
-    # Stateless cache & session TTLs
+    # Stateless cache, media defaults & session TTLs
     cache_dir: Path = Path("/tmp/dmd_media_showcase_cache")
     batch_ttl_seconds: int = 180
     session_ttl_seconds: int = 1200
     server_master_clip_max_s: float = 12.0
+    video_max_duration_limit_s: float = 30.0
+    video_max_fps_limit: int = 30
+    panorama_duration_s: float = 4.0
+    ytdlp_max_filesize_mb: int = 60
+    default_video_mode: str = "auto_action"
+    default_color_boost: str = "auto"
 
     # Optional Multilingual Scraper Credentials
     tmdb_api_key: str = ""
@@ -51,10 +57,14 @@ class Settings(BaseSettings):
     trust_proxy_headers: bool = True
 
     @property
+    def detected_cpu_cores(self) -> int:
+        return max(1, int(os.cpu_count() or 2))
+
+    @property
     def effective_max_workers(self) -> int:
         if self.max_concurrent_jobs > 0:
             return max(1, min(16, self.max_concurrent_jobs))
-        cpu_cnt = os.cpu_count() or 2
+        cpu_cnt = self.detected_cpu_cores
         if cpu_cnt <= 2:
             return 1
         return max(1, min(4, cpu_cnt // 2))

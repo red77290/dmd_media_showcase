@@ -332,6 +332,9 @@ class HealthResponse(BaseModel):
     standby_slots: int = 0
     active_udp_streams: int = 0
     active_broadcasts: int = 0
+    video_max_duration_limit_s: float = 30.0
+    video_max_fps_limit: int = 30
+    use_process_pool: bool = True
     seen_history_counts: Dict[str, int] = Field(default_factory=dict)
 
 
@@ -347,4 +350,26 @@ class AdminServerConfigPayload(BaseModel):
     mqtt_external_url: Optional[str] = None
     default_lang: Optional[str] = None
     showcase_api_key: Optional[str] = None
+    # Real-time worker pool & CPU tuning
+    max_concurrent_jobs: Optional[int] = Field(default=None, ge=0, le=16)
+    use_process_pool: Optional[bool] = None
+    ffmpeg_threads_per_job: Optional[int] = Field(default=None, ge=1, le=8)
+    worker_nice_increment: Optional[int] = Field(default=None, ge=0, le=19)
+    max_queue_size: Optional[int] = Field(default=None, ge=10, le=1000)
+    # Real-time video & media limits
+    video_max_duration_limit_s: Optional[float] = Field(default=None, ge=1.5, le=120.0)
+    server_master_clip_max_s: Optional[float] = Field(default=None, ge=1.5, le=120.0)
+    video_max_fps_limit: Optional[int] = Field(default=None, ge=6, le=60)
+    panorama_duration_s: Optional[float] = Field(default=None, ge=1.5, le=15.0)
+    ytdlp_max_filesize_mb: Optional[int] = Field(default=None, ge=10, le=250)
+    default_video_mode: Optional[Literal["auto_action", "panorama", "center_crop"]] = None
+    default_color_boost: Optional[Literal["auto", "pixel_art", "anime", "cinema"]] = None
+    # Cache, session TTLs, mDNS & logging
+    session_ttl_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
+    batch_ttl_seconds: Optional[int] = Field(default=None, ge=30, le=7200)
+    cache_dir: Optional[str] = None
+    log_level: Optional[Literal["DEBUG", "INFO", "WARNING", "ERROR"]] = None
+    mdns_enabled: Optional[bool] = None
+    mdns_hostname: Optional[str] = None
+    trust_proxy_headers: Optional[bool] = None
 

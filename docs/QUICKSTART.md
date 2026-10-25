@@ -72,6 +72,9 @@ docker run -d \
 ## 2. Web Admin Dashboard (`http://dmdmediashowcase.local:8890/`)
 
 Open `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/`) in your browser to:
+- **Hot-Tune Runtime, Workers & Video Limits in Real Time** (`2. Runtime, Workers & Video Limits`, persisted in `./data/server_config.json` with zero server restart):
+  - Resize concurrent transcode workers (`max_concurrent_jobs`: `0 = Auto CPU-bounded` or `1..16`), executor isolation (`ProcessPoolExecutor` vs `ThreadPoolExecutor`), FFmpeg threads per job (`1..8`), OS CPU `nice` priority (`0..19`), queue capacity (`10..1000`), and live server `log_level`.
+  - Enforce global ceilings on maximum video duration (`video_max_duration_limit_s`), master clip target (`server_master_clip_max_s`), max frame rate (`video_max_fps_limit`), source trailer download size (`ytdlp_max_filesize_mb`), panorama scroll duration (`panorama_duration_s`), default AI framing/colorimetry (`default_video_mode`, `default_color_boost`), cache directory, and session/batch TTLs.
 - Configure **optional** Primary scraper credentials:
   - **ScreenScraper** (`user`, `pass`, `dev_id`, `dev_pass`) for `games`. Without credentials, `ArcadeItalia` (MAME HTTPS) + `Libretro+Wikidata` (Console SPARQL + GitHub Tree) operate automatically with zero configuration.
   - **TMDB API Key / v4 Read Access Token** (`tmdb_api_key`) and **TheTVDB v4 API Key** (`tvdb_api_key`) for `movies`, `series`, and `anime`. Without keys, `Apple iTunes`, `TVMaze`, `Jikan + AnimeThemes`, and `Wikipedia Interwiki` operate automatically.

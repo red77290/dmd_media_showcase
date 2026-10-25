@@ -100,6 +100,12 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         poster_w, poster_h = geometry.resolved_poster_dims()
         loop = asyncio.get_running_loop()
 
+        eff_fps = max(6, min(int(settings.video_max_fps_limit), int(criteria.video_fps)))
+        eff_max_dur = max(
+            1.5,
+            min(float(settings.video_max_duration_limit_s), float(criteria.video_max_duration_s)),
+        )
+
         files_map = await loop.run_in_executor(
             None,
             build_static_assets_sync,
@@ -114,13 +120,14 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
             criteria.snapshot_panorama_count,
             geometry.width,
             geometry.height,
-            criteria.video_fps,
+            eff_fps,
             criteria.color_boost,
             poster_w,
             poster_h,
             candidate.resolved_jacket_url(),
             criteria.jacket_panorama,
             criteria.marquee_panorama,
+            float(settings.panorama_duration_s),
         )
 
         has_video = False
@@ -138,11 +145,13 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
                 candidate.youtube_url,
                 geometry.width,
                 geometry.height,
-                criteria.video_fps,
-                criteria.video_max_duration_s,
+                eff_fps,
+                eff_max_dur,
                 criteria.video_mode,
                 criteria.color_boost,
                 settings.worker_nice_increment,
+                settings.ffmpeg_threads_per_job,
+                settings.ytdlp_max_filesize_mb,
             )
             has_video = bool(vid_res.get("has_video", False))
             if has_video:
@@ -175,10 +184,10 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
             unified_stream_path,
             geometry.width,
             geometry.height,
-            criteria.video_fps,
+            eff_fps,
         )
 
-        actual_fps = criteria.video_fps
+        actual_fps = eff_fps
         if unified_stream_path.exists():
             raw_hdr = unified_stream_path.read_bytes()[:16]
             if len(raw_hdr) == 16:

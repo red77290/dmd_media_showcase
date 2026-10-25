@@ -82,7 +82,7 @@
           "System & Admin"
         ],
         "summary": "Update Admin Config",
-        "description": "Update centralized user scraper credentials and MQTT settings in `./data/server_config.json`.",
+        "description": "Update and immediately hot-apply centralized runtime settings, worker pool concurrency,\nvideo duration/FPS ceilings, MQTT/mDNS settings, and scraper credentials in `./data/server_config.json`.",
         "operationId": "update_admin_config_api_v1_admin_config_post",
         "requestBody": {
           "content": {
@@ -904,7 +904,7 @@
             "required": false,
             "schema": {
               "type": "number",
-              "maximum": 60.0,
+              "maximum": 120.0,
               "minimum": 1.5,
               "default": 6.0,
               "title": "Video Max Duration S"
@@ -916,7 +916,7 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "maximum": 30,
+              "maximum": 60,
               "minimum": 6,
               "default": 15,
               "title": "Video Fps"
@@ -1087,7 +1087,7 @@
               "anyOf": [
                 {
                   "type": "number",
-                  "maximum": 60.0,
+                  "maximum": 120.0,
                   "minimum": 0.5
                 },
                 {
@@ -1251,6 +1251,254 @@
               }
             ],
             "title": "Showcase Api Key"
+          },
+          "max_concurrent_jobs": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 16.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Jobs"
+          },
+          "use_process_pool": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use Process Pool"
+          },
+          "ffmpeg_threads_per_job": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ffmpeg Threads Per Job"
+          },
+          "worker_nice_increment": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 19.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Nice Increment"
+          },
+          "max_queue_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Queue Size"
+          },
+          "video_max_duration_limit_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 120.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Max Duration Limit S"
+          },
+          "server_master_clip_max_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 120.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Master Clip Max S"
+          },
+          "video_max_fps_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 60.0,
+                "minimum": 6.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Max Fps Limit"
+          },
+          "panorama_duration_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 15.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panorama Duration S"
+          },
+          "ytdlp_max_filesize_mb": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 250.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ytdlp Max Filesize Mb"
+          },
+          "default_video_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto_action",
+                  "panorama",
+                  "center_crop"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Video Mode"
+          },
+          "default_color_boost": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "pixel_art",
+                  "anime",
+                  "cinema"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Color Boost"
+          },
+          "session_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 86400.0,
+                "minimum": 60.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Ttl Seconds"
+          },
+          "batch_ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 7200.0,
+                "minimum": 30.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Ttl Seconds"
+          },
+          "cache_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Dir"
+          },
+          "log_level": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "DEBUG",
+                  "INFO",
+                  "WARNING",
+                  "ERROR"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log Level"
+          },
+          "mdns_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mdns Enabled"
+          },
+          "mdns_hostname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mdns Hostname"
+          },
+          "trust_proxy_headers": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trust Proxy Headers"
           }
         },
         "type": "object",
@@ -1377,6 +1625,26 @@
             "type": "object",
             "title": "Providers Configured"
           },
+          "providers_detailed": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Providers Detailed"
+          },
           "mqtt_mode": {
             "type": "string",
             "title": "Mqtt Mode",
@@ -1386,6 +1654,56 @@
             "type": "integer",
             "title": "Mqtt Port",
             "default": 1883
+          },
+          "mqtt_connected_clients": {
+            "type": "integer",
+            "title": "Mqtt Connected Clients",
+            "default": 0
+          },
+          "mqtt_tcp_sessions": {
+            "type": "integer",
+            "title": "Mqtt Tcp Sessions",
+            "default": 0
+          },
+          "registered_dmd_slots": {
+            "type": "integer",
+            "title": "Registered Dmd Slots",
+            "default": 0
+          },
+          "ready_slots": {
+            "type": "integer",
+            "title": "Ready Slots",
+            "default": 0
+          },
+          "standby_slots": {
+            "type": "integer",
+            "title": "Standby Slots",
+            "default": 0
+          },
+          "active_udp_streams": {
+            "type": "integer",
+            "title": "Active Udp Streams",
+            "default": 0
+          },
+          "active_broadcasts": {
+            "type": "integer",
+            "title": "Active Broadcasts",
+            "default": 0
+          },
+          "video_max_duration_limit_s": {
+            "type": "number",
+            "title": "Video Max Duration Limit S",
+            "default": 30.0
+          },
+          "video_max_fps_limit": {
+            "type": "integer",
+            "title": "Video Max Fps Limit",
+            "default": 30
+          },
+          "use_process_pool": {
+            "type": "boolean",
+            "title": "Use Process Pool",
+            "default": true
           },
           "seen_history_counts": {
             "additionalProperties": {
@@ -1715,6 +2033,45 @@
             "type": "integer",
             "title": "Video Fps",
             "default": 15
+          },
+          "include_video": {
+            "type": "boolean",
+            "title": "Include Video",
+            "default": true
+          },
+          "video_mode": {
+            "type": "string",
+            "enum": [
+              "auto_action",
+              "panorama",
+              "center_crop",
+              "pixel_art",
+              "anime",
+              "cinema"
+            ],
+            "title": "Video Mode",
+            "default": "auto_action"
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "pixel_art",
+                  "anime",
+                  "cinema"
+                ]
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Color Boost",
+            "default": "auto"
           },
           "primary_source": {
             "type": "string",

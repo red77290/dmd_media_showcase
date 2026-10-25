@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from app.config import settings
 from app.infrastructure.persistence.json_seen_repository import seen_repository
@@ -113,9 +113,22 @@ class SessionBatchManager:
         self._completed_jobs = 0
         self._total_job_duration_s = 0.0
         self._worker_tasks: List[asyncio.Task] = []
+        self._worker_task_map: Dict[int, asyncio.Task] = {}
+        self._busy_worker_ids: Set[int] = set()
+        self._target_workers: int = 0
         self._executor: Optional[Executor] = None
+        self._executor_spec: Tuple[bool, int] = (True, 0)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
+
+    @staticmethod
+    def _create_executor(use_proc: bool, max_w: int) -> Executor:
+        if use_proc:
+            try:
+                return ProcessPoolExecutor(max_workers=max_w)
+            except Exception:
+                return ThreadPoolExecutor(max_workers=max_w)
+        return ThreadPoolExecutor(max_workers=max_w)
 
     def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -130,6 +143,8 @@ class SessionBatchManager:
 
         stale_tasks = list(self._worker_tasks)
         self._worker_tasks.clear()
+        self._worker_task_map.clear()
+        self._busy_worker_ids.clear()
         for t in stale_tasks:
             if not t.done():
                 try:
@@ -148,27 +163,93 @@ class SessionBatchManager:
         self._active_workers = 0
         settings.cache_dir.mkdir(parents=True, exist_ok=True)
         max_w = settings.effective_max_workers
-        if settings.use_process_pool:
-            try:
-                self._executor = ProcessPoolExecutor(max_workers=max_w)
-            except Exception:
-                self._executor = ThreadPoolExecutor(max_workers=max_w)
-        else:
-            self._executor = ThreadPoolExecutor(max_workers=max_w)
+        use_proc = bool(settings.use_process_pool)
+        self._target_workers = max_w
+        self._executor = self._create_executor(use_proc, max_w)
+        self._executor_spec = (use_proc, max_w)
 
-        self._worker_tasks = [
-            loop.create_task(self._worker_loop(idx)) for idx in range(max_w)
-        ]
+        self._worker_task_map = {
+            idx: loop.create_task(self._worker_loop(idx)) for idx in range(max_w)
+        }
+        self._worker_tasks = list(self._worker_task_map.values())
         logger.info(
             "[POOL] SessionBatchManager started with %d bounded worker(s) (cache_dir=%s)",
             max_w,
             settings.cache_dir,
         )
 
+    async def reconfigure_workers(self) -> int:
+        """
+        Live-reload worker count (`effective_max_workers`), executor mode (`use_process_pool`),
+        and `cache_dir` in real time without dropping queued jobs or aborting active jobs.
+        """
+        settings.cache_dir.mkdir(parents=True, exist_ok=True)
+        max_w = settings.effective_max_workers
+        use_proc = bool(settings.use_process_pool)
+        self._target_workers = max_w
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if (
+            not self._running
+            or self._loop is None
+            or self._loop.is_closed()
+            or (current_loop is not None and self._loop is not current_loop)
+        ):
+            return max_w
+
+        if self._executor is None or self._executor_spec != (use_proc, max_w):
+            old_exec = self._executor
+            self._executor = self._create_executor(use_proc, max_w)
+            self._executor_spec = (use_proc, max_w)
+            if old_exec is not None:
+                old_exec.shutdown(wait=False, cancel_futures=False)
+
+        cancelled_idle: List[asyncio.Task] = []
+        for wid, t in list(self._worker_task_map.items()):
+            if t.done():
+                self._worker_task_map.pop(wid, None)
+                continue
+            if wid >= max_w and wid not in self._busy_worker_ids:
+                self._worker_task_map.pop(wid, None)
+                try:
+                    t.cancel()
+                    cancelled_idle.append(t)
+                except RuntimeError:
+                    pass
+
+        for wid in range(max_w):
+            existing = self._worker_task_map.get(wid)
+            if existing is None or existing.done():
+                self._worker_task_map[wid] = self._loop.create_task(self._worker_loop(wid))
+
+        if cancelled_idle and current_loop is self._loop:
+            await asyncio.gather(*cancelled_idle, return_exceptions=True)
+
+        self._worker_tasks = [
+            t for _, t in sorted(self._worker_task_map.items()) if not t.done()
+        ]
+        logger.info(
+            "[POOL] Reconfigured worker pool live -> target_workers=%d (process_pool=%s, cache_dir=%s)",
+            max_w,
+            use_proc,
+            settings.cache_dir,
+        )
+        return max_w
+
     async def stop(self) -> None:
         self._running = False
+        self._target_workers = 0
         tasks = list(self._worker_tasks)
+        for t_extra in self._worker_task_map.values():
+            if t_extra not in tasks:
+                tasks.append(t_extra)
         self._worker_tasks.clear()
+        self._worker_task_map.clear()
+        self._busy_worker_ids.clear()
         self._loop = None
         executor = self._executor
         self._executor = None
@@ -333,13 +414,19 @@ class SessionBatchManager:
                 cand.resolved_jacket_url(),
                 req.jacket_panorama,
                 req.marquee_panorama,
+                float(settings.panorama_duration_s),
             )
             self.asset_index[item_key] = item_dir
             dir_map[item_key] = item_dir
             cand_map[item_key] = cand
 
+            eff_req_dur = min(
+                float(req.video_max_duration_s), float(settings.video_max_duration_limit_s)
+            )
+            eff_req_fps = max(6, min(int(settings.video_max_fps_limit), int(req.video_fps)))
+
             urls = self._build_asset_urls(
-                item_key, files_map, req.width, req.height, req.video_max_duration_s
+                item_key, files_map, req.width, req.height, eff_req_dur
             )
             showcase_item = MediaShowcaseItem(
                 id=item_key,
@@ -363,7 +450,7 @@ class SessionBatchManager:
                 has_video=False,
                 video_ready=not req.include_video,
                 video_duration_s=0.0,
-                video_fps=req.video_fps,
+                video_fps=eff_req_fps,
                 assets=urls,
             )
             items.append(showcase_item)
@@ -426,6 +513,8 @@ class SessionBatchManager:
     async def _schedule_next_batch_if_needed(self, state: SessionState) -> None:
         if state.next_batch is not None or state.next_batch_creating:
             return
+        if self.queue_depth >= max(10, int(settings.max_queue_size)):
+            return
         state.next_batch_creating = True
         try:
             next_slot = await self._create_batch_slot(
@@ -452,8 +541,12 @@ class SessionBatchManager:
     async def _worker_loop(self, worker_id: int) -> None:
         loop = asyncio.get_running_loop()
         my_queue = self._queue
-        my_executor = self._executor
-        while self._running and self._loop is loop and self._queue is my_queue:
+        while (
+            self._running
+            and self._loop is loop
+            and self._queue is my_queue
+            and worker_id < max(1, self._target_workers)
+        ):
             try:
                 job = await my_queue.get()
             except (asyncio.CancelledError, RuntimeError):
@@ -465,6 +558,7 @@ class SessionBatchManager:
                 continue
 
             self._active_workers += 1
+            self._busy_worker_ids.add(worker_id)
             t0 = time.monotonic()
             logger.info(
                 "[WORKER #%d] Starting video job '%s' ('%s') | video_url=%s | youtube_url=%s",
@@ -475,9 +569,17 @@ class SessionBatchManager:
                 job.candidate.youtube_url or "None",
             )
             try:
-                master_dur = max(job.req.video_max_duration_s, settings.server_master_clip_max_s)
+                eff_req_dur = min(
+                    float(job.req.video_max_duration_s),
+                    float(settings.video_max_duration_limit_s),
+                )
+                master_dur = min(
+                    float(settings.video_max_duration_limit_s),
+                    max(eff_req_dur, float(settings.server_master_clip_max_s)),
+                )
+                eff_fps = max(6, min(int(settings.video_max_fps_limit), int(job.req.video_fps)))
                 res = await loop.run_in_executor(
-                    my_executor,
+                    self._executor,
                     build_video_assets_worker_task,
                     str(job.item_dir),
                     job.candidate.title,
@@ -487,29 +589,31 @@ class SessionBatchManager:
                     job.candidate.youtube_url,
                     job.req.width,
                     job.req.height,
-                    job.req.video_fps,
+                    eff_fps,
                     master_dur,
                     job.req.video_mode,
                     job.req.color_boost,
                     settings.worker_nice_increment,
+                    settings.ffmpeg_threads_per_job,
+                    settings.ytdlp_max_filesize_mb,
                 )
                 has_vid = bool(res.get("has_video", False))
                 job.item.has_video = has_vid
                 job.item.video_ready = True
                 if has_vid:
                     job.item.video_duration_s = min(
-                        float(res.get("duration_s", job.req.video_max_duration_s)),
-                        job.req.video_max_duration_s,
+                        float(res.get("duration_s", eff_req_dur)),
+                        eff_req_dur,
                     )
-                    job.item.video_fps = int(res.get("fps", job.req.video_fps))
+                    job.item.video_fps = int(res.get("fps", eff_fps))
                     job.item.quality_score = int(res.get("quality_score", 85))
                     gif_f = str(res.get("gif_file", ""))
                     stream_f = str(res.get("stream_file", ""))
                     job.item.assets.video_gif = (
-                        f"/api/v1/assets/{job.item.id}/{gif_f}?max_duration_s={job.req.video_max_duration_s}"
+                        f"/api/v1/assets/{job.item.id}/{gif_f}?max_duration_s={eff_req_dur}"
                     )
                     job.item.assets.video_stream_rgb565 = (
-                        f"/api/v1/assets/{job.item.id}/{stream_f}?max_duration_s={job.req.video_max_duration_s}"
+                        f"/api/v1/assets/{job.item.id}/{stream_f}?max_duration_s={eff_req_dur}"
                     )
                 else:
                     job.item.video_duration_s = 0.0
@@ -559,6 +663,7 @@ class SessionBatchManager:
                 job.item.video_ready = True
                 logger.error("[WORKER #%d] Failed video job %s: %s", worker_id, job.item.id, exc)
             finally:
+                self._busy_worker_ids.discard(worker_id)
                 self._active_workers = max(0, self._active_workers - 1)
                 my_queue.task_done()
 
@@ -812,10 +917,14 @@ class SessionBatchManager:
             cand.resolved_jacket_url(),
             synth_req.jacket_panorama,
             synth_req.marquee_panorama,
+            float(settings.panorama_duration_s),
         )
         self.asset_index[item_key] = item_dir
+        eff_od_dur = min(
+            float(synth_req.video_max_duration_s), float(settings.video_max_duration_limit_s)
+        )
         urls = self._build_asset_urls(
-            item_key, files_map, synth_req.width, synth_req.height, synth_req.video_max_duration_s
+            item_key, files_map, synth_req.width, synth_req.height, eff_od_dur
         )
         item = MediaShowcaseItem(
             id=item_key,

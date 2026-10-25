@@ -36,6 +36,7 @@ def slice_hd_remote_video_ffmpeg(
     out_mp4: Path,
     max_duration_s: float = 10.0,
     start_offset_s: float = 10.0,
+    ffmpeg_threads: int = 1,
 ) -> bool:
     """
     Slice a clean HD (`720p`) segment directly over HTTP using FFmpeg (`-ss ... -t ... -i <url>`)
@@ -46,6 +47,7 @@ def slice_hd_remote_video_ffmpeg(
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     out_mp4.unlink(missing_ok=True)
     dur = max(2.0, min(120.0, float(max_duration_s)))
+    threads_str = str(max(1, min(8, int(ffmpeg_threads))))
     ffmpeg_bin = get_ffmpeg_binary()
     cmd = [
         ffmpeg_bin,
@@ -53,6 +55,8 @@ def slice_hd_remote_video_ffmpeg(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-threads",
+        threads_str,
         "-ss",
         f"{start_offset_s:.1f}",
         "-t",
@@ -68,6 +72,8 @@ def slice_hd_remote_video_ffmpeg(
         "veryfast",
         "-crf",
         "18",
+        "-threads",
+        threads_str,
         str(out_mp4),
     ]
     t0 = time.monotonic()
@@ -90,6 +96,7 @@ def extract_hd_youtube_clip_ytdlp(
     video_page_url: Optional[str],
     out_mp4: Path,
     max_duration_s: float = 10.0,
+    max_filesize_mb: int = 60,
 ) -> bool:
     """
     Extract a clean 720p/1080p MP4 clip from a YouTube URL (or `ytsearch1:` query) using `yt-dlp`.
@@ -103,6 +110,8 @@ def extract_hd_youtube_clip_ytdlp(
     out_mp4.unlink(missing_ok=True)
 
     clip_dur = max(2.0, min(120.0, float(max_duration_s)))
+    eff_mb = max(10, min(250, int(max_filesize_mb)))
+    fallback_mb = max(10, int(round(eff_mb * 0.75)))
     sec_start = 8
     sec_end = int(sec_start + round(clip_dur))
     ffmpeg_bin = get_ffmpeg_binary()
@@ -115,7 +124,7 @@ def extract_hd_youtube_clip_ytdlp(
         "--socket-timeout",
         "7",
         "--max-filesize",
-        "60M",
+        f"{eff_mb}M",
         "--ffmpeg-location",
         ffmpeg_bin,
         "-S",
@@ -153,7 +162,7 @@ def extract_hd_youtube_clip_ytdlp(
             "--socket-timeout",
             "7",
             "--max-filesize",
-            "45M",
+            f"{fallback_mb}M",
             "--ffmpeg-location",
             ffmpeg_bin,
             "-S",
