@@ -26,6 +26,9 @@
 - **Strict Consume-Once & `N+1` Background Pipelining**:
   - Tracks every presented title in `./data/seen_history.json` (zero repetition until catalog exhaustion).
   - Pre-builds item `N+1` in the background as soon as item `N` starts displaying its Info Card (`start_card`), and purges item `N` from disk immediately on `stream_eof`.
+- **Server-Managed Passive ESP32 Profiles (`dmd_profiles.json`) & Live On-Demand Queue**:
+  - Supports full multi-engine DMDs (`ArcadeMatrix`) **and** ultra-light ~180-line zero-UI/zero-PSRAM `ESP32_STD` passive UDP `:4210` receivers (`supports_local_card: false`, with even Phase 1 Info Cards rendered into the RGB565 stream) configured centrally in `./data/dmd_profiles.json`.
+  - Localized catalog search (`GET /api/v1/{domain}/search`), per-DMD priority queue (`enqueue_next` / `play_now`), live `Skip` / `Pause` / `Resume` / `Stop` controls, and **`FrontendSync`** (`mark_seen: false` for Batocera / RetroBat / LaunchBox / Playnite).
 - **Powered by `dmd_gif_converter`**: Orthogonal video framing (`auto_action` Let Me Handle It AI motion saliency, `panorama` top-to-bottom scan, `center_crop`) and HUB75 LED colorimetry (`auto` Smart Color Boost AI, `pixel_art`, `anime`, `cinema`), Lanczos + unsharp downscaling, and top-to-bottom sub-pixel scrolling panoramas (`Jacket`, `Marquee`, `Snapshots`) across all Landscape (`128x32`, `128x64`, `256x64`), Square (`64x64`), and TATE (`64x128`, `32x128`) resolutions.
 
 ---
@@ -58,15 +61,16 @@ services:
       - "1883:1883"
       - "5353:5353/udp"
     volumes:
-      - ./data:/app/data
+      - ${DMD_DATA_PATH:-./data}:/app/data
     tmpfs:
       - /tmp/dmd_media_showcase_cache:size=256m,mode=1777
 ```
 </details>
 
-#### B. Direct `docker run` Command
+#### B. Direct `docker run` Command (Host Bind Mount or Portainer Named Volume)
 
 ```bash
+# Option B1: Host directory bind mount (./data — immune to `docker compose down -v`)
 docker run -d \
   --name dmd-media-showcase \
   --restart unless-stopped \
@@ -76,7 +80,20 @@ docker run -d \
   -v ./data:/app/data \
   --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
   ghcr.io/red77290/dmd_media_showcase:latest
+
+# Option B2: Named Docker volume (`dmd_showcase_data` — ideal for Portainer / standalone hosts)
+docker run -d \
+  --name dmd-media-showcase \
+  --restart unless-stopped \
+  -p 8890:8890 \
+  -p 1883:1883 \
+  -p 5353:5353/udp \
+  -v dmd_showcase_data:/app/data \
+  --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
+  ghcr.io/red77290/dmd_media_showcase:latest
 ```
+
+> **Persistent State (`/app/data`)**: Stores `server_config.json`, `dmd_profiles.json` (server-managed DMD profiles & broadcast language), `seen_history.json`, and `referentials/`. Using `${DMD_DATA_PATH:-./data}:/app/data` binds a host folder (customizable via `DMD_DATA_PATH` in `.env`) that is **never erased by `docker compose down -v`**, whereas `-v dmd_showcase_data:/app/data` uses a Docker-managed named volume suited for Portainer.
 
 - **Web Admin Dashboard**: `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/` — configure optional TMDB / ScreenScraper credentials & reset `seen_history.json`)
 - **Interactive Swagger UI**: `http://dmdmediashowcase.local:8890/docs`
@@ -107,6 +124,7 @@ curl -s "http://localhost:8890/api/v1/games/filters?lang=fr" | jq '.systems[0], 
 | Document | 🇬🇧 English | 🇫🇷 Français | 🇪🇸 Español |
 | :--- | :--- | :--- | :--- |
 | **QuickStart & Deployment Guide** | [docs/QUICKSTART.md](docs/QUICKSTART.md) | [docs/QUICKSTART_FR.md](docs/QUICKSTART_FR.md) | [docs/QUICKSTART_ES.md](docs/QUICKSTART_ES.md) |
+| **ESP32 Integration & Passive Receiver Guide** | [docs/ESP32_INTEGRATION.md](docs/ESP32_INTEGRATION.md) | [docs/ESP32_INTEGRATION_FR.md](docs/ESP32_INTEGRATION_FR.md) | [docs/ESP32_INTEGRATION_ES.md](docs/ESP32_INTEGRATION_ES.md) |
 | **DDD Architecture & Streaming Pipeline** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE_FR.md](docs/ARCHITECTURE_FR.md) | [docs/ARCHITECTURE_ES.md](docs/ARCHITECTURE_ES.md) |
 | **Developer & Scraper Strategy Guide** | [docs/DEVELOPER.md](docs/DEVELOPER.md) | [docs/DEVELOPER_FR.md](docs/DEVELOPER_FR.md) | [docs/DEVELOPER_ES.md](docs/DEVELOPER_ES.md) |
 | **OpenAPI 3.1 REST Specification** | [docs/openapi.yaml](docs/openapi.yaml) / [docs/openapi.json](docs/openapi.json) | — | — |

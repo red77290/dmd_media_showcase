@@ -373,3 +373,198 @@ class AdminServerConfigPayload(BaseModel):
     mdns_hostname: Optional[str] = None
     trust_proxy_headers: Optional[bool] = None
 
+
+class DmdPlaylistSlotPayload(BaseModel):
+    """Single domain rotation slot inside a server-managed DMD profile (`dmd_profiles.json`)."""
+
+    enabled: bool = True
+    domain: DomainType = "games"
+    count: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Number of consecutive items played from this domain per playlist cycle.",
+    )
+    lang: Optional[str] = Field(
+        default=None,
+        description="Optional per-slot content broadcast language override ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja').",
+    )
+    systems: List[str] = Field(default_factory=list)
+    genres: List[str] = Field(default_factory=list)
+    decades: List[str] = Field(default_factory=list)
+    min_rating: float = Field(default=6.0, ge=0.0, le=9.9)
+    video_type: str = "any"
+    include_poster: bool = True
+    include_synopsis: bool = True
+    text_scroll_speed: str = "normal"
+    jacket_panorama: bool = True
+    marquee_panorama: bool = False
+    snapshot_panorama_count: int = Field(default=0, ge=0, le=5)
+    include_video: bool = True
+    video_max_duration_s: float = Field(default=8.0, ge=1.5, le=120.0)
+    video_fps: int = Field(default=15, ge=6, le=60)
+    video_mode: str = "auto_action"
+    color_boost: Union[str, bool] = "auto"
+
+
+class DmdProfilePayload(BaseModel):
+    """
+    Persistent per-DMD profile & server-managed playlist stored in `./data/dmd_profiles.json`.
+    Supports Mode 1 (`config_source='client'`), Mode 2A (`config_source='server', supports_local_card=True`),
+    and Mode 2B (`config_source='server', supports_local_card=False`).
+    """
+
+    dmd_id: Optional[str] = None
+    display_name: str = ""
+    config_source: Literal["client", "server"] = "server"
+    supports_local_card: bool = Field(
+        default=True,
+        description="True (Mode 2A): DMD renders 60 FPS text Info Card locally + streams UDP video. False (Mode 2B): Server renders Info Card directly into RGB565 UDP stream.",
+    )
+    always_stream_udp: bool = Field(
+        default=False,
+        description="When True in Mode 2B, streams UDP DMDF frames continuously to udp_ip:udp_port even without MQTT presence.",
+    )
+    width: int = Field(default=128, ge=32, le=512)
+    height: int = Field(default=32, ge=16, le=256)
+    udp_ip: str = ""
+    udp_port: int = Field(default=4210, ge=1, le=65535)
+    lang: str = Field(
+        default="fr",
+        description="Content broadcast language ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja') for titles, synopses, and posters.",
+    )
+    paused: bool = False
+    inter_item_gap_s: float = Field(default=1.0, ge=0.0, le=10.0)
+    playlist: List[DmdPlaylistSlotPayload] = Field(default_factory=list)
+
+
+class ClientHelloPayload(BaseModel):
+    """Lightweight hardware announcement payload for passive ESP32/RPi receivers (MQTT or HTTP)."""
+
+    dmd_id: str = Field(..., min_length=1)
+    display_name: str = ""
+    config_source: Literal["client", "server"] = "server"
+    supports_local_card: bool = True
+    width: int = Field(default=128, ge=32, le=512)
+    height: int = Field(default=32, ge=16, le=256)
+    udp_ip: str = ""
+    client_ip: str = ""
+    udp_port: int = Field(default=4210, ge=1, le=65535)
+    lang: Optional[str] = None
+
+
+class SearchRequestPayload(BaseModel):
+    """Multi-candidate localized catalog search request (`POST /api/v1/{domain}/search`)."""
+
+    q: str = Field(
+        default="",
+        description="Optional text query (title, ROM name, franchise). Empty returns filtered browse items.",
+    )
+    query: Optional[str] = Field(default=None, description="Optional alias for `q`.")
+    lang: str = Field(
+        default="fr",
+        description="Content broadcast language ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja').",
+    )
+    systems: List[str] = Field(default_factory=list)
+    genres: List[str] = Field(default_factory=list)
+    decades: List[str] = Field(default_factory=list)
+    video_type: str = "any"
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class SearchCandidateModel(BaseModel):
+    """Single media item candidate returned by `/api/v1/{domain}/search`."""
+
+    candidate_id: str
+    id: str
+    domain: DomainType
+    title: str
+    year: str
+    badge: str
+    badge_color: str
+    subtitle: str
+    rating: str
+    synopsis: str
+    lang: str
+    source_id: str
+    poster_url: Optional[str] = None
+    has_video: bool = False
+
+
+class SearchCandidatesResponse(BaseModel):
+    """Response returned by `GET/POST /api/v1/{domain}/search`."""
+
+    domain: DomainType
+    query: str
+    lang: str
+    count: int
+    items: List[SearchCandidateModel]
+
+
+class QueueAddRequest(BaseModel):
+    """
+    Enqueue or immediately play a specific media title on a target DMD (`POST /api/v1/clients/{dmd_id}/queue`).
+    Accepts either `candidate_id` (from `/search` UI selection) or `{domain, query, systems, lang}` (1-shot FrontendSync / webhook).
+    """
+
+    candidate_id: Optional[str] = Field(
+        default=None,
+        description="Exact staged candidate_id returned by `/api/v1/{domain}/search`.",
+    )
+    domain: DomainType = "games"
+    query: str = Field(
+        default="",
+        description="Direct search query when `candidate_id` is omitted (e.g. FrontendSync game launch or voice command).",
+    )
+    systems: List[str] = Field(default_factory=list)
+    genres: List[str] = Field(default_factory=list)
+    decades: List[str] = Field(default_factory=list)
+    video_type: str = "any"
+    lang: Optional[str] = Field(
+        default=None,
+        description="Content broadcast language ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja'). Defaults to target DMD profile language.",
+    )
+    mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
+    mark_seen: bool = Field(
+        default=True,
+        description="When False (e.g. FrontendSync), does not record the item in seen_history.json so it can be displayed again.",
+    )
+    width: Optional[int] = Field(default=None, ge=32, le=512)
+    height: Optional[int] = Field(default=None, ge=16, le=256)
+    include_poster: Optional[bool] = None
+    include_synopsis: Optional[bool] = None
+    text_scroll_speed: Optional[str] = None
+    jacket_panorama: Optional[bool] = None
+    marquee_panorama: Optional[bool] = None
+    snapshot_panorama_count: Optional[int] = Field(default=None, ge=0, le=5)
+    include_video: Optional[bool] = None
+    video_max_duration_s: Optional[float] = Field(default=None, ge=1.5, le=120.0)
+    video_fps: Optional[int] = Field(default=None, ge=6, le=60)
+    video_mode: Optional[str] = None
+    color_boost: Optional[Union[str, bool]] = None
+
+
+class QueueItemModel(BaseModel):
+    """Single item in a DMD client's On-Demand priority queue."""
+
+    queue_id: str
+    dmd_id: str
+    domain: DomainType
+    candidate_id: str
+    item_id: str = ""
+    title: str
+    year: str = ""
+    badge: str = ""
+    lang: str = "fr"
+    mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
+    mark_seen: bool = True
+    status: Literal["queued", "preparing", "ready", "playing"] = "queued"
+    created_at: float
+
+
+class ClientControlRequest(BaseModel):
+    """Live playback control command for a DMD client (`POST /api/v1/clients/{dmd_id}/control`)."""
+
+    action: Literal["skip", "pause", "resume", "stop"]
+
+

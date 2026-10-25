@@ -293,6 +293,60 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     .toast {
       margin: 0; font-size: 0.88rem; font-weight: 600; color: var(--green);
     }
+    .mini-btn {
+      height: 30px;
+      padding: 0 9px;
+      font-size: 0.78rem;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .cand-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .cand-card {
+      background: #0d121b;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .cand-thumb {
+      width: 64px;
+      height: 84px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #06080d;
+      flex-shrink: 0;
+    }
+    .cand-body { flex: 1; min-width: 0; }
+    .cand-title { font-weight: 700; font-size: 0.94rem; color: #fff; margin: 0 0 4px 0; }
+    .cand-syn {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.38;
+      margin: 6px 0 10px 0;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .cand-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .playlist-table input, .playlist-table select {
+      height: 36px;
+      line-height: 34px;
+      font-size: 0.82rem;
+      padding: 0 8px;
+    }
+    .playlist-table select { padding-right: 28px; }
 
     @media (max-width: 960px) {
       .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -301,7 +355,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       .form-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
-      .form-grid-2, .form-grid-3, .kpi-grid, .providers-grid { grid-template-columns: 1fr; }
+      .form-grid-2, .form-grid-3, .kpi-grid, .providers-grid, .cand-grid { grid-template-columns: 1fr; }
       .field.span-2 { grid-column: span 1; }
     }
   </style>
@@ -380,9 +434,14 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="card">
         <h2>
           <span data-i18n="dmd_clients_title">Connected DMD Matrices (ESP32 / Raspberry Pi)</span>
-          <button class="secondary" style="margin:0;padding:6px 12px;font-size:0.8rem" onclick="refreshAll()" data-i18n="btn_refresh">
-            Refresh
-          </button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="secondary" style="margin:0;padding:6px 12px;font-size:0.8rem" onclick="openProfileEditor('')" data-i18n="btn_new_profile">
+              ➕ New Passive DMD Profile
+            </button>
+            <button class="secondary" style="margin:0;padding:6px 12px;font-size:0.8rem" onclick="refreshAll()" data-i18n="btn_refresh">
+              Refresh
+            </button>
+          </div>
         </h2>
         <p class="desc" data-i18n="dmd_clients_desc">
           Live view of HUB75 panels registered via MQTT or HTTP Polling, their orthogonal framing/color presets, active broadcast, and pre-computed N (Ready) and N+1 (Standby) slots.
@@ -398,12 +457,108 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
                 <th data-i18n="th_playing">Now Playing</th>
                 <th data-i18n="th_ready">Ready Slot (N)</th>
                 <th data-i18n="th_standby">Standby Slot (N+1)</th>
+                <th data-i18n="th_actions">Control</th>
               </tr>
             </thead>
             <tbody id="clients-tbody">
-              <tr><td colspan="7" style="color:var(--muted)" data-i18n="no_clients">No active DMD client registered yet.</td></tr>
+              <tr><td colspan="8" style="color:var(--muted)" data-i18n="no_clients">No active DMD client registered yet.</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- PERSISTENT DMD PROFILE & SERVER-MANAGED PLAYLIST EDITOR -->
+      <div class="card" id="dmd-profile-editor-card" style="display:none">
+        <h2>
+          <span data-i18n="prof_editor_title">DMD Profile &amp; Server-Managed Playlist (dmd_profiles.json)</span>
+          <button class="secondary mini-btn" onclick="closeProfileEditor()" data-i18n="btn_close">✕ Close</button>
+        </h2>
+        <p class="desc" data-i18n="prof_editor_desc">
+          Configure passive ESP32 / RPi receivers directly from the Showcase server (Mode 2A Hybrid or Mode 2B 100% Passive UDP), set their broadcast content language, and curate multi-domain rotation playlists persisted in ./data/dmd_profiles.json.
+        </p>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_prof_id">DMD Identifier (dmd_id)</label>
+            <input type="text" id="prof-dmd-id" placeholder="esp32_cab_1" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_name">Friendly Display Name</label>
+            <input type="text" id="prof-display-name" placeholder="Living Room Arcade DMD" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_mode">DMD Operating Mode</label>
+            <select id="prof-mode">
+              <option value="server_hybrid" data-i18n="opt_mode_2a">Mode 2A — Server Playlist + Local 60 FPS Card</option>
+              <option value="server_passive" data-i18n="opt_mode_2b">Mode 2B — 100% Passive UDP Framebuffer</option>
+              <option value="client" data-i18n="opt_mode_1">Mode 1 — Client-Driven (e.g. ArcadeMatrix)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_lang">Broadcast Content Language (lang)</label>
+            <select id="prof-lang">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_resolution">DMD Panel Resolution</label>
+            <select id="prof-res">
+              <option value="128x32">128×32 (Standard Marquee)</option>
+              <option value="128x64">128×64 (Double Height)</option>
+              <option value="256x64">256×64 (XL Arcade)</option>
+              <option value="64x64">64×64 (Square)</option>
+              <option value="64x128">64×128 (TATE Vertical)</option>
+              <option value="32x128">32×128 (Slim TATE)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_always_udp">Continuous UDP Push (without MQTT)</label>
+            <select id="prof-always-udp">
+              <option value="false" data-i18n="opt_udp_presence">Wait for MQTT / HTTP Hello Presence</option>
+              <option value="true" data-i18n="opt_udp_always">Always Stream UDP to LAN IP (Pure UDP Sketch)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_ip">Target DMD LAN IP (udp_ip)</label>
+            <input type="text" id="prof-udp-ip" placeholder="192.168.1.85" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_port">UDP Frame Port (udp_port)</label>
+            <input type="number" id="prof-udp-port" min="1" max="65535" step="1" value="4210" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_gap">Inter-Item Transition Gap (s — 0..10)</label>
+            <input type="number" id="prof-gap-s" min="0" max="10" step="0.5" value="1.0" />
+          </div>
+        </div>
+
+        <div style="overflow-x:auto;margin-top:16px">
+          <table class="playlist-table">
+            <thead>
+              <tr>
+                <th data-i18n="th_pl_on">On</th>
+                <th data-i18n="th_domain">Domain</th>
+                <th data-i18n="th_pl_count">Items / Turn</th>
+                <th data-i18n="th_pl_systems">Systems (Games CSV)</th>
+                <th data-i18n="th_pl_genres">Genres (CSV)</th>
+                <th data-i18n="th_pl_framing">Framing</th>
+                <th data-i18n="th_pl_cboost">Color Boost</th>
+                <th data-i18n="th_pl_vdur">Max Video (s)</th>
+              </tr>
+            </thead>
+            <tbody id="prof-playlist-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="form-actions">
+          <button onclick="saveDmdProfile()" data-i18n="btn_save_profile">💾 Save Profile &amp; Apply Live</button>
+          <button class="danger" onclick="deleteDmdProfile()" data-i18n="btn_delete_profile">🗑️ Delete Profile</button>
+          <span id="prof-status-msg" class="toast"></span>
         </div>
       </div>
 
@@ -548,14 +703,32 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- TAB 3: LIVE SHOWCASE TESTER -->
+    <!-- TAB 3: SEARCH, ON-DEMAND QUEUE & LIVE SHOWCASE TESTER -->
     <div id="tab-tester" class="tab-pane">
       <div class="card">
-        <h2 data-i18n="tester_title">Live Showcase Tester &amp; Preview</h2>
+        <h2 data-i18n="tester_title">Search, On-Demand DMD Queue &amp; Live Tester</h2>
         <p class="desc" data-i18n="tester_desc">
-          Test official discovery adapters (ScreenScraper, ArcadeItalia, TMDB, Apple iTunes, TVMaze, Jikan/AnimeThemes, AniList) and preview AI framing &amp; LED color boost.
+          Search across official multilingual catalogs by category and text, choose the exact broadcast language, preview assets in the browser, or push any selected title directly to a DMD's priority queue (Next or Play Now).
         </p>
         <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_target_dmd">Target DMD Matrix (for Queue / Play Now)</label>
+            <select id="test-target-dmd" onchange="loadTargetDmdQueue()">
+              <option value="" data-i18n="opt_target_browser">🖥️ Browser Preview Only</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_content_lang">Content Broadcast Language (lang)</label>
+            <select id="test-content-lang" onchange="loadDomainFilters()">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+            </select>
+          </div>
           <div class="field">
             <label data-i18n="lbl_domain">Domain</label>
             <select id="test-domain" onchange="loadDomainFilters()">
@@ -602,19 +775,32 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="64x32">64×32 (Compact)</option>
               <option value="64x64">64×64 (Square)</option>
               <option value="256x64">256×64 (XL Arcade)</option>
+              <option value="64x128">64×128 (TATE Vertical)</option>
             </select>
           </div>
           <div class="field span-2">
-            <label data-i18n="lbl_query">Direct Title Search (Optional — leave empty for random filtered pick)</label>
-            <input type="text" id="test-query" data-i18n-placeholder="ph_query" placeholder="e.g. Super Street Fighter II Turbo, The Matrix, Cowboy Bebop..." />
+            <label data-i18n="lbl_query">Title / Keyword Search (Optional — leave empty to browse filtered picks)</label>
+            <input type="text" id="test-query" onkeydown="if(event.key==='Enter') runCandidateSearch()" data-i18n-placeholder="ph_query" placeholder="e.g. Super Street Fighter II Turbo, The Matrix, Cowboy Bebop..." />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mark_seen">Consume-Once History Policy</label>
+            <select id="test-mark-seen">
+              <option value="true" data-i18n="opt_mark_seen_yes">Mark as Seen after playback</option>
+              <option value="false" data-i18n="opt_mark_seen_no">Keep repeatable (FrontendSync mode)</option>
+            </select>
           </div>
         </div>
         <div class="form-actions">
-          <button onclick="runLiveTest()" id="btn-run-test" data-i18n="btn_run_test">
-            Run Discovery &amp; Generate Preview
+          <button onclick="runCandidateSearch()" id="btn-search-cands" data-i18n="btn_search_cands">
+            🔍 Search / Browse Candidates
+          </button>
+          <button class="secondary" onclick="runLiveTest()" id="btn-run-test" data-i18n="btn_run_test">
+            🎬 Direct Web Preview
           </button>
           <span id="test-status" class="toast"></span>
         </div>
+
+        <div id="search-results-grid" class="cand-grid" style="display:none"></div>
 
         <div id="test-preview" class="preview-box">
           <img id="prev-img" class="preview-poster" src="" alt="Poster" />
@@ -628,6 +814,22 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             <div id="prev-sub" style="color:var(--muted);font-size:0.84rem;margin-top:6px"></div>
             <div id="prev-synopsis" class="preview-synopsis"></div>
           </div>
+        </div>
+      </div>
+
+      <div class="card" id="ondemand-queue-card">
+        <h2>
+          <span data-i18n="queue_panel_title">On-Demand Priority Queue (Target DMD)</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="secondary mini-btn" onclick="skipSelectedDmd()" data-i18n="btn_skip_now">⏭ Skip Current</button>
+            <button class="secondary mini-btn" onclick="loadTargetDmdQueue()" data-i18n="btn_refresh">Refresh</button>
+          </div>
+        </h2>
+        <p class="desc" data-i18n="queue_panel_desc">
+          Items added with Queue Next play in strict FIFO order right after the current item without losing pre-transcoded random slots. Play Now preempts immediately.
+        </p>
+        <div id="ondemand-queue-body" style="color:var(--muted);font-size:0.86rem" data-i18n="queue_select_dmd">
+          Select a Target DMD above to inspect or control its live priority queue.
         </div>
       </div>
     </div>
@@ -719,6 +921,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="es">Español (es)</option>
               <option value="de">Deutsch (de)</option>
               <option value="it">Italiano (it)</option>
+              <option value="pt">Português (pt)</option>
               <option value="ja">日本語 (ja)</option>
             </select>
           </div>
@@ -948,7 +1151,60 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         btn_reset_anime: "Reset Anime",
         vault_active: "🔒 Built-in / Env Key Active",
         vault_override: "🛠️ Custom User Override Active",
-        vault_missing: "⚠️ Unconfigured (Fallback active)"
+        vault_missing: "⚠️ Unconfigured (Fallback active)",
+        btn_new_profile: "➕ New Passive DMD Profile",
+        th_actions: "Control",
+        prof_editor_title: "DMD Profile & Server-Managed Playlist (dmd_profiles.json)",
+        btn_close: "✕ Close",
+        prof_editor_desc: "Configure passive ESP32 / RPi receivers directly from the Showcase server (Mode 2A Hybrid or Mode 2B 100% Passive UDP), set their broadcast content language, and curate multi-domain rotation playlists persisted in ./data/dmd_profiles.json.",
+        lbl_prof_id: "DMD Identifier (dmd_id)",
+        lbl_prof_name: "Friendly Display Name",
+        lbl_prof_mode: "DMD Operating Mode",
+        opt_mode_2a: "Mode 2A — Server Playlist + Local 60 FPS Card",
+        opt_mode_2b: "Mode 2B — 100% Passive UDP Framebuffer",
+        opt_mode_1: "Mode 1 — Client-Driven (e.g. ArcadeMatrix)",
+        lbl_prof_lang: "Broadcast Content Language (lang)",
+        lbl_prof_always_udp: "Continuous UDP Push (without MQTT)",
+        opt_udp_presence: "Wait for MQTT / HTTP Hello Presence",
+        opt_udp_always: "Always Stream UDP to LAN IP (Pure UDP Sketch)",
+        lbl_prof_ip: "Target DMD LAN IP (udp_ip)",
+        lbl_prof_port: "UDP Frame Port (udp_port)",
+        lbl_prof_gap: "Inter-Item Transition Gap (s — 0..10)",
+        th_pl_on: "On",
+        th_pl_count: "Items / Turn",
+        th_pl_systems: "Systems (Games CSV)",
+        th_pl_genres: "Genres (CSV)",
+        th_pl_framing: "Framing",
+        th_pl_cboost: "Color Boost",
+        th_pl_vdur: "Max Video (s)",
+        btn_save_profile: "💾 Save Profile & Apply Live",
+        btn_delete_profile: "🗑️ Delete Profile",
+        lbl_target_dmd: "Target DMD Matrix (for Queue / Play Now)",
+        opt_target_browser: "🖥️ Browser Preview Only",
+        lbl_content_lang: "Content Broadcast Language (lang)",
+        lbl_mark_seen: "Consume-Once History Policy",
+        opt_mark_seen_yes: "Mark as Seen after playback",
+        opt_mark_seen_no: "Keep repeatable (FrontendSync mode)",
+        btn_search_cands: "🔍 Search / Browse Candidates",
+        queue_panel_title: "On-Demand Priority Queue (Target DMD)",
+        btn_skip_now: "⏭ Skip Current",
+        queue_panel_desc: "Items added with Queue Next play in strict FIFO order right after the current item without losing pre-transcoded random slots. Play Now preempts immediately.",
+        queue_select_dmd: "Select a Target DMD above to inspect or control its live priority queue.",
+        queue_empty: "Priority queue is currently empty — standard rotation active.",
+        mode_badge_client: "Client",
+        mode_badge_2a: "Server • 2A Hybrid",
+        mode_badge_2b: "Server • 2B UDP",
+        pill_paused: "⏸ Paused",
+        btn_queue_next: "➕ Queue Next",
+        btn_play_now: "⚡ Play Now",
+        btn_preview_cand: "👁️ Preview",
+        msg_searching: "⏳ Searching catalog...",
+        msg_search_count: "✓ {n} candidate(s) found ({l})",
+        msg_queued_ok: "✓ Sent '{t}' to {d} ({m})",
+        msg_need_target_dmd: "⚠️ Select a Target DMD first to enqueue or play on hardware.",
+        msg_prof_saved: "✓ DMD profile '{d}' saved & applied live!",
+        msg_prof_deleted: "✓ DMD profile '{d}' deleted.",
+        msg_prof_id_req: "⚠️ Please enter a DMD ID (e.g. esp32_cab_1)."
       },
       fr: {
         header_sub: "Architecture DDD • MQTT Retain (:1883) + UDP Temps Réel • Consume-Once",
@@ -1095,7 +1351,60 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         btn_reset_anime: "Purger Anime",
         vault_active: "🔒 Clé Active (.env / Prod Vault)",
         vault_override: "🛠️ Surcharge Utilisateur Active",
-        vault_missing: "⚠️ Non configurée (Fallback actif)"
+        vault_missing: "⚠️ Non configurée (Fallback actif)",
+        btn_new_profile: "➕ Nouveau Profil DMD Passif",
+        th_actions: "Pilotage",
+        prof_editor_title: "Profil DMD & Playlist Pilotée Serveur (dmd_profiles.json)",
+        btn_close: "✕ Fermer",
+        prof_editor_desc: "Pilote les récepteurs ESP32 / RPi passifs directement depuis Showcase (Mode 2A Hybride ou Mode 2B 100% Framebuffer UDP), choisis la langue du contenu diffusé et compose la playlist multi-domaines persistée dans ./data/dmd_profiles.json.",
+        lbl_prof_id: "Identifiant DMD (dmd_id)",
+        lbl_prof_name: "Nom d'Affichage",
+        lbl_prof_mode: "Mode de Fonctionnement DMD",
+        opt_mode_2a: "Mode 2A — Playlist Serveur + Fiche 60 FPS Locale",
+        opt_mode_2b: "Mode 2B — 100% Passif Framebuffer UDP",
+        opt_mode_1: "Mode 1 — Piloté par le Client (ex : ArcadeMatrix)",
+        lbl_prof_lang: "Langue du Contenu Diffusé (lang)",
+        lbl_prof_always_udp: "Diffusion UDP Continue (sans MQTT)",
+        opt_udp_presence: "Attendre la présence MQTT / HTTP Hello",
+        opt_udp_always: "Diffuser en continu vers l'IP LAN (Sketch UDP pur)",
+        lbl_prof_ip: "IP LAN du DMD Cible (udp_ip)",
+        lbl_prof_port: "Port UDP Frames (udp_port)",
+        lbl_prof_gap: "Pause Inter-Œuvres (s — 0..10)",
+        th_pl_on: "Actif",
+        th_pl_count: "Œuvres / Tour",
+        th_pl_systems: "Systèmes (Jeux CSV)",
+        th_pl_genres: "Genres (CSV)",
+        th_pl_framing: "Cadrage",
+        th_pl_cboost: "Boost Couleur",
+        th_pl_vdur: "Vidéo Max (s)",
+        btn_save_profile: "💾 Enregistrer le Profil & Appliquer",
+        btn_delete_profile: "🗑️ Supprimer le Profil",
+        lbl_target_dmd: "Matrice DMD Cible (Queue / Diffusion)",
+        opt_target_browser: "🖥️ Aperçu Navigateur Uniquement",
+        lbl_content_lang: "Langue du Contenu Diffusé (lang)",
+        lbl_mark_seen: "Politique Consume-Once",
+        opt_mark_seen_yes: "Marquer comme vu après diffusion",
+        opt_mark_seen_no: "Répétable (mode FrontendSync)",
+        btn_search_cands: "🔍 Rechercher / Explorer les Contenus",
+        queue_panel_title: "File Prioritaire On-Demand (DMD Cible)",
+        btn_skip_now: "⏭ Passer l'œuvre en cours",
+        queue_panel_desc: "Les titres ajoutés en File Suivante passent dans l'ordre FIFO juste après l'œuvre en cours sans perdre les slots aléatoires pré-calculés. Diffuser Maintenant préempte immédiatement.",
+        queue_select_dmd: "Sélectionne un DMD Cible ci-dessus pour inspecter ou piloter sa file prioritaire.",
+        queue_empty: "La file prioritaire est vide — rotation automatique active.",
+        mode_badge_client: "Client",
+        mode_badge_2a: "Serveur • 2A Hybride",
+        mode_badge_2b: "Serveur • 2B UDP",
+        pill_paused: "⏸ En pause",
+        btn_queue_next: "➕ File (Suivant)",
+        btn_play_now: "⚡ Diffuser Maintenant",
+        btn_preview_cand: "👁️ Aperçu",
+        msg_searching: "⏳ Recherche dans le catalogue...",
+        msg_search_count: "✓ {n} contenu(s) trouvé(s) ({l})",
+        msg_queued_ok: "✓ « {t} » envoyé sur {d} ({m})",
+        msg_need_target_dmd: "⚠️ Sélectionne d'abord un DMD Cible pour ajouter à la file ou diffuser.",
+        msg_prof_saved: "✓ Profil DMD « {d} » enregistré et appliqué !",
+        msg_prof_deleted: "✓ Profil DMD « {d} » supprimé.",
+        msg_prof_id_req: "⚠️ Indique un identifiant DMD (ex : esp32_cab_1)."
       },
       es: {
         header_sub: "Arquitectura DDD • MQTT Retain (:1883) + UDP en Tiempo Real • Consume-Once",
@@ -1242,7 +1551,60 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         btn_reset_anime: "Reiniciar Anime",
         vault_active: "🔒 Clave Activa (.env / Prod Vault)",
         vault_override: "🛠️ Clave Personalizada Activa",
-        vault_missing: "⚠️ No configurada (Fallback activo)"
+        vault_missing: "⚠️ No configurada (Fallback activo)",
+        btn_new_profile: "➕ Nuevo Perfil DMD Pasivo",
+        th_actions: "Control",
+        prof_editor_title: "Perfil DMD y Playlist Gestionada por Servidor (dmd_profiles.json)",
+        btn_close: "✕ Cerrar",
+        prof_editor_desc: "Configura receptores ESP32 / RPi pasivos directamente desde Showcase (Modo 2A Híbrido o Modo 2B 100% Framebuffer UDP), elige el idioma del contenido emitido y define listas multidominio persistidas en ./data/dmd_profiles.json.",
+        lbl_prof_id: "Identificador DMD (dmd_id)",
+        lbl_prof_name: "Nombre Visible",
+        lbl_prof_mode: "Modo Operativo DMD",
+        opt_mode_2a: "Modo 2A — Playlist Servidor + Ficha 60 FPS Local",
+        opt_mode_2b: "Modo 2B — 100% Pasivo Framebuffer UDP",
+        opt_mode_1: "Modo 1 — Dirigido por Cliente (ej: ArcadeMatrix)",
+        lbl_prof_lang: "Idioma del Contenido Emitido (lang)",
+        lbl_prof_always_udp: "Envío UDP Continuo (sin MQTT)",
+        opt_udp_presence: "Esperar presencia MQTT / HTTP Hello",
+        opt_udp_always: "Emitir UDP continuo a la IP LAN (Sketch UDP puro)",
+        lbl_prof_ip: "IP LAN del DMD Destino (udp_ip)",
+        lbl_prof_port: "Puerto UDP de Fotogramas (udp_port)",
+        lbl_prof_gap: "Pausa Entre Títulos (s — 0..10)",
+        th_pl_on: "Activo",
+        th_pl_count: "Títulos / Turno",
+        th_pl_systems: "Sistemas (Juegos CSV)",
+        th_pl_genres: "Géneros (CSV)",
+        th_pl_framing: "Encuadre",
+        th_pl_cboost: "Realce Color",
+        th_pl_vdur: "Vídeo Máx (s)",
+        btn_save_profile: "💾 Guardar Perfil y Aplicar",
+        btn_delete_profile: "🗑️ Eliminar Perfil",
+        lbl_target_dmd: "Matriz DMD Destino (Cola / Emisión)",
+        opt_target_browser: "🖥️ Solo Vista Previa en Navegador",
+        lbl_content_lang: "Idioma del Contenido Emitido (lang)",
+        lbl_mark_seen: "Política Consume-Once",
+        opt_mark_seen_yes: "Marcar como visto tras emitir",
+        opt_mark_seen_no: "Repetible (modo FrontendSync)",
+        btn_search_cands: "🔍 Buscar / Explorar Candidatos",
+        queue_panel_title: "Cola Prioritaria On-Demand (DMD Destino)",
+        btn_skip_now: "⏭ Saltar actual",
+        queue_panel_desc: "Los títulos añadidos en Cola Siguiente se reproducen en orden FIFO tras el elemento actual sin perder ranuras aleatorias. Emitir Ahora interrumpe de inmediato.",
+        queue_select_dmd: "Selecciona un DMD Destino arriba para ver o controlar su cola prioritaria.",
+        queue_empty: "La cola prioritaria está vacía — rotación estándar activa.",
+        mode_badge_client: "Cliente",
+        mode_badge_2a: "Servidor • 2A Híbrido",
+        mode_badge_2b: "Servidor • 2B UDP",
+        pill_paused: "⏸ Pausado",
+        btn_queue_next: "➕ Cola Siguiente",
+        btn_play_now: "⚡ Emitir Ahora",
+        btn_preview_cand: "👁️ Vista Previa",
+        msg_searching: "⏳ Buscando en el catálogo...",
+        msg_search_count: "✓ {n} candidato(s) encontrado(s) ({l})",
+        msg_queued_ok: "✓ '{t}' enviado a {d} ({m})",
+        msg_need_target_dmd: "⚠️ Selecciona primero un DMD Destino para encolar o emitir.",
+        msg_prof_saved: "✓ ¡Perfil DMD '{d}' guardado y aplicado!",
+        msg_prof_deleted: "✓ Perfil DMD '{d}' eliminado.",
+        msg_prof_id_req: "⚠️ Introduce un identificador DMD (ej: esp32_cab_1)."
       }
     };
 
@@ -1299,6 +1661,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     let lastSeenStats = {};
     let lastHealth = null;
     let lastServerConfig = {};
+    let lastDmdProfiles = [];
+    let lastSearchCandidates = [];
 
     function esc(val) {
       return String(val == null ? '' : val)
@@ -1490,18 +1854,32 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 
     function renderClients(clients) {
       lastClients = Array.isArray(clients) ? clients : [];
+      syncTargetDmdSelector();
       const tb = document.getElementById('clients-tbody');
       if (!tb) return;
       if (!lastClients.length) {
-        tb.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">${esc(t('no_clients'))}</td></tr>`;
+        tb.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${esc(t('no_clients'))}</td></tr>`;
         return;
       }
       tb.innerHTML = lastClients.map(c => {
         const transport = c.transport || 'MQTT+UDP';
         const seenSuffix = c.last_seen_ago_s != null ? ` • ${Number(c.last_seen_ago_s)}s` : '';
         const ipInfo = (c.client_ip ? `${esc(c.client_ip)} • ${esc(transport)}` : esc(transport)) + esc(seenSuffix);
+        const cfgSrc = c.config_source || 'client';
+        let modeBadge = `<span class="pill info">${esc(t('mode_badge_client'))}</span>`;
+        if (cfgSrc === 'server') {
+          modeBadge = c.supports_local_card === false
+            ? `<span class="pill ok">${esc(t('mode_badge_2b'))}</span>`
+            : `<span class="pill warn">${esc(t('mode_badge_2a'))}</span>`;
+        }
+        const langBadge = `<span class="pill info">${esc((c.lang || 'fr').toUpperCase())}</span>`;
+        const qCount = Number(c.queue_length || 0);
+        const qBadge = qCount > 0 ? ` <span class="pill warn">Queue: ${qCount}</span>` : '';
+
         let playingCell = '—';
-        if (c.udp_streaming) {
+        if (c.paused) {
+          playingCell = `<span class="pill warn">${esc(t('pill_paused'))}</span>`;
+        } else if (c.udp_streaming) {
           const liveTitle = c.playing_title || c.active_title || 'Live';
           playingCell = `<span class="pill ok">${esc(t('pill_streaming'))} ${esc(liveTitle)}</span>`;
         } else if (c.is_playing && c.playing_title) {
@@ -1517,15 +1895,30 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         const standbyCell = c.standby_title
           ? `<span class="pill info">✓ ${esc(c.standby_title)}</span>`
           : (c.ready_title && c.preparing ? `<span class="pill warn">${esc(t('pill_preparing'))}</span>` : '—');
+        const safeId = esc(c.dmd_id).replace(/'/g, "\\'");
+        const pauseAct = c.paused ? 'resume' : 'pause';
+        const pauseIcon = c.paused ? '▶' : '⏸';
         return `
           <tr>
-            <td><b>${esc(c.dmd_id)}</b><br/><small style="color:var(--muted)">${ipInfo}</small></td>
+            <td>
+              <b>${esc(c.display_name || c.dmd_id)}</b>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${modeBadge} ${langBadge}${qBadge}</div>
+              <small style="color:var(--muted)">${ipInfo}</small>
+            </td>
             <td><span class="pill info">${esc((c.domain || '').toUpperCase())}</span></td>
             <td><code>${esc(c.width)}×${esc(c.height)}</code></td>
             <td><code>${esc(c.video_mode)}</code> • <code>${esc(c.color_boost)}</code>${c.video_max_duration_s != null ? `<br/><small style="color:var(--muted)">≤${esc(Number(c.video_max_duration_s).toFixed(1))}s @ ${esc(c.video_fps || 15)}fps</small>` : ''}</td>
             <td>${playingCell}</td>
             <td>${readyCell}</td>
             <td>${standbyCell}</td>
+            <td>
+              <div style="display:flex;gap:5px;flex-wrap:nowrap">
+                <button type="button" class="secondary mini-btn" title="Profile & Playlist" onclick="openProfileEditor('${safeId}')">⚙️</button>
+                <button type="button" class="secondary mini-btn" title="Skip" onclick="controlDmd('${safeId}', 'skip')">⏭</button>
+                <button type="button" class="secondary mini-btn" title="Pause / Resume" onclick="controlDmd('${safeId}', '${pauseAct}')">${pauseIcon}</button>
+                <button type="button" class="secondary mini-btn" title="On-Demand Queue" onclick="jumpToQueueStudio('${safeId}')">🎯</button>
+              </div>
+            </td>
           </tr>
         `;
       }).join('');
@@ -1671,11 +2064,13 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       if (cfgRes.status === 'fulfilled' && cfgRes.value.ok) {
         try {
           const d = await cfgRes.value.json();
+          lastDmdProfiles = Array.isArray(d.dmd_profiles) ? d.dmd_profiles : [];
           hydrateConfigInputs(d.config || {}, forceHydrate);
           renderVaultStatus(d.vault_status || {});
           renderProviders(d.providers || {});
           renderClients(d.clients || []);
           renderSeen(d.seen_history || {});
+          loadTargetDmdQueue();
         } catch (err) {
           console.error('Failed parsing /api/v1/admin/config:', err);
         }
@@ -1708,7 +2103,9 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         sysEl.innerHTML = `<option value="">${esc(t('opt_na'))}</option>`;
       }
       try {
-        const r = await apiFetch(`/api/v1/${dom}/filters?lang=${encodeURIComponent(currentUiLang)}`);
+        const contentLangEl = document.getElementById('test-content-lang');
+        const filterLang = (contentLangEl && contentLangEl.value) ? contentLangEl.value : currentUiLang;
+        const r = await apiFetch(`/api/v1/${dom}/filters?lang=${encodeURIComponent(filterLang)}`);
         if (!r.ok) return;
         const d = await r.json();
         const allOpt = `<option value="">${esc(t('opt_all'))}</option>`;
@@ -1732,6 +2129,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function runLiveTest() {
       const dom = document.getElementById('test-domain').value;
+      const contentLang = (document.getElementById('test-content-lang') || {}).value || currentUiLang;
       const sys = document.getElementById('test-system').value;
       const gen = document.getElementById('test-genre').value;
       const dec = document.getElementById('test-decade').value;
@@ -1751,7 +2149,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-              domain: dom, query: q, lang: currentUiLang, width: w, height: h,
+              domain: dom, query: q, lang: contentLang, width: w, height: h,
               include_video: false, video_mode: vmode, color_boost: cboost
             })
           });
@@ -1759,7 +2157,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           item = await r.json();
         } else {
           const params = new URLSearchParams({
-            client_id: 'webui_tester', count: '1', lang: currentUiLang,
+            client_id: 'webui_tester', count: '1', lang: contentLang,
             width: String(w), height: String(h), include_video: 'false'
           });
           if (dom === 'games' && sys) params.set('systems', sys);
@@ -1918,6 +2316,459 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 
     function refreshAll() {
       loadHealthAndConfig(true);
+    }
+
+    function syncTargetDmdSelector() {
+      const sel = document.getElementById('test-target-dmd');
+      if (!sel) return;
+      const prev = sel.value;
+      const known = new Map();
+      (lastDmdProfiles || []).forEach(p => {
+        if (p && p.dmd_id) {
+          const tag = p.config_source === 'server'
+            ? (p.supports_local_card === false ? '2B UDP' : '2A Hybrid')
+            : 'Client';
+          known.set(p.dmd_id, `${p.display_name || p.dmd_id} (${p.width}×${p.height} • ${tag} • ${(p.lang || 'fr').toUpperCase()})`);
+        }
+      });
+      (lastClients || []).forEach(c => {
+        if (c && c.dmd_id && !known.has(c.dmd_id)) {
+          known.set(c.dmd_id, `${c.display_name || c.dmd_id} (${c.width}×${c.height} • ${(c.lang || 'fr').toUpperCase()})`);
+        }
+      });
+      let html = `<option value="">${esc(t('opt_target_browser'))}</option>`;
+      known.forEach((lbl, id) => {
+        html += `<option value="${esc(id)}">📺 ${esc(lbl)}</option>`;
+      });
+      sel.innerHTML = html;
+      if (prev && known.has(prev)) {
+        sel.value = prev;
+      } else if (!prev && known.size === 1) {
+        sel.value = Array.from(known.keys())[0];
+      }
+    }
+
+    function jumpToQueueStudio(dmdId) {
+      switchTab('tester');
+      syncTargetDmdSelector();
+      const sel = document.getElementById('test-target-dmd');
+      if (sel && dmdId) {
+        sel.value = dmdId;
+        const prof = (lastDmdProfiles || []).find(p => p.dmd_id === dmdId);
+        const cli = (lastClients || []).find(c => c.dmd_id === dmdId);
+        const lang = (prof && prof.lang) || (cli && cli.lang);
+        const langEl = document.getElementById('test-content-lang');
+        if (lang && langEl) langEl.value = lang;
+        loadTargetDmdQueue();
+      }
+    }
+
+    function defaultPlaylistRows(lang) {
+      const l = lang || 'fr';
+      return [
+        {enabled: true, domain: 'games', count: 2, lang: l, systems: ['arcade', 'mame', 'neogeo', 'cps2', 'snes', 'megadrive'], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0},
+        {enabled: true, domain: 'movies', count: 1, lang: l, systems: [], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0},
+        {enabled: false, domain: 'series', count: 1, lang: l, systems: [], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0},
+        {enabled: false, domain: 'anime', count: 1, lang: l, systems: [], genres: [], video_mode: 'auto_action', color_boost: 'auto', video_max_duration_s: 8.0}
+      ];
+    }
+
+    function renderPlaylistEditorRows(playlist) {
+      const tb = document.getElementById('prof-playlist-tbody');
+      if (!tb) return;
+      const byDom = {};
+      (playlist || []).forEach(s => { if (s && s.domain) byDom[s.domain] = s; });
+      const rows = CANONICAL_DOMAINS.map(dom => byDom[dom] || {
+        enabled: dom === 'games',
+        domain: dom,
+        count: 1,
+        systems: dom === 'games' ? ['arcade', 'neogeo', 'snes', 'megadrive'] : [],
+        genres: [],
+        video_mode: 'auto_action',
+        color_boost: 'auto',
+        video_max_duration_s: 8.0
+      });
+      tb.innerHTML = rows.map(s => {
+        const dom = s.domain;
+        const isGames = dom === 'games';
+        const sysStr = Array.isArray(s.systems) ? s.systems.join(',') : (s.systems || '');
+        const genStr = Array.isArray(s.genres) ? s.genres.join(',') : (s.genres || '');
+        const vm = s.video_mode || 'auto_action';
+        const cb = String(s.color_boost || 'auto');
+        const dur = Number(s.video_max_duration_s != null ? s.video_max_duration_s : 8.0);
+        return `<tr data-pl-domain="${esc(dom)}">
+          <td><input type="checkbox" class="pl-enabled" style="width:20px;height:20px" ${s.enabled !== false ? 'checked' : ''} /></td>
+          <td><b>${esc(dom.toUpperCase())}</b></td>
+          <td><input type="number" class="pl-count" min="1" max="10" value="${esc(s.count || 1)}" style="width:70px" /></td>
+          <td><input type="text" class="pl-systems" value="${esc(sysStr)}" placeholder="${isGames ? 'arcade,neogeo,megadrive' : '—'}" ${isGames ? '' : 'disabled'} /></td>
+          <td><input type="text" class="pl-genres" value="${esc(genStr)}" placeholder="fighting,action..." /></td>
+          <td>
+            <select class="pl-vmode">
+              <option value="auto_action" ${vm === 'auto_action' ? 'selected' : ''}>auto_action</option>
+              <option value="panorama" ${vm === 'panorama' ? 'selected' : ''}>panorama</option>
+              <option value="center_crop" ${vm === 'center_crop' ? 'selected' : ''}>center_crop</option>
+            </select>
+          </td>
+          <td>
+            <select class="pl-cboost">
+              <option value="auto" ${cb === 'auto' ? 'selected' : ''}>auto</option>
+              <option value="pixel_art" ${cb === 'pixel_art' ? 'selected' : ''}>pixel_art</option>
+              <option value="anime" ${cb === 'anime' ? 'selected' : ''}>anime</option>
+              <option value="cinema" ${cb === 'cinema' ? 'selected' : ''}>cinema</option>
+            </select>
+          </td>
+          <td><input type="number" class="pl-vdur" min="1.5" max="120" step="0.5" value="${esc(dur)}" style="width:82px" /></td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function openProfileEditor(dmdId) {
+      const card = document.getElementById('dmd-profile-editor-card');
+      if (!card) return;
+      card.style.display = 'block';
+      document.getElementById('prof-status-msg').textContent = '';
+
+      let prof = null;
+      if (dmdId) {
+        try {
+          const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`);
+          if (r.ok) {
+            const d = await r.json();
+            prof = d.profile;
+          }
+        } catch (_) {}
+      }
+      if (!prof) {
+        prof = {
+          dmd_id: dmdId || 'esp32_passive_1',
+          display_name: dmdId || 'ESP32 Passive DMD',
+          config_source: 'server',
+          supports_local_card: false,
+          always_stream_udp: false,
+          width: 128,
+          height: 32,
+          udp_ip: '',
+          udp_port: 4210,
+          lang: (lastServerConfig && lastServerConfig.default_lang) || 'fr',
+          inter_item_gap_s: 1.0,
+          playlist: defaultPlaylistRows((lastServerConfig && lastServerConfig.default_lang) || 'fr')
+        };
+      }
+      document.getElementById('prof-dmd-id').value = prof.dmd_id || '';
+      document.getElementById('prof-display-name').value = prof.display_name || prof.dmd_id || '';
+      const modeVal = prof.config_source === 'client'
+        ? 'client'
+        : (prof.supports_local_card === false ? 'server_passive' : 'server_hybrid');
+      document.getElementById('prof-mode').value = modeVal;
+      document.getElementById('prof-lang').value = prof.lang || 'fr';
+      const resVal = `${prof.width || 128}x${prof.height || 32}`;
+      const resEl = document.getElementById('prof-res');
+      if (Array.from(resEl.options).some(o => o.value === resVal)) {
+        resEl.value = resVal;
+      }
+      document.getElementById('prof-always-udp').value = String(Boolean(prof.always_stream_udp));
+      document.getElementById('prof-udp-ip').value = prof.udp_ip || '';
+      document.getElementById('prof-udp-port').value = String(prof.udp_port || 4210);
+      document.getElementById('prof-gap-s').value = String(prof.inter_item_gap_s != null ? prof.inter_item_gap_s : 1.0);
+      renderPlaylistEditorRows(prof.playlist || defaultPlaylistRows(prof.lang));
+      card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
+
+    function closeProfileEditor() {
+      const card = document.getElementById('dmd-profile-editor-card');
+      if (card) card.style.display = 'none';
+    }
+
+    async function saveDmdProfile() {
+      const dmdId = document.getElementById('prof-dmd-id').value.trim();
+      const msgEl = document.getElementById('prof-status-msg');
+      if (!dmdId) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = t('msg_prof_id_req');
+        return;
+      }
+      const modeSel = document.getElementById('prof-mode').value;
+      const configSource = modeSel === 'client' ? 'client' : 'server';
+      const supportsLocalCard = modeSel !== 'server_passive';
+      const [w, h] = document.getElementById('prof-res').value.split('x').map(Number);
+      const lang = document.getElementById('prof-lang').value || 'fr';
+
+      const playlist = Array.from(document.querySelectorAll('#prof-playlist-tbody tr')).map(tr => {
+        const dom = tr.getAttribute('data-pl-domain') || 'games';
+        const sysRaw = tr.querySelector('.pl-systems').value.trim();
+        const genRaw = tr.querySelector('.pl-genres').value.trim();
+        return {
+          enabled: tr.querySelector('.pl-enabled').checked,
+          domain: dom,
+          count: Math.max(1, Math.min(10, parseInt(tr.querySelector('.pl-count').value, 10) || 1)),
+          lang: lang,
+          systems: dom === 'games' && sysRaw ? sysRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
+          genres: genRaw ? genRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
+          decades: [],
+          video_mode: tr.querySelector('.pl-vmode').value,
+          color_boost: tr.querySelector('.pl-cboost').value,
+          video_max_duration_s: Math.max(1.5, Math.min(120, parseFloat(tr.querySelector('.pl-vdur').value) || 8.0))
+        };
+      });
+
+      const payload = {
+        dmd_id: dmdId,
+        display_name: document.getElementById('prof-display-name').value.trim() || dmdId,
+        config_source: configSource,
+        supports_local_card: supportsLocalCard,
+        always_stream_udp: document.getElementById('prof-always-udp').value === 'true',
+        width: w || 128,
+        height: h || 32,
+        udp_ip: document.getElementById('prof-udp-ip').value.trim(),
+        udp_port: Math.max(1, Math.min(65535, parseInt(document.getElementById('prof-udp-port').value, 10) || 4210)),
+        lang: lang,
+        inter_item_gap_s: Math.max(0, Math.min(10, parseFloat(document.getElementById('prof-gap-s').value) || 0)),
+        playlist: playlist
+      };
+
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        msgEl.style.color = 'var(--green)';
+        msgEl.textContent = t('msg_prof_saved', {d: dmdId});
+        loadHealthAndConfig(false);
+      } catch (err) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = '⚠️ ' + (err.message || String(err));
+      }
+    }
+
+    async function deleteDmdProfile() {
+      const dmdId = document.getElementById('prof-dmd-id').value.trim();
+      const msgEl = document.getElementById('prof-status-msg');
+      if (!dmdId) return;
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`, {method: 'DELETE'});
+        if (!r.ok && r.status !== 404) throw new Error('HTTP ' + r.status);
+        msgEl.style.color = 'var(--green)';
+        msgEl.textContent = t('msg_prof_deleted', {d: dmdId});
+        closeProfileEditor();
+        loadHealthAndConfig(false);
+      } catch (err) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = '⚠️ ' + (err.message || String(err));
+      }
+    }
+
+    async function controlDmd(dmdId, action) {
+      if (!dmdId) return;
+      try {
+        await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/control`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: action})
+        });
+        loadHealthAndConfig(false);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function skipSelectedDmd() {
+      const dmdId = (document.getElementById('test-target-dmd') || {}).value || '';
+      const st = document.getElementById('test-status');
+      if (!dmdId) {
+        if (st) {
+          st.style.color = 'var(--amber)';
+          st.textContent = t('msg_need_target_dmd');
+        }
+        return;
+      }
+      await controlDmd(dmdId, 'skip');
+    }
+
+    async function runCandidateSearch() {
+      const dom = document.getElementById('test-domain').value;
+      const contentLang = document.getElementById('test-content-lang').value || 'fr';
+      const sys = document.getElementById('test-system').value;
+      const gen = document.getElementById('test-genre').value;
+      const dec = document.getElementById('test-decade').value;
+      const q = document.getElementById('test-query').value.trim();
+      const st = document.getElementById('test-status');
+      const btn = document.getElementById('btn-search-cands');
+      const grid = document.getElementById('search-results-grid');
+      btn.disabled = true;
+      st.style.color = 'var(--cyan)';
+      st.textContent = t('msg_searching');
+
+      try {
+        const params = new URLSearchParams({lang: contentLang, limit: '8'});
+        if (q) params.set('q', q);
+        if (dom === 'games' && sys) params.set('systems', sys);
+        if (gen) params.set('genres', gen);
+        if (dec) params.set('decades', dec);
+        const r = await apiFetch(`/api/v1/${dom}/search?` + params.toString());
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const d = await r.json();
+        lastSearchCandidates = Array.isArray(d.items) ? d.items : [];
+        if (!lastSearchCandidates.length) {
+          grid.style.display = 'none';
+          st.style.color = 'var(--amber)';
+          st.textContent = t('msg_no_candidate');
+          return;
+        }
+        renderSearchCandidates();
+        st.style.color = 'var(--green)';
+        st.textContent = t('msg_search_count', {n: lastSearchCandidates.length, l: contentLang.toUpperCase()});
+      } catch (err) {
+        st.style.color = 'var(--red)';
+        st.textContent = '⚠️ ' + (err.message || String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function renderSearchCandidates() {
+      const grid = document.getElementById('search-results-grid');
+      if (!grid) return;
+      if (!lastSearchCandidates.length) {
+        grid.style.display = 'none';
+        return;
+      }
+      grid.style.display = 'grid';
+      grid.innerHTML = lastSearchCandidates.map((c, idx) => {
+        const thumb = c.poster_url
+          ? `<img class="cand-thumb" src="${esc(c.poster_url)}" alt="" loading="lazy" onerror="this.style.display='none'" />`
+          : '';
+        const vidPill = c.has_video ? `<span class="pill ok">🎬 Video</span>` : '';
+        return `<div class="cand-card">
+          ${thumb}
+          <div class="cand-body">
+            <div class="cand-title">${esc(c.title)} ${c.year ? `<small style="color:var(--muted)">(${esc(c.year)})</small>` : ''}</div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+              <span class="pill info">${esc(c.badge || c.domain.toUpperCase())}</span>
+              <span class="pill warn">${esc(c.source_id)} • ${(c.lang || 'fr').toUpperCase()}</span>
+              ${vidPill}
+            </div>
+            <div class="cand-syn">${esc(c.synopsis || c.subtitle || '')}</div>
+            <div class="cand-actions">
+              <button type="button" class="secondary mini-btn" onclick="previewCandidate(${idx})">${esc(t('btn_preview_cand'))}</button>
+              <button type="button" class="secondary mini-btn" onclick="enqueueCandidate(${idx}, 'enqueue_next')">${esc(t('btn_queue_next'))}</button>
+              <button type="button" class="mini-btn" onclick="enqueueCandidate(${idx}, 'play_now')">${esc(t('btn_play_now'))}</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function previewCandidate(idx) {
+      const c = lastSearchCandidates[idx];
+      if (!c) return;
+      document.getElementById('test-preview').classList.add('visible');
+      document.getElementById('prev-title').textContent = c.title || '—';
+      document.getElementById('prev-badge').textContent = c.badge || c.domain.toUpperCase();
+      document.getElementById('prev-year').textContent = c.year || '—';
+      document.getElementById('prev-source').textContent = `Source: ${c.source_id || 'auto'} • ★ ${c.rating || 'N/A'} • ${(c.lang || 'fr').toUpperCase()}`;
+      document.getElementById('prev-sub').textContent = c.subtitle || '';
+      document.getElementById('prev-synopsis').textContent = c.synopsis || '';
+      const imgEl = document.getElementById('prev-img');
+      if (c.poster_url) {
+        imgEl.src = c.poster_url;
+        imgEl.style.display = 'block';
+      } else {
+        imgEl.style.display = 'none';
+      }
+    }
+
+    async function enqueueCandidate(idx, mode) {
+      const c = lastSearchCandidates[idx];
+      if (!c) return;
+      const targetDmd = document.getElementById('test-target-dmd').value;
+      const st = document.getElementById('test-status');
+      if (!targetDmd) {
+        st.style.color = 'var(--amber)';
+        st.textContent = t('msg_need_target_dmd');
+        return;
+      }
+      const contentLang = document.getElementById('test-content-lang').value || c.lang || 'fr';
+      const vmode = document.getElementById('test-video-mode').value;
+      const cboost = document.getElementById('test-color-boost').value;
+      const markSeen = document.getElementById('test-mark-seen').value === 'true';
+
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(targetDmd)}/queue`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            candidate_id: c.candidate_id,
+            domain: c.domain,
+            query: c.title,
+            lang: contentLang,
+            mode: mode,
+            mark_seen: markSeen,
+            video_mode: vmode,
+            color_boost: cboost
+          })
+        });
+        if (!r.ok) {
+          const ej = await r.json().catch(() => ({}));
+          throw new Error(ej.detail || ('HTTP ' + r.status));
+        }
+        st.style.color = 'var(--green)';
+        st.textContent = t('msg_queued_ok', {t: c.title, d: targetDmd, m: mode === 'play_now' ? 'Play Now' : 'Next'});
+        await loadTargetDmdQueue();
+        loadHealthAndConfig(false);
+      } catch (err) {
+        st.style.color = 'var(--red)';
+        st.textContent = '⚠️ ' + (err.message || String(err));
+      }
+    }
+
+    async function loadTargetDmdQueue() {
+      const targetDmd = (document.getElementById('test-target-dmd') || {}).value || '';
+      const box = document.getElementById('ondemand-queue-body');
+      if (!box) return;
+      if (!targetDmd) {
+        box.innerHTML = esc(t('queue_select_dmd'));
+        return;
+      }
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(targetDmd)}/queue`, {cache: 'no-store'});
+        if (!r.ok) return;
+        const d = await r.json();
+        const items = Array.isArray(d.items) ? d.items : [];
+        if (!items.length) {
+          box.innerHTML = `<span style="color:var(--muted)">${esc(t('queue_empty'))}</span>`;
+          return;
+        }
+        const safeDmd = esc(targetDmd).replace(/'/g, "\\'");
+        box.innerHTML = items.map((it, i) => {
+          const stClass = it.status === 'ready' || it.status === 'playing' ? 'ok' : 'warn';
+          const safeQid = esc(it.queue_id).replace(/'/g, "\\'");
+          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;background:#0d121b;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+            <div>
+              <b>#${i + 1} — ${esc(it.title)}</b>
+              <span class="pill info" style="margin-left:6px">${esc((it.domain || '').toUpperCase())}</span>
+              <span class="pill info">${esc((it.lang || 'fr').toUpperCase())}</span>
+              <span class="pill ${stClass}">${esc(it.status)}</span>
+            </div>
+            <button type="button" class="danger mini-btn" onclick="removeQueueItem('${safeDmd}', '${safeQid}')">✕</button>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function removeQueueItem(dmdId, queueId) {
+      try {
+        await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/queue/${encodeURIComponent(queueId)}`, {
+          method: 'DELETE'
+        });
+        await loadTargetDmdQueue();
+        loadHealthAndConfig(false);
+      } catch (e) {
+        console.error(e);
+      }
     }
 
     setUiLang(currentUiLang);

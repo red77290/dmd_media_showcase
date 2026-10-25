@@ -60,15 +60,18 @@ class ShowcaseMqttGateway:
         self.external_client: Optional[SimpleAsyncMqttClient] = None
         self._on_client_config: Optional[ConfigHandler] = None
         self._on_client_event: Optional[EventHandler] = None
+        self._on_client_hello: Optional[ConfigHandler] = None
         self._running = False
 
     def set_handlers(
         self,
         on_client_config: ConfigHandler,
         on_client_event: EventHandler,
+        on_client_hello: Optional[ConfigHandler] = None,
     ) -> None:
         self._on_client_config = on_client_config
         self._on_client_event = on_client_event
+        self._on_client_hello = on_client_hello
 
     async def publish_catalog_referentials(self, lang: str = "fr") -> None:
         """Publish consolidated scraper referentials as retained MQTT topics for all 4 domains."""
@@ -102,6 +105,7 @@ class ShowcaseMqttGateway:
             try:
                 await self.external_client.connect()
                 await self.external_client.subscribe("dmd_showcase/clients/+/config", self._on_raw_msg)
+                await self.external_client.subscribe("dmd_showcase/clients/+/hello", self._on_raw_msg)
                 await self.external_client.subscribe("dmd_showcase/clients/+/status", self._on_raw_msg)
                 await self.external_client.subscribe("dmd_showcase/clients/+/events", self._on_raw_msg)
                 await self.external_client.subscribe("dmd_showcase/clients/+/+/events", self._on_raw_msg)
@@ -124,6 +128,7 @@ class ShowcaseMqttGateway:
 
         self.embedded_broker = EmbeddedMqttBroker(host="0.0.0.0", port=port)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/config", self._on_raw_msg)
+        self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/hello", self._on_raw_msg)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/status", self._on_raw_msg)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/events", self._on_raw_msg)
         self.embedded_broker.subscribe_internal("dmd_showcase/clients/+/+/events", self._on_raw_msg)
@@ -203,12 +208,20 @@ class ShowcaseMqttGateway:
             _summarize_payload_for_log(decoded),
         )
 
-        if leaf == "config" and self._on_client_config is not None:
+        if leaf == "hello":
+            if self._on_client_hello is not None:
+                await self._on_client_hello(dmd_id, decoded)
+            elif self._on_client_config is not None:
+                await self._on_client_config(dmd_id, {**decoded, "_is_hello": True})
+        elif leaf == "config" and self._on_client_config is not None:
             await self._on_client_config(dmd_id, decoded)
         elif leaf == "events" and self._on_client_event is not None:
             await self._on_client_event(dmd_id, decoded)
-        elif leaf == "status" and not decoded.get("online", True) and self._on_client_event is not None:
-            await self._on_client_event(dmd_id, {"action": "client_offline"})
+        elif leaf == "status" and self._on_client_event is not None:
+            if not decoded.get("online", True):
+                await self._on_client_event(dmd_id, {"action": "client_offline"})
+            else:
+                await self._on_client_event(dmd_id, {**decoded, "action": "client_online"})
 
 
 showcase_mqtt_gateway = ShowcaseMqttGateway()

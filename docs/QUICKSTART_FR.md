@@ -25,7 +25,7 @@ services:
       - "1883:1883"       # Broker MQTT 3.1.1 Embarqué
       - "5353:5353/udp"   # Auto-Découverte Réseau Local mDNS (dmdmediashowcase.local)
     volumes:
-      - ./data:/app/data  # Persistance server_config.json, seen_history.json & referentials/
+      - ${DMD_DATA_PATH:-./data}:/app/data  # Persistance server_config.json, dmd_profiles.json, seen_history.json & referentials/
     tmpfs:
       - /tmp/dmd_media_showcase_cache:size=256m,mode=1777
 ```
@@ -37,9 +37,10 @@ docker compose up -d
 docker logs -f dmd-media-showcase
 ```
 
-#### Option 2 — Commande `docker run` Directe
+#### Option 2 — Commande `docker run` Directe (Bind Mount Hôte ou Volume Nommé Portainer)
 
 ```bash
+# Option 2A : Montage répertoire hôte (./data — protégé contre `docker compose down -v`)
 docker run -d \
   --name dmd-media-showcase \
   --restart unless-stopped \
@@ -49,7 +50,28 @@ docker run -d \
   -v ./data:/app/data \
   --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
   ghcr.io/red77290/dmd_media_showcase:latest
+
+# Option 2B : Volume nommé Docker (`dmd_showcase_data` — idéal pour Portainer / déploiement autonome)
+docker run -d \
+  --name dmd-media-showcase \
+  --restart unless-stopped \
+  -p 8890:8890 \
+  -p 1883:1883 \
+  -p 5353:5353/udp \
+  -v dmd_showcase_data:/app/data \
+  --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
+  ghcr.io/red77290/dmd_media_showcase:latest
 ```
+
+#### Persistance des Données & Protection des Volumes (`/app/data`)
+
+Toutes les données persistantes du serveur sont regroupées dans `/app/data` :
+- `server_config.json` : Clés API scrapers chiffrées, concurrence des workers et limites vidéo.
+- `dmd_profiles.json` : Profils DMD gérés par le serveur (`config_source: "server"`), playlists, filtres et langue de diffusion (`lang`).
+- `seen_history.json` : Historique Consume-Once par domaine (zéro répétition).
+- `referentials/*.json` : Cache local des référentiels de catégories scrapers.
+
+Le montage **`${DMD_DATA_PATH:-./data}:/app/data`** dans `docker-compose.yml` pointe vers un répertoire hôte réel (surchargeable via `DMD_DATA_PATH=/mnt/nas/dmd_showcase` dans `.env`), **100 % insensible à `docker compose down -v`** (`-v` ne supprime que les volumes nommés Docker, jamais un dossier hôte). Sous **Portainer** ou sans chemin hôte dédié, utilisez un volume nommé (`-v dmd_showcase_data:/app/data`) en évitant l'option `-v` lors d'un `down`.
 
 > [!TIP]
 > **NAT Docker Bridge & Streaming UDP (`client_ip`)** : `ArcadeMatrix_RPi` et `ArcadeMatrix` (ESP32) détectent et déclarent automatiquement leur véritable IP LAN (`client_ip` / `udp_ip`) dans leurs payloads MQTT `config` et `start_stream`. Ainsi, `ffmpeg -re` envoie les paquets UDP `DMDF` directement au DMD même lorsque Docker tourne en mode bridge standard (`172.18.0.1`).
@@ -79,12 +101,16 @@ Ouvrez `http://dmdmediashowcase.local:8890/` (ou `http://<ip-serveur>:8890/`) da
   - **ScreenScraper** (`user`, `pass`, `dev_id`, `dev_pass`) pour `games`. Sans identifiants, `ArcadeItalia` (MAME HTTPS) + `Libretro+Wikidata` (SPARQL Console + Arbre GitHub) prennent le relais automatiquement sans aucune clé.
   - **Clé API TMDB / Jeton v4** (`tmdb_api_key`) et **Clé API TheTVDB v4** (`tvdb_api_key`) pour `movies`, `series` et `anime`. Sans clé, `Apple iTunes`, `TVMaze`, `Jikan + AnimeThemes` et `Wikipédia Interwiki` fonctionnent automatiquement.
 - Choisir entre le **Broker MQTT Embarqué** (`:1883`, par défaut) ou un **Broker MQTT Externe** (Mosquitto / Home Assistant).
+- **Configurer les Profils DMD Gérés par le Serveur (`./data/dmd_profiles.json`)** : Définir centralement les playlists (`games`, `movies`, `series`, `anime`), filtres scrapers (`systems`, `genres`, `decades`), préréglages vidéo/couleurs et la langue du contenu diffusé (`lang`) pour les récepteurs ESP32 passifs ou hybrides (`PUT /api/v1/clients/{dmd_id}/profile`).
+- **Rechercher un Titre & Piloter la File à la Demande / Contrôles Live** : Rechercher dans le catalogue localisé (`GET /api/v1/{domain}/search`), envoyer un média en **`enqueue_next`** ou **`play_now`** (`POST /api/v1/clients/{dmd_id}/queue`, y compris via `FrontendSync` avec `mark_seen: false`), et déclencher **`Skip` / `Pause` / `Resume` / `Stop`** en direct (`POST /api/v1/clients/{dmd_id}/control`).
 - Consulter et réinitialiser l'historique **`seen_history.json`** par domaine ou globalement.
 - Forcer une synchronisation immédiate des référentiels scrapers (`POST /api/v1/admin/referentials/sync`).
 
 ---
 
-## 3. Connecter votre DMD (`ArcadeMatrix` ESP32 & `ArcadeMatrix_RPi`)
+## 3. Connecter votre DMD (`ArcadeMatrix`, Récepteurs ESP32 Passifs & `ArcadeMatrix_RPi`)
+
+### 3.1 DMD Multi-Moteurs Pilotés par le Client (`ArcadeMatrix` ESP32 & `ArcadeMatrix_RPi`)
 
 1. Ouvrez le WebUI de votre DMD (`http://arcadematrix.local/` sur ESP32 ou `http://arcadematrix.local:8080/` sur Raspberry Pi).
 2. Rendez-vous dans **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`) :
@@ -94,4 +120,10 @@ Ouvrez `http://dmdmediashowcase.local:8890/` (ou `http://<ip-serveur>:8890/`) da
 3. Dans l'onglet **Screens / Rotation**, ajoutez l'un des 4 moteurs Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`) et définissez le nombre de **Media** à afficher par tour de rotation.
 4. Le WebUI du DMD interroge automatiquement `GET /api/v1/{domain}/filters?lang={ui_lang}` pour peupler dynamiquement les listes **Systèmes**, **Genres** et **Décennies** (en filtrant automatiquement les genres et décennies supportés lorsque vous sélectionnez un système comme `NES` ou `Neo-Geo`).
 5. Réglez la **Vitesse de défilement du synopsis** (`1 = Lent` à `10 = Turbo`, jusqu'à `160 px/s`) puis cliquez sur **Sauvegarder**.
+
+### 3.2 Récepteurs ESP32 Passifs & Hybrides Gérés par le Serveur (`config_source: "server"`)
+
+Pour un topper/marquee dédié sur `ESP32_STD` (sans PSRAM) ou `ESP32-S3` sans WebUI local (~180 lignes C++ à l'écoute sur UDP `:4210`) :
+1. Flashez le squelette C++ de référence du **[Guide d'Intégration ESP32 & Récepteur Passif](ESP32_INTEGRATION_FR.md)** (annonce automatique de la géométrie et de l'IP via `POST /api/v1/clients/hello` ou MQTT `dmd_showcase/clients/{dmd_id}/hello`).
+2. Ouvrez `http://dmdmediashowcase.local:8890/`, sélectionnez le panneau détecté, choisissez sa langue de diffusion (`lang`), activez vos domaines/catégories et enregistrez son profil dans `./data/dmd_profiles.json` — le serveur génère même la Fiche Info de Phase 1 directement dans le flux UDP `DMDF` RGB565 !
 

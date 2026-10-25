@@ -9,13 +9,15 @@ Keyless public movie & trailer catalog implementing `IScraperSource`:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
+from app.domain.taxonomy import resolve_canonical_genre
 from app.infrastructure.scrapers.catalog_metadata import DECADE_BOUNDS, MOVIE_GENRES
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
@@ -379,29 +381,134 @@ class ItunesMovieAdapter(IScraperSource):
 
         return results
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        if not query.strip():
-            return None
-        short_lang = (lang or "fr").split("-")[0].lower()
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        q_clean = (query or "").strip()
+        if not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        short_lang = (criteria.lang or "fr").split("-")[0].split("_")[0].lower()
         country = _ITUNES_COUNTRY_BY_LANG.get(short_lang, "US")
+
+        valid_genres: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("movies", g)
+            gk = cg if cg in MOVIE_GENRES else g.strip().lower()
+            if gk in MOVIE_GENRES and gk not in valid_genres:
+                valid_genres.append(gk)
+        g_meta = MOVIE_GENRES[valid_genres[0]] if valid_genres else MOVIE_GENRES["scifi"]
+
+        valid_decades = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() in DECADE_BOUNDS
+        ]
+
+        candidates: List[MediaCandidate] = []
+        cand_storefront: Dict[str, str] = {}
+        seen_ids: Set[str] = set()
+        seen_title_yr: Set[Tuple[str, str]] = set()
+        countries = [country] if country == "US" else [country, "US"]
+
         try:
-            async with create_async_http_client(timeout=5.0) as client:
-                resp = await client.get(
-                    "https://itunes.apple.com/search",
-                    params={
-                        "term": query.strip(),
-                        "media": "movie",
-                        "entity": "movie",
-                        "country": country,
-                        "limit": "5",
-                    },
-                )
-                if resp.status_code == 200:
-                    for row in resp.json().get("results") or []:
-                        if isinstance(row, dict):
-                            cand = self._parse_itunes_track(row, MOVIE_GENRES["scifi"], short_lang)
-                            if cand:
-                                return cand
-        except Exception:
-            pass
-        return None
+            async with create_async_http_client(timeout=5.5) as client:
+                for ctry in countries:
+                    if len(candidates) >= target_limit:
+                        break
+                    resp = await client.get(
+                        "https://itunes.apple.com/search",
+                        params={
+                            "term": q_clean,
+                            "media": "movie",
+                            "entity": "movie",
+                            "country": ctry,
+                            "limit": str(min(50, max(15, target_limit * 4))),
+                        },
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    rows = [r for r in (resp.json().get("results") or []) if isinstance(r, dict)]
+                    q_low = q_clean.lower()
+                    rows.sort(
+                        key=lambda r: 0
+                        if str(r.get("trackName") or "").strip().lower() == q_low
+                        else 1
+                    )
+                    for row in rows:
+                        if len(candidates) >= target_limit:
+                            break
+                        if valid_genres and not any(
+                            self._is_itunes_genre_compatible(
+                                str(row.get("primaryGenreName") or ""), MOVIE_GENRES[gk]
+                            )
+                            for gk in valid_genres
+                        ):
+                            continue
+                        cand = self._parse_itunes_track(row, g_meta, short_lang)
+                        if not cand or cand.id in seen_ids:
+                            continue
+                        if valid_decades:
+                            if not cand.year.isdigit():
+                                continue
+                            yr_val = int(cand.year)
+                            if not any(
+                                int(DECADE_BOUNDS[d][0][:4]) <= yr_val <= int(DECADE_BOUNDS[d][1][:4])
+                                for d in valid_decades
+                            ):
+                                continue
+                        ty_key = (re.sub(r"[^a-z0-9]+", "", cand.title.lower()), cand.year)
+                        if ty_key[0] and ty_key in seen_title_yr:
+                            continue
+                        seen_ids.add(cand.id)
+                        if ty_key[0]:
+                            seen_title_yr.add(ty_key)
+                        cand_storefront[cand.id] = ctry
+                        candidates.append(cand)
+
+                if candidates:
+                    sem = asyncio.Semaphore(4)
+                    top_to_enrich = candidates[: min(len(candidates), 4)]
+
+                    async def _enrich_itunes(c: MediaCandidate) -> None:
+                        async with sem:
+                            ctry = cand_storefront.get(c.id, country)
+                            orig_t = c.title
+                            if short_lang != "en" and (ctry == "US" or len(c.synopsis) < 45):
+                                loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
+                                    client, orig_t, lang=short_lang, domain_hint="film", year=c.year
+                                )
+                                if loc_syn:
+                                    c.synopsis = loc_syn
+                                if loc_t:
+                                    c.title = loc_t
+                                if loc_tr and not c.youtube_url:
+                                    c.youtube_url = loc_tr
+                            if not c.video_url and not c.youtube_url:
+                                dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
+                                    client, f"{orig_t} {c.year} trailer", max_snapshots=3
+                                )
+                                if dm_url:
+                                    c.youtube_url = dm_url
+                                for st in dm_stills:
+                                    c.add_unique_snapshot(st)
+
+                    await asyncio.gather(*(_enrich_itunes(c) for c in top_to_enrich), return_exceptions=True)
+        except Exception as exc:
+            logger.debug("[iTunes Movies] Search error for '%s': %s", q_clean, exc)
+
+        return candidates[:target_limit]
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(domain="movies", genres=[], decades=[], lang=lang),
+            limit=1,
+        )
+        return cands[0] if cands else None

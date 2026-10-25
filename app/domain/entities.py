@@ -55,7 +55,7 @@ class FilterCriteria:
     video_type: str = "any"
     include_poster: bool = True
     include_synopsis: bool = True
-    text_scroll_speed: Literal["slow", "normal", "fast"] = "normal"
+    text_scroll_speed: str = "normal"
     jacket_panorama: bool = True
     marquee_panorama: bool = False
     snapshot_panorama_count: int = 0
@@ -64,6 +64,7 @@ class FilterCriteria:
     video_fps: int = 15
     video_mode: str = "auto_action"
     color_boost: Union[str, bool] = "auto"
+    render_card_in_stream: bool = False
 
 
 @dataclass

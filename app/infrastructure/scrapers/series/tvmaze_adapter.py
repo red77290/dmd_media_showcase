@@ -8,13 +8,15 @@ Keyless public TV catalog adapter implementing `IScraperSource`:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
-from app.infrastructure.scrapers.catalog_metadata import SERIES_GENRES
+from app.domain.taxonomy import resolve_canonical_genre
+from app.infrastructure.scrapers.catalog_metadata import DECADE_BOUNDS, SERIES_GENRES
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
     create_async_http_client,
@@ -73,7 +75,9 @@ class TvMazeAdapter(IScraperSource):
         show: Dict[str, Any],
         lang: str,
         genre_meta: Dict[str, Any],
+        enrich_heavy: bool = True,
     ) -> MediaCandidate:
+        short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
         show_id = show.get("id")
         orig_title = str(show.get("name") or "Unknown Series").strip()
         title = orig_title
@@ -89,15 +93,16 @@ class TvMazeAdapter(IScraperSource):
 
         summary = clean_synopsis_text(show.get("summary"), max_chars=300)
         resolved_trailer: Optional[str] = None
-        loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
-            client, orig_title, lang=lang, domain_hint="TV series", year=year
-        )
-        if loc_syn and (lang != "en" or not summary):
-            summary = loc_syn
-        if loc_t and lang != "en":
-            title = loc_t
-        if loc_tr:
-            resolved_trailer = loc_tr
+        if enrich_heavy:
+            loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
+                client, orig_title, lang=short_lang, domain_hint="TV series", year=year
+            )
+            if loc_syn and (short_lang != "en" or not summary):
+                summary = loc_syn
+            if loc_t and short_lang != "en":
+                title = loc_t
+            if loc_tr:
+                resolved_trailer = loc_tr
 
         cand = MediaCandidate(
             id=f"series_tvmaze_{show_id}",
@@ -109,7 +114,7 @@ class TvMazeAdapter(IScraperSource):
             subtitle=f"{primary_genre} • {network}"[:28],
             rating=f"{float(rating_val):.1f}",
             synopsis=summary or f"{title} ({year}) — {primary_genre} series on {network}.",
-            lang=lang,
+            lang=short_lang,
             poster_url=poster_url,
             jacket_url=poster_url,
             youtube_url=resolved_trailer,
@@ -117,6 +122,9 @@ class TvMazeAdapter(IScraperSource):
             theme_palette=genre_meta["palette"],
             extra_meta={"tvmaze_id": str(show_id)},
         )
+
+        if not enrich_heavy:
+            return cand
 
         if show_id:
             try:
@@ -249,17 +257,128 @@ class TvMazeAdapter(IScraperSource):
 
         return results
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        if not query.strip():
-            return None
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        q_clean = (query or "").strip()
+        if not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        short_lang = (criteria.lang or "fr").split("-")[0].split("_")[0].lower()
+
+        valid_genres: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("series", g)
+            gk = cg if cg in SERIES_GENRES else g.strip().lower()
+            if gk in SERIES_GENRES and gk not in valid_genres:
+                valid_genres.append(gk)
+        g_meta = SERIES_GENRES[valid_genres[0]] if valid_genres else SERIES_GENRES["scifi"]
+        target_tvmaze_genres = {SERIES_GENRES[g]["tvmaze"].lower() for g in valid_genres}
+        if "anime" in valid_genres or "animation" in valid_genres:
+            target_tvmaze_genres.update({"anime", "animation"})
+        if "nature" in valid_genres:
+            target_tvmaze_genres.update({"nature", "documentary"})
+
+        valid_decades = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() in DECADE_BOUNDS
+        ]
+
         try:
-            async with create_async_http_client(timeout=5.0) as client:
+            async with create_async_http_client(timeout=5.5) as client:
+                raw_shows: List[Dict[str, Any]] = []
                 resp = await client.get(
-                    "https://api.tvmaze.com/singlesearch/shows",
-                    params={"q": query.strip()},
+                    "https://api.tvmaze.com/search/shows",
+                    params={"q": q_clean},
                 )
-                if resp.status_code == 200 and resp.json():
-                    return await self._enrich_show(client, resp.json(), lang, SERIES_GENRES["scifi"])
-        except Exception:
-            pass
-        return None
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, list):
+                        for entry in payload:
+                            if isinstance(entry, dict):
+                                sh = entry.get("show") if isinstance(entry.get("show"), dict) else entry
+                                if isinstance(sh, dict) and sh.get("id"):
+                                    raw_shows.append(sh)
+                    elif isinstance(payload, dict) and payload.get("id"):
+                        raw_shows.append(payload)
+
+                if not raw_shows:
+                    s_resp = await client.get(
+                        "https://api.tvmaze.com/singlesearch/shows",
+                        params={"q": q_clean},
+                    )
+                    if s_resp.status_code == 200 and isinstance(s_resp.json(), dict):
+                        raw_shows.append(s_resp.json())
+
+                filtered_shows: List[Dict[str, Any]] = []
+                seen_ids: Set[str] = set()
+                for idx, sh in enumerate(raw_shows):
+                    if len(filtered_shows) >= target_limit:
+                        break
+                    sid = f"series_tvmaze_{sh.get('id')}"
+                    if sid in seen_ids:
+                        continue
+                    img = sh.get("image") or {}
+                    if not img.get("original") and not img.get("medium"):
+                        if not (target_limit == 1 and idx == 0 and not filtered_shows):
+                            continue
+
+                    sh_type = str(sh.get("type") or "").strip().lower()
+                    sh_genres = {str(x).lower() for x in (sh.get("genres") or [])}
+                    if sh_type in ("animation", "documentary", "sports"):
+                        sh_genres.add(sh_type)
+                    if target_tvmaze_genres and not (sh_genres & target_tvmaze_genres):
+                        continue
+
+                    if valid_decades:
+                        prem = str(sh.get("premiered") or "")[:4]
+                        if not prem.isdigit():
+                            continue
+                        yr_val = int(prem)
+                        if not any(
+                            int(DECADE_BOUNDS[d][0][:4]) <= yr_val <= int(DECADE_BOUNDS[d][1][:4])
+                            for d in valid_decades
+                        ):
+                            continue
+
+                    seen_ids.add(sid)
+                    filtered_shows.append(sh)
+
+                if not filtered_shows:
+                    return []
+
+                sem = asyncio.Semaphore(4)
+
+                async def _build_idx(i: int, show_obj: Dict[str, Any]) -> MediaCandidate:
+                    async with sem:
+                        return await self._enrich_show(
+                            client,
+                            show_obj,
+                            short_lang,
+                            g_meta,
+                            enrich_heavy=(i < min(target_limit, 4)),
+                        )
+
+                built = await asyncio.gather(
+                    *(_build_idx(i, s) for i, s in enumerate(filtered_shows)),
+                    return_exceptions=True,
+                )
+                return [c for c in built if isinstance(c, MediaCandidate)][:target_limit]
+        except Exception as exc:
+            logger.debug("[TVMaze] Search error for '%s': %s", q_clean, exc)
+        return []
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(domain="series", genres=[], decades=[], lang=lang),
+            limit=1,
+        )
+        return cands[0] if cands else None
