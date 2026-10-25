@@ -10,6 +10,21 @@ from pydantic import BaseModel, Field
 
 DomainType = Literal["games", "movies", "series", "anime"]
 SupportedLang = Literal["fr", "en", "es", "de", "it", "pt", "ja"]
+CardLayoutType = Literal[
+    "classic_split",
+    "poster_right",
+    "badge_header",
+    "hero_banner",
+    "minimal_arcade",
+]
+CardThemeType = Literal[
+    "tinted",
+    "pure_black",
+    "neon_border",
+    "poster_wash",
+    "amber_dmd",
+]
+CardFontType = Literal["arcade_pixel", "clean_sans"]
 
 
 def compute_card_poster_dimensions(width: int, height: int) -> Tuple[int, int]:
@@ -374,6 +389,23 @@ class AdminServerConfigPayload(BaseModel):
     trust_proxy_headers: Optional[bool] = None
 
 
+class CardStylePayload(BaseModel):
+    """Pixel-perfect server-side Info Card customization settings (Mode 2B & Studio On-Demand)."""
+
+    include_card_intro: bool = True
+    card_layout: CardLayoutType = "classic_split"
+    card_theme: CardThemeType = "tinted"
+    card_font: CardFontType = "arcade_pixel"
+    card_accent_color: str = "auto"
+    include_poster: bool = True
+    show_badge: bool = True
+    show_year: bool = True
+    show_rating: bool = True
+    include_synopsis: bool = True
+    text_scroll_speed: str = "normal"
+    card_hold_s: float = Field(default=0.9, ge=0.2, le=5.0)
+
+
 class DmdPlaylistSlotPayload(BaseModel):
     """Single domain rotation slot inside a server-managed DMD profile (`dmd_profiles.json`)."""
 
@@ -394,12 +426,22 @@ class DmdPlaylistSlotPayload(BaseModel):
     decades: List[str] = Field(default_factory=list)
     min_rating: float = Field(default=6.0, ge=0.0, le=9.9)
     video_type: str = "any"
+    include_card_intro: Optional[bool] = None
+    card_layout: Optional[CardLayoutType] = None
+    card_theme: Optional[CardThemeType] = None
+    card_font: Optional[CardFontType] = None
+    card_accent_color: Optional[str] = None
+    show_badge: Optional[bool] = None
+    show_year: Optional[bool] = None
+    show_rating: Optional[bool] = None
+    card_hold_s: Optional[float] = Field(default=None, ge=0.2, le=5.0)
     include_poster: bool = True
     include_synopsis: bool = True
     text_scroll_speed: str = "normal"
     jacket_panorama: bool = True
     marquee_panorama: bool = False
     snapshot_panorama_count: int = Field(default=0, ge=0, le=5)
+    panorama_duration_s: Optional[float] = Field(default=None, ge=1.5, le=15.0)
     include_video: bool = True
     video_max_duration_s: float = Field(default=8.0, ge=1.5, le=120.0)
     video_fps: int = Field(default=15, ge=6, le=60)
@@ -435,6 +477,7 @@ class DmdProfilePayload(BaseModel):
     )
     paused: bool = False
     inter_item_gap_s: float = Field(default=1.0, ge=0.0, le=10.0)
+    card_style: Optional[CardStylePayload] = None
     playlist: List[DmdPlaylistSlotPayload] = Field(default_factory=list)
 
 
@@ -488,6 +531,8 @@ class SearchCandidateModel(BaseModel):
     lang: str
     source_id: str
     poster_url: Optional[str] = None
+    marquee_url: Optional[str] = None
+    snapshot_count: int = 0
     has_video: bool = False
 
 
@@ -504,9 +549,14 @@ class SearchCandidatesResponse(BaseModel):
 class QueueAddRequest(BaseModel):
     """
     Enqueue or immediately play a specific media title on a target DMD (`POST /api/v1/clients/{dmd_id}/queue`).
-    Accepts either `candidate_id` (from `/search` UI selection) or `{domain, query, systems, lang}` (1-shot FrontendSync / webhook).
+    Accepts `preview_id` (zero-retranscode promotion from Studio simulation), `candidate_id` (from `/search`),
+    or `{domain, query, systems, lang}` (1-shot FrontendSync / webhook).
     """
 
+    preview_id: Optional[str] = Field(
+        default=None,
+        description="Optional Studio full-preview token (`X-DMD-Preview-Id`) to promote an already-rendered simulation into the DMD queue in 0 ms without re-transcoding.",
+    )
     candidate_id: Optional[str] = Field(
         default=None,
         description="Exact staged candidate_id returned by `/api/v1/{domain}/search`.",
@@ -531,12 +581,22 @@ class QueueAddRequest(BaseModel):
     )
     width: Optional[int] = Field(default=None, ge=32, le=512)
     height: Optional[int] = Field(default=None, ge=16, le=256)
+    include_card_intro: Optional[bool] = None
+    card_layout: Optional[CardLayoutType] = None
+    card_theme: Optional[CardThemeType] = None
+    card_font: Optional[CardFontType] = None
+    card_accent_color: Optional[str] = None
+    show_badge: Optional[bool] = None
+    show_year: Optional[bool] = None
+    show_rating: Optional[bool] = None
+    card_hold_s: Optional[float] = Field(default=None, ge=0.2, le=5.0)
     include_poster: Optional[bool] = None
     include_synopsis: Optional[bool] = None
     text_scroll_speed: Optional[str] = None
     jacket_panorama: Optional[bool] = None
     marquee_panorama: Optional[bool] = None
     snapshot_panorama_count: Optional[int] = Field(default=None, ge=0, le=5)
+    panorama_duration_s: Optional[float] = Field(default=None, ge=1.5, le=15.0)
     include_video: Optional[bool] = None
     video_max_duration_s: Optional[float] = Field(default=None, ge=1.5, le=120.0)
     video_fps: Optional[int] = Field(default=None, ge=6, le=60)
@@ -558,6 +618,7 @@ class QueueItemModel(BaseModel):
     lang: str = "fr"
     mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
     mark_seen: bool = True
+    from_studio_sim: bool = False
     status: Literal["queued", "preparing", "ready", "playing"] = "queued"
     created_at: float
 
@@ -566,5 +627,59 @@ class ClientControlRequest(BaseModel):
     """Live playback control command for a DMD client (`POST /api/v1/clients/{dmd_id}/control`)."""
 
     action: Literal["skip", "pause", "resume", "stop"]
+
+
+class StudioCardPreviewRequest(BaseModel):
+    """
+    Fast (< 100 ms) server-side Info Card `DMDS` preview payload (`POST /api/v1/studio/card-preview`).
+    Accepts either a staged `candidate_id` from `/search` or inline sample metadata.
+    """
+
+    candidate_id: Optional[str] = None
+    domain: DomainType = "games"
+    lang: str = "fr"
+    title: str = "Super Street Fighter II Turbo"
+    year: str = "1994"
+    badge: str = "CPS2"
+    badge_color: str = "#FF6D00"
+    subtitle: str = "Capcom • Arcade Fighting"
+    rating: str = "9.2"
+    synopsis: str = "Legendary 2D fighting masterpiece introducing Super Combos and Akuma."
+    poster_url: Optional[str] = None
+    width: int = Field(default=128, ge=32, le=512)
+    height: int = Field(default=32, ge=16, le=256)
+    fps: int = Field(default=20, ge=8, le=60)
+    include_card_intro: bool = True
+    card_layout: CardLayoutType = "classic_split"
+    card_theme: CardThemeType = "tinted"
+    card_font: CardFontType = "arcade_pixel"
+    card_accent_color: str = "auto"
+    include_poster: bool = True
+    show_badge: bool = True
+    show_year: bool = True
+    show_rating: bool = True
+    include_synopsis: bool = True
+    text_scroll_speed: str = "normal"
+    card_hold_s: float = Field(default=0.9, ge=0.2, le=5.0)
+    color_boost: Union[str, bool] = "auto"
+
+
+class StudioFullPreviewRequest(StudioCardPreviewRequest):
+    """
+    Full unified sequence `DMDS` preview payload (`POST /api/v1/studio/full-preview`):
+    Assembles `[Card Intro (optional) -> Jacket Panorama -> Marquee Panorama -> Snapshots (0..5) -> Video]`
+    and caches the result under `X-DMD-Preview-Id` for instant 0 ms promotion into an active DMD's queue.
+    """
+
+    query: str = ""
+    jacket_panorama: bool = True
+    marquee_panorama: bool = False
+    snapshot_panorama_count: int = Field(default=0, ge=0, le=5)
+    panorama_duration_s: float = Field(default=4.0, ge=1.5, le=15.0)
+    include_video: bool = True
+    video_max_duration_s: float = Field(default=8.0, ge=1.5, le=120.0)
+    video_fps: int = Field(default=15, ge=6, le=60)
+    video_mode: str = "auto_action"
+
 
 

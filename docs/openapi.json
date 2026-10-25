@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DMD Media Showcase Server API",
-    "summary": "DDD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 DMDs",
-    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
+    "summary": "DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Resilient Scraper Chains (`Primary` + `Fallback`)**: 2 dedicated metadata & video sources per domain.\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
     "version": "1.0.0"
   },
   "paths": {
@@ -38,7 +38,7 @@
           "System & Admin"
         ],
         "summary": "Get Health",
-        "description": "Return server health, worker pool saturation, MQTT broker mode, and DDD scraper chains.",
+        "description": "Return server health, worker pool saturation, MQTT broker mode, and active scraper chains.",
         "operationId": "get_health_api_v1_health_get",
         "responses": {
           "200": {
@@ -210,7 +210,7 @@
           "Discovery"
         ],
         "summary": "Get Domain Filters",
-        "description": "Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources.",
+        "description": "Return consolidated localized filter categories, relational system capabilities, genres, decades, and metadata sources.",
         "operationId": "get_domain_filters_api_v1__domain__referential_get",
         "parameters": [
           {
@@ -273,7 +273,7 @@
           "Discovery"
         ],
         "summary": "Get Domain Filters",
-        "description": "Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources.",
+        "description": "Return consolidated localized filter categories, relational system capabilities, genres, decades, and metadata sources.",
         "operationId": "get_domain_filters_api_v1__domain__filters_get",
         "parameters": [
           {
@@ -959,6 +959,98 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Control Dmd Client Api V1 Clients  Dmd Id  Control Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/studio/card-preview": {
+      "post": {
+        "tags": [
+          "Card Studio & Simulator"
+        ],
+        "summary": "Build Studio Card Preview Endpoint",
+        "description": "Render an ultra-fast (`< 100 ms`) binary `DMDS` (`<4sBBHHHHH` + RGB565LE frames) preview of the\nMode 2B Info Card honoring `width` x `height` (YOKO & TATE), `card_layout`, `card_theme`, `card_font`,\n`text_scroll_speed`, and `card_hold_s`. Runs outside the heavy video transcoding semaphore and\ncaches poster downloads on disk so UI slider tweaks respond instantaneously.",
+        "operationId": "build_studio_card_preview_endpoint_api_v1_studio_card_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioCardPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Fast (< 100 ms) binary `DMDS` RGB565LE stream of the customized Mode 2B Info Card.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/studio/full-preview": {
+      "post": {
+        "tags": [
+          "Card Studio & Simulator"
+        ],
+        "summary": "Build Studio Full Preview Endpoint",
+        "description": "Assemble the complete Mode 2B `DMDS` sequence (`Card Intro + Jacket/Marquee Panoramas + 0..5 Snapshots + Video`)\nfor interactive playback in the WebUI HUB75 LED Simulator.\n\nReturns `X-DMD-Preview-Id` (`sim_...`) in response headers so clicking **Add Simulation to Active DMD Queue**\n(`POST /api/v1/clients/{dmd_id}/queue` with `preview_id`) promotes the rendered stream into the live DMD queue\nin `0 ms` with zero re-transcoding when panel dimensions match.",
+        "operationId": "build_studio_full_preview_endpoint_api_v1_studio_full_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioFullPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Full customized binary `DMDS` stream (`Card + Panoramas + Snapshots + Video`) with `X-DMD-Preview-Id` and `X-DMD-Chapters` headers.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -2212,6 +2304,93 @@
         "title": "BatchStatusResponse",
         "description": "Response to the fast LAN check `GET /api/v1/{domain}/batch?session_id=...`\n(\"Are you ready?\")."
       },
+      "CardStylePayload": {
+        "properties": {
+          "include_card_intro": {
+            "type": "boolean",
+            "title": "Include Card Intro",
+            "default": true
+          },
+          "card_layout": {
+            "type": "string",
+            "enum": [
+              "classic_split",
+              "poster_right",
+              "badge_header",
+              "hero_banner",
+              "minimal_arcade"
+            ],
+            "title": "Card Layout",
+            "default": "classic_split"
+          },
+          "card_theme": {
+            "type": "string",
+            "enum": [
+              "tinted",
+              "pure_black",
+              "neon_border",
+              "poster_wash",
+              "amber_dmd"
+            ],
+            "title": "Card Theme",
+            "default": "tinted"
+          },
+          "card_font": {
+            "type": "string",
+            "enum": [
+              "arcade_pixel",
+              "clean_sans"
+            ],
+            "title": "Card Font",
+            "default": "arcade_pixel"
+          },
+          "card_accent_color": {
+            "type": "string",
+            "title": "Card Accent Color",
+            "default": "auto"
+          },
+          "include_poster": {
+            "type": "boolean",
+            "title": "Include Poster",
+            "default": true
+          },
+          "show_badge": {
+            "type": "boolean",
+            "title": "Show Badge",
+            "default": true
+          },
+          "show_year": {
+            "type": "boolean",
+            "title": "Show Year",
+            "default": true
+          },
+          "show_rating": {
+            "type": "boolean",
+            "title": "Show Rating",
+            "default": true
+          },
+          "include_synopsis": {
+            "type": "boolean",
+            "title": "Include Synopsis",
+            "default": true
+          },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "default": "normal"
+          },
+          "card_hold_s": {
+            "type": "number",
+            "maximum": 5.0,
+            "minimum": 0.2,
+            "title": "Card Hold S",
+            "default": 0.9
+          }
+        },
+        "type": "object",
+        "title": "CardStylePayload",
+        "description": "Pixel-perfect server-side Info Card customization settings (Mode 2B & Studio On-Demand)."
+      },
       "ClientControlRequest": {
         "properties": {
           "action": {
@@ -2379,6 +2558,125 @@
             "title": "Video Type",
             "default": "any"
           },
+          "include_card_intro": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Card Intro"
+          },
+          "card_layout": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "classic_split",
+                  "poster_right",
+                  "badge_header",
+                  "hero_banner",
+                  "minimal_arcade"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Layout"
+          },
+          "card_theme": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "tinted",
+                  "pure_black",
+                  "neon_border",
+                  "poster_wash",
+                  "amber_dmd"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Theme"
+          },
+          "card_font": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "arcade_pixel",
+                  "clean_sans"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Font"
+          },
+          "card_accent_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Accent Color"
+          },
+          "show_badge": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Badge"
+          },
+          "show_year": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Year"
+          },
+          "show_rating": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Rating"
+          },
+          "card_hold_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 5.0,
+                "minimum": 0.2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Hold S"
+          },
           "include_poster": {
             "type": "boolean",
             "title": "Include Poster",
@@ -2410,6 +2708,19 @@
             "minimum": 0.0,
             "title": "Snapshot Panorama Count",
             "default": 0
+          },
+          "panorama_duration_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 15.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panorama Duration S"
           },
           "include_video": {
             "type": "boolean",
@@ -2534,6 +2845,16 @@
             "minimum": 0.0,
             "title": "Inter Item Gap S",
             "default": 1.0
+          },
+          "card_style": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CardStylePayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "playlist": {
             "items": {
@@ -3096,6 +3417,18 @@
       },
       "QueueAddRequest": {
         "properties": {
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Id",
+            "description": "Optional Studio full-preview token (`X-DMD-Preview-Id`) to promote an already-rendered simulation into the DMD queue in 0 ms without re-transcoding."
+          },
           "candidate_id": {
             "anyOf": [
               {
@@ -3204,6 +3537,125 @@
             ],
             "title": "Height"
           },
+          "include_card_intro": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Card Intro"
+          },
+          "card_layout": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "classic_split",
+                  "poster_right",
+                  "badge_header",
+                  "hero_banner",
+                  "minimal_arcade"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Layout"
+          },
+          "card_theme": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "tinted",
+                  "pure_black",
+                  "neon_border",
+                  "poster_wash",
+                  "amber_dmd"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Theme"
+          },
+          "card_font": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "arcade_pixel",
+                  "clean_sans"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Font"
+          },
+          "card_accent_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Accent Color"
+          },
+          "show_badge": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Badge"
+          },
+          "show_year": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Year"
+          },
+          "show_rating": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Rating"
+          },
+          "card_hold_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 5.0,
+                "minimum": 0.2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Hold S"
+          },
           "include_poster": {
             "anyOf": [
               {
@@ -3272,6 +3724,19 @@
             ],
             "title": "Snapshot Panorama Count"
           },
+          "panorama_duration_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 15.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panorama Duration S"
+          },
           "include_video": {
             "anyOf": [
               {
@@ -3337,7 +3802,7 @@
         },
         "type": "object",
         "title": "QueueAddRequest",
-        "description": "Enqueue or immediately play a specific media title on a target DMD (`POST /api/v1/clients/{dmd_id}/queue`).\nAccepts either `candidate_id` (from `/search` UI selection) or `{domain, query, systems, lang}` (1-shot FrontendSync / webhook)."
+        "description": "Enqueue or immediately play a specific media title on a target DMD (`POST /api/v1/clients/{dmd_id}/queue`).\nAccepts `preview_id` (zero-retranscode promotion from Studio simulation), `candidate_id` (from `/search`),\nor `{domain, query, systems, lang}` (1-shot FrontendSync / webhook)."
       },
       "SearchCandidateModel": {
         "properties": {
@@ -3405,6 +3870,22 @@
               }
             ],
             "title": "Poster Url"
+          },
+          "marquee_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marquee Url"
+          },
+          "snapshot_count": {
+            "type": "integer",
+            "title": "Snapshot Count",
+            "default": 0
           },
           "has_video": {
             "type": "boolean",
@@ -3858,6 +4339,445 @@
         "title": "SessionRegisterResponse",
         "description": "Response to `POST /api/v1/{domain}/session`."
       },
+      "StudioCardPreviewRequest": {
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain",
+            "default": "games"
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang",
+            "default": "fr"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "Super Street Fighter II Turbo"
+          },
+          "year": {
+            "type": "string",
+            "title": "Year",
+            "default": "1994"
+          },
+          "badge": {
+            "type": "string",
+            "title": "Badge",
+            "default": "CPS2"
+          },
+          "badge_color": {
+            "type": "string",
+            "title": "Badge Color",
+            "default": "#FF6D00"
+          },
+          "subtitle": {
+            "type": "string",
+            "title": "Subtitle",
+            "default": "Capcom • Arcade Fighting"
+          },
+          "rating": {
+            "type": "string",
+            "title": "Rating",
+            "default": "9.2"
+          },
+          "synopsis": {
+            "type": "string",
+            "title": "Synopsis",
+            "default": "Legendary 2D fighting masterpiece introducing Super Combos and Akuma."
+          },
+          "poster_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Poster Url"
+          },
+          "width": {
+            "type": "integer",
+            "maximum": 512.0,
+            "minimum": 32.0,
+            "title": "Width",
+            "default": 128
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 256.0,
+            "minimum": 16.0,
+            "title": "Height",
+            "default": 32
+          },
+          "fps": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 8.0,
+            "title": "Fps",
+            "default": 20
+          },
+          "include_card_intro": {
+            "type": "boolean",
+            "title": "Include Card Intro",
+            "default": true
+          },
+          "card_layout": {
+            "type": "string",
+            "enum": [
+              "classic_split",
+              "poster_right",
+              "badge_header",
+              "hero_banner",
+              "minimal_arcade"
+            ],
+            "title": "Card Layout",
+            "default": "classic_split"
+          },
+          "card_theme": {
+            "type": "string",
+            "enum": [
+              "tinted",
+              "pure_black",
+              "neon_border",
+              "poster_wash",
+              "amber_dmd"
+            ],
+            "title": "Card Theme",
+            "default": "tinted"
+          },
+          "card_font": {
+            "type": "string",
+            "enum": [
+              "arcade_pixel",
+              "clean_sans"
+            ],
+            "title": "Card Font",
+            "default": "arcade_pixel"
+          },
+          "card_accent_color": {
+            "type": "string",
+            "title": "Card Accent Color",
+            "default": "auto"
+          },
+          "include_poster": {
+            "type": "boolean",
+            "title": "Include Poster",
+            "default": true
+          },
+          "show_badge": {
+            "type": "boolean",
+            "title": "Show Badge",
+            "default": true
+          },
+          "show_year": {
+            "type": "boolean",
+            "title": "Show Year",
+            "default": true
+          },
+          "show_rating": {
+            "type": "boolean",
+            "title": "Show Rating",
+            "default": true
+          },
+          "include_synopsis": {
+            "type": "boolean",
+            "title": "Include Synopsis",
+            "default": true
+          },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "default": "normal"
+          },
+          "card_hold_s": {
+            "type": "number",
+            "maximum": 5.0,
+            "minimum": 0.2,
+            "title": "Card Hold S",
+            "default": 0.9
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Color Boost",
+            "default": "auto"
+          }
+        },
+        "type": "object",
+        "title": "StudioCardPreviewRequest",
+        "description": "Fast (< 100 ms) server-side Info Card `DMDS` preview payload (`POST /api/v1/studio/card-preview`).\nAccepts either a staged `candidate_id` from `/search` or inline sample metadata."
+      },
+      "StudioFullPreviewRequest": {
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain",
+            "default": "games"
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang",
+            "default": "fr"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "Super Street Fighter II Turbo"
+          },
+          "year": {
+            "type": "string",
+            "title": "Year",
+            "default": "1994"
+          },
+          "badge": {
+            "type": "string",
+            "title": "Badge",
+            "default": "CPS2"
+          },
+          "badge_color": {
+            "type": "string",
+            "title": "Badge Color",
+            "default": "#FF6D00"
+          },
+          "subtitle": {
+            "type": "string",
+            "title": "Subtitle",
+            "default": "Capcom • Arcade Fighting"
+          },
+          "rating": {
+            "type": "string",
+            "title": "Rating",
+            "default": "9.2"
+          },
+          "synopsis": {
+            "type": "string",
+            "title": "Synopsis",
+            "default": "Legendary 2D fighting masterpiece introducing Super Combos and Akuma."
+          },
+          "poster_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Poster Url"
+          },
+          "width": {
+            "type": "integer",
+            "maximum": 512.0,
+            "minimum": 32.0,
+            "title": "Width",
+            "default": 128
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 256.0,
+            "minimum": 16.0,
+            "title": "Height",
+            "default": 32
+          },
+          "fps": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 8.0,
+            "title": "Fps",
+            "default": 20
+          },
+          "include_card_intro": {
+            "type": "boolean",
+            "title": "Include Card Intro",
+            "default": true
+          },
+          "card_layout": {
+            "type": "string",
+            "enum": [
+              "classic_split",
+              "poster_right",
+              "badge_header",
+              "hero_banner",
+              "minimal_arcade"
+            ],
+            "title": "Card Layout",
+            "default": "classic_split"
+          },
+          "card_theme": {
+            "type": "string",
+            "enum": [
+              "tinted",
+              "pure_black",
+              "neon_border",
+              "poster_wash",
+              "amber_dmd"
+            ],
+            "title": "Card Theme",
+            "default": "tinted"
+          },
+          "card_font": {
+            "type": "string",
+            "enum": [
+              "arcade_pixel",
+              "clean_sans"
+            ],
+            "title": "Card Font",
+            "default": "arcade_pixel"
+          },
+          "card_accent_color": {
+            "type": "string",
+            "title": "Card Accent Color",
+            "default": "auto"
+          },
+          "include_poster": {
+            "type": "boolean",
+            "title": "Include Poster",
+            "default": true
+          },
+          "show_badge": {
+            "type": "boolean",
+            "title": "Show Badge",
+            "default": true
+          },
+          "show_year": {
+            "type": "boolean",
+            "title": "Show Year",
+            "default": true
+          },
+          "show_rating": {
+            "type": "boolean",
+            "title": "Show Rating",
+            "default": true
+          },
+          "include_synopsis": {
+            "type": "boolean",
+            "title": "Include Synopsis",
+            "default": true
+          },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "default": "normal"
+          },
+          "card_hold_s": {
+            "type": "number",
+            "maximum": 5.0,
+            "minimum": 0.2,
+            "title": "Card Hold S",
+            "default": 0.9
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Color Boost",
+            "default": "auto"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "default": ""
+          },
+          "jacket_panorama": {
+            "type": "boolean",
+            "title": "Jacket Panorama",
+            "default": true
+          },
+          "marquee_panorama": {
+            "type": "boolean",
+            "title": "Marquee Panorama",
+            "default": false
+          },
+          "snapshot_panorama_count": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Snapshot Panorama Count",
+            "default": 0
+          },
+          "panorama_duration_s": {
+            "type": "number",
+            "maximum": 15.0,
+            "minimum": 1.5,
+            "title": "Panorama Duration S",
+            "default": 4.0
+          },
+          "include_video": {
+            "type": "boolean",
+            "title": "Include Video",
+            "default": true
+          },
+          "video_max_duration_s": {
+            "type": "number",
+            "maximum": 120.0,
+            "minimum": 1.5,
+            "title": "Video Max Duration S",
+            "default": 8.0
+          },
+          "video_fps": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 6.0,
+            "title": "Video Fps",
+            "default": 15
+          },
+          "video_mode": {
+            "type": "string",
+            "title": "Video Mode",
+            "default": "auto_action"
+          }
+        },
+        "type": "object",
+        "title": "StudioFullPreviewRequest",
+        "description": "Full unified sequence `DMDS` preview payload (`POST /api/v1/studio/full-preview`):\nAssembles `[Card Intro (optional) -> Jacket Panorama -> Marquee Panorama -> Snapshots (0..5) -> Video]`\nand caches the result under `X-DMD-Preview-Id` for instant 0 ms promotion into an active DMD's queue."
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -3907,7 +4827,7 @@
     },
     {
       "name": "Discovery",
-      "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` DDD scraper sources."
+      "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` metadata scraper sources."
     },
     {
       "name": "Consume-Once Protocol",
@@ -3924,6 +4844,10 @@
     {
       "name": "On-Demand & Voice Assistant",
       "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants."
+    },
+    {
+      "name": "Card Studio & Simulator",
+      "description": "Interactive Mode 2B Card Customizer, Full Sequence Builder, HUB75 LED Simulator (`DMDS` binary streams), and zero-retranscode promotion (`preview_id`) into active DMD queues."
     },
     {
       "name": "Assets & Streaming",

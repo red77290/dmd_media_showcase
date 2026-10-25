@@ -41,11 +41,28 @@ from app.domain.ports.media_transcoder import IMediaTranscoderPort
 from app.domain.ports.seen_repository import ISeenHistoryRepository
 from app.domain.taxonomy import resolve_canonical_genre, resolve_canonical_system
 from app.infrastructure.mqtt.showcase_mqtt_gateway import ShowcaseMqttGateway, showcase_mqtt_gateway
-from app.infrastructure.persistence.dmd_profile_store import DmdProfileStore, dmd_profile_store
+from app.infrastructure.persistence.dmd_profile_store import (
+    DmdProfileStore,
+    VALID_CARD_FONTS,
+    VALID_CARD_LAYOUTS,
+    VALID_CARD_THEMES,
+    dmd_profile_store,
+)
 from app.infrastructure.persistence.json_seen_repository import seen_repository
 from app.infrastructure.streaming.ffmpeg_udp_streamer import udp_clock_streamer
-from app.infrastructure.transcoder.dmd_converter_adapter import dmd_transcoder_adapter
-from app.models import QueueAddRequest
+from app.infrastructure.transcoder.dmd_converter_adapter import (
+    dmd_transcoder_adapter,
+    merge_rgb565_streams,
+)
+from app.models import (
+    QueueAddRequest,
+    StudioCardPreviewRequest,
+    StudioFullPreviewRequest,
+)
+from app.scheduler.asset_builder import (
+    _parse_hex_rgb,
+    build_fast_studio_card_preview_sync,
+)
 
 logger = logging.getLogger("dmd_showcase.application.orchestrator")
 
@@ -198,6 +215,21 @@ class _DynamicAsyncLimiter:
 
 
 @dataclass
+class StudioPreviewEntry:
+    """Cached full Studio simulation artifact allowing 0 ms promotion into an active DMD's queue."""
+
+    preview_id: str
+    domain: DomainType
+    candidate: MediaCandidate
+    criteria: FilterCriteria
+    geometry: PanelGeometry
+    preview_dir: Path
+    files_map: Dict[str, object]
+    chapters: List[Dict[str, object]]
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
 class QueuedOnDemandEntry:
     """Priority On-Demand item queued for a specific DMD (`enqueue_next` or `play_now`)."""
 
@@ -210,6 +242,7 @@ class QueuedOnDemandEntry:
     geometry: PanelGeometry
     mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
     mark_seen: bool = True
+    from_studio_sim: bool = False
     status: Literal["queued", "preparing", "ready", "playing"] = "queued"
     created_at: float = field(default_factory=time.time)
     package: Optional[PreparedShowcasePackage] = None
@@ -228,6 +261,9 @@ class QueuedOnDemandEntry:
             "lang": self.criteria.lang,
             "mode": self.mode,
             "mark_seen": self.mark_seen,
+            "from_studio_sim": self.from_studio_sim,
+            "card_layout": self.criteria.card_layout,
+            "card_theme": self.criteria.card_theme,
             "status": self.status,
             "created_at": self.created_at,
         }
@@ -270,6 +306,7 @@ class ConsumeOnceOrchestrator:
         self.package_mark_seen: Dict[str, bool] = {}
         self.priority_item_ids: Set[str] = set()
         self.priority_queues: Dict[str, Deque[QueuedOnDemandEntry]] = {}
+        self.studio_previews: Dict[str, StudioPreviewEntry] = {}
         self._prep_tasks: Dict[Tuple[str, DomainType], asyncio.Task[None]] = {}
 
         # Server-managed passive DMD director state (Modes 2A & 2B)
@@ -719,6 +756,21 @@ class ConsumeOnceOrchestrator:
         req_fps = int(raw_cfg.get("video_fps") or 15)
         eff_video_fps = max(6, min(max_fps_ceiling, req_fps))
 
+        card_layout_raw = str(raw_cfg.get("card_layout") or "classic_split").strip().lower()
+        card_layout_val = card_layout_raw if card_layout_raw in VALID_CARD_LAYOUTS else "classic_split"
+        card_theme_raw = str(raw_cfg.get("card_theme") or "tinted").strip().lower()
+        card_theme_val = card_theme_raw if card_theme_raw in VALID_CARD_THEMES else "tinted"
+        card_font_raw = str(raw_cfg.get("card_font") or "arcade_pixel").strip().lower()
+        card_font_val = card_font_raw if card_font_raw in VALID_CARD_FONTS else "arcade_pixel"
+        card_accent_val = str(raw_cfg.get("card_accent_color") or "auto").strip() or "auto"
+        hold_raw = raw_cfg.get("card_hold_s")
+        card_hold_val = max(0.2, min(5.0, float(hold_raw if hold_raw is not None else 0.9)))
+        pan_dur_raw = raw_cfg.get("panorama_duration_s")
+        pan_dur_val = max(
+            1.5,
+            min(15.0, float(pan_dur_raw if pan_dur_raw is not None else settings.panorama_duration_s)),
+        )
+
         return FilterCriteria(
             domain=domain,
             lang=lang,
@@ -730,9 +782,19 @@ class ConsumeOnceOrchestrator:
             include_poster=bool(raw_cfg.get("show_poster", raw_cfg.get("include_poster", True))),
             include_synopsis=bool(raw_cfg.get("show_synopsis", raw_cfg.get("include_synopsis", True))),
             text_scroll_speed=speed,  # type: ignore[arg-type]
+            include_card_intro=bool(raw_cfg.get("include_card_intro", True)),
+            card_layout=card_layout_val,
+            card_theme=card_theme_val,
+            card_font=card_font_val,
+            card_accent_color=card_accent_val,
+            show_badge=bool(raw_cfg.get("show_badge", True)),
+            show_year=bool(raw_cfg.get("show_year", True)),
+            show_rating=bool(raw_cfg.get("show_rating", True)),
+            card_hold_s=card_hold_val,
             jacket_panorama=bool(raw_cfg.get("jacket_panorama", True)),
             marquee_panorama=bool(raw_cfg.get("marquee_panorama", False)),
             snapshot_panorama_count=int(raw_cfg.get("snapshot_panorama_count", 0)),
+            panorama_duration_s=pan_dur_val,
             include_video=bool(raw_cfg.get("show_video", raw_cfg.get("include_video", True))),
             video_max_duration_s=eff_video_dur,
             video_fps=eff_video_fps,
@@ -1576,22 +1638,357 @@ class ConsumeOnceOrchestrator:
                 shutil.rmtree(pkg.item_dir, ignore_errors=True)
         return True
 
+    def _prune_studio_previews(self, max_entries: int = 12, ttl_s: float = 1800.0) -> None:
+        now = time.time()
+        expired = [
+            pid
+            for pid, p in list(self.studio_previews.items())
+            if (now - p.created_at) > ttl_s or not p.preview_dir.exists()
+        ]
+        for pid in expired:
+            entry = self.studio_previews.pop(pid, None)
+            if entry is not None:
+                shutil.rmtree(entry.preview_dir, ignore_errors=True)
+        while len(self.studio_previews) > max_entries:
+            oldest_pid = min(
+                self.studio_previews.keys(),
+                key=lambda k: self.studio_previews[k].created_at,
+            )
+            entry = self.studio_previews.pop(oldest_pid, None)
+            if entry is not None:
+                shutil.rmtree(entry.preview_dir, ignore_errors=True)
+
+    def _resolve_studio_candidate_fallback(
+        self, req: StudioCardPreviewRequest
+    ) -> MediaCandidate:
+        if req.candidate_id:
+            staged = self.chain_service.get_staged_candidate(req.candidate_id)
+            if staged is not None:
+                return staged
+        palette = _parse_hex_rgb(req.badge_color)
+        return MediaCandidate(
+            id=req.candidate_id or f"studio_{req.domain}_{uuid.uuid4().hex[:6]}",
+            domain=req.domain,
+            title=req.title or "Super Street Fighter II Turbo",
+            year=req.year or "1994",
+            badge=req.badge or req.domain.upper(),
+            badge_color=req.badge_color or "#FF6D00",
+            subtitle=req.subtitle or "",
+            rating=req.rating or "",
+            synopsis=req.synopsis or "",
+            lang=req.lang or "fr",
+            poster_url=req.poster_url,
+            jacket_url=req.poster_url,
+            source_id="studio_preview",
+            theme_palette=palette,
+        )
+
+    async def build_studio_card_preview(
+        self, req: StudioCardPreviewRequest
+    ) -> Tuple[bytes, List[Dict[str, object]]]:
+        """
+        Fast (< 100 ms) Card-only `DMDS` preview bypassing the heavy video transcode semaphore.
+        """
+        cand = self._resolve_studio_candidate_fallback(req)
+        geom = PanelGeometry(width=req.width, height=req.height)
+        poster_w, poster_h = geom.resolved_poster_dims()
+        loop = asyncio.get_running_loop()
+        dmds_bytes, n_frames, eff_fps, dur_s = await loop.run_in_executor(
+            None,
+            build_fast_studio_card_preview_sync,
+            str(settings.cache_dir),
+            geom.width,
+            geom.height,
+            req.fps,
+            cand.title,
+            cand.year,
+            cand.badge,
+            cand.badge_color,
+            cand.subtitle,
+            cand.rating,
+            cand.synopsis,
+            cand.resolved_jacket_url(),
+            poster_w,
+            poster_h,
+            req.include_card_intro,
+            req.card_layout,
+            req.card_theme,
+            req.card_font,
+            req.card_accent_color,
+            req.include_poster,
+            req.show_badge,
+            req.show_year,
+            req.show_rating,
+            req.include_synopsis,
+            req.text_scroll_speed,
+            req.card_hold_s,
+            req.color_boost,
+        )
+        chapters: List[Dict[str, object]] = [
+            {
+                "id": "card",
+                "label": "1. Card Info",
+                "start_frame": 0,
+                "frames": n_frames,
+                "duration_s": dur_s,
+            }
+        ]
+        return dmds_bytes, chapters
+
+    async def build_studio_full_preview(
+        self, req: StudioFullPreviewRequest
+    ) -> Tuple[bytes, str, List[Dict[str, object]]]:
+        """
+        Build the full customized `DMDS` sequence (`Card + Panoramas + 0..5 Snapshots + Video`)
+        and cache it under `preview_id` so clicking 'Add Simulation to Active DMD Queue'
+        promotes it in 0 ms without re-transcoding.
+        """
+        self._prune_studio_previews()
+        raw_dict = {**req.model_dump(), "render_card_in_stream": True}
+        criteria = self._parse_domain_criteria(req.domain, raw_dict, top_lang=req.lang)
+        geom = PanelGeometry(width=req.width, height=req.height)
+
+        cand: Optional[MediaCandidate] = None
+        if req.candidate_id:
+            cand = self.chain_service.get_staged_candidate(req.candidate_id)
+        if cand is None and req.query.strip():
+            found = await self.chain_service.search_candidates(
+                criteria=criteria, query=req.query.strip(), limit=1
+            )
+            if found:
+                cand = found[0]
+        if cand is None:
+            cand = self._resolve_studio_candidate_fallback(req)
+
+        preview_id = f"sim_{uuid.uuid4().hex[:12]}"
+        preview_dir = settings.cache_dir / "studio_previews" / preview_id
+        sem = self._get_transcode_semaphore()
+        self._queued_jobs += 1
+        queued_decremented = False
+        try:
+            await sem.acquire()
+            self._queued_jobs = max(0, self._queued_jobs - 1)
+            queued_decremented = True
+            self._active_workers += 1
+            t0 = time.monotonic()
+            try:
+                files_map = await self.transcoder.transcode_candidate(
+                    cand, criteria, geom, preview_dir
+                )
+            finally:
+                elapsed = max(0.0, time.monotonic() - t0)
+                self._active_workers = max(0, self._active_workers - 1)
+                self._completed_jobs_total += 1
+                self._total_job_duration_s += elapsed
+                sem.release()
+        finally:
+            if not queued_decremented:
+                self._queued_jobs = max(0, self._queued_jobs - 1)
+
+        unified_path = Path(str(files_map.get("unified_stream_path") or ""))
+        if not unified_path.exists() or int(files_map.get("stream_frames") or 0) == 0:
+            # Ensure a valid non-empty DMDS stream even if all segments were toggled OFF
+            dmds_bytes, fallback_chapters = await self.build_studio_card_preview(req)
+            unified_path = preview_dir / f"unified_{geom.width}x{geom.height}.rgb565.stream"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            unified_path.write_bytes(dmds_bytes)
+            files_map["unified_stream_path"] = str(unified_path)
+            files_map["stream_frames"] = int(fallback_chapters[0]["frames"])  # type: ignore[arg-type]
+            files_map["stream_duration_s"] = float(fallback_chapters[0]["duration_s"])  # type: ignore[arg-type]
+            files_map["stream_chapters"] = fallback_chapters
+
+        chapters = list(files_map.get("stream_chapters") or [])  # type: ignore[arg-type]
+        entry = StudioPreviewEntry(
+            preview_id=preview_id,
+            domain=req.domain,
+            candidate=cand,
+            criteria=criteria,
+            geometry=geom,
+            preview_dir=preview_dir,
+            files_map=files_map,
+            chapters=chapters,
+        )
+        self.studio_previews[preview_id] = entry
+        self._prune_studio_previews()
+        return unified_path.read_bytes(), preview_id, chapters
+
+    def _clone_package_from_studio_preview(
+        self,
+        prev: StudioPreviewEntry,
+        target_slot_dmd_id: str,
+        render_card_in_stream: bool,
+    ) -> Optional[PreparedShowcasePackage]:
+        if not prev.preview_dir.exists():
+            return None
+        item_id = f"pkg_{prev.domain}_{uuid.uuid4().hex[:8]}_{prev.candidate.id}"
+        item_dir = settings.cache_dir / "consume_once" / target_slot_dmd_id / prev.domain / item_id
+        item_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(prev.preview_dir, item_dir, dirs_exist_ok=True)
+
+        files_map = dict(prev.files_map)
+        unified_name = f"unified_{prev.geometry.width}x{prev.geometry.height}.rgb565.stream"
+        unified_path = item_dir / unified_name
+
+        # If target DMD renders its own local Card (Mode 1 / 2A), strip the server-rendered Card segment in < 2 ms
+        if not render_card_in_stream and files_map.get("card_stream_rgb565"):
+            non_card_paths: List[Path] = []
+            for pname in files_map.get("panorama_streams_rgb565") or []:  # type: ignore[union-attr]
+                pp = item_dir / str(pname)
+                if pp.exists():
+                    non_card_paths.append(pp)
+            vname = str(files_map.get("video_stream_rgb565") or "")
+            if vname and (item_dir / vname).exists():
+                non_card_paths.append(item_dir / vname)
+            if non_card_paths:
+                eff_fps = int(files_map.get("stream_fps") or prev.criteria.video_fps or 15)
+                n_frames, dur_s = merge_rgb565_streams(
+                    non_card_paths,
+                    unified_path,
+                    prev.geometry.width,
+                    prev.geometry.height,
+                    eff_fps,
+                )
+                files_map["stream_frames"] = n_frames
+                files_map["stream_duration_s"] = dur_s
+
+        files_map["unified_stream_path"] = str(unified_path)
+        poster_w, poster_h = prev.geometry.resolved_poster_dims()
+        card = ShowcaseCard(
+            item_id=item_id,
+            domain=prev.domain,
+            title=prev.candidate.title,
+            year=prev.candidate.year,
+            badge=prev.candidate.badge,
+            badge_color=prev.candidate.badge_color,
+            subtitle=prev.candidate.subtitle,
+            rating=prev.candidate.rating,
+            synopsis=prev.candidate.synopsis if prev.criteria.include_synopsis else "",
+            lang=prev.criteria.lang,
+            source_used=prev.candidate.source_id,
+            poster_width=poster_w,
+            poster_height=poster_h,
+            poster_rgb565_b64=str(files_map.get("poster_rgb565_b64") or ""),
+            text_scroll_speed=prev.criteria.text_scroll_speed,
+            has_panoramas=bool(files_map.get("has_panoramas")),
+            has_video=bool(files_map.get("has_video")),
+            stream_frames=int(files_map.get("stream_frames") or 0),
+            stream_fps=int(files_map.get("stream_fps") or prev.criteria.video_fps),
+            stream_duration_s=float(files_map.get("stream_duration_s") or 0.0),
+        )
+        return PreparedShowcasePackage(
+            item_id=item_id,
+            domain=prev.domain,
+            dmd_id=target_slot_dmd_id,
+            candidate=prev.candidate,
+            card=card,
+            geometry=prev.geometry,
+            item_dir=item_dir,
+            unified_stream_path=unified_path if unified_path.exists() else None,
+            files_map=files_map,
+        )
+
+    async def _activate_ready_priority_entry(
+        self,
+        entry: QueuedOnDemandEntry,
+        pkg: PreparedShowcasePackage,
+        is_server_managed: bool,
+    ) -> None:
+        self.package_mark_seen[pkg.item_id] = entry.mark_seen
+        self.priority_item_ids.add(pkg.item_id)
+        self.active_packages[pkg.item_id] = pkg
+        entry.package = pkg
+        entry.status = "ready"
+
+        if is_server_managed:
+            if entry.mode == "play_now":
+                self._director_skip_gap.add(entry.dmd_id)
+                await self.streamer.stop_stream(entry.dmd_id)
+                abort_ev = self._director_play_abort_events.get(entry.dmd_id)
+                if abort_ev is not None:
+                    abort_ev.set()
+            self._wake_director(entry.dmd_id)
+            return
+
+        # Mode 1 (Client-Driven DMD): promote head priority item into `ready_packages`
+        slot_key = (entry.target_slot_dmd_id, entry.domain)
+        current_ready = self.ready_packages.get(slot_key)
+        should_promote = (
+            entry.mode == "play_now"
+            or current_ready is None
+            or current_ready.item_id not in self.priority_item_ids
+        )
+        if should_promote:
+            if current_ready is not None and not current_ready.consumed:
+                if current_ready.item_id not in self.priority_item_ids:
+                    old_standby = self.standby_packages.get(slot_key)
+                    if old_standby is not None and not old_standby.consumed:
+                        self.active_packages.pop(old_standby.item_id, None)
+                        shutil.rmtree(old_standby.item_dir, ignore_errors=True)
+                    self.standby_packages[slot_key] = current_ready
+
+            self.ready_packages[slot_key] = pkg
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{entry.target_slot_dmd_id}/{entry.domain}/ready",
+                {
+                    "ready": True,
+                    "item_id": pkg.item_id,
+                    "domain": entry.domain,
+                    "on_demand": True,
+                    "card": pkg.card.to_dict(),
+                },
+                retain=True,
+            )
+
+        if entry.mode == "play_now":
+            await self.streamer.stop_stream(entry.target_slot_dmd_id)
+            eof_msg = {
+                "event": "stream_eof",
+                "action": "preempt_play_now",
+                "item_id": pkg.item_id,
+                "domain": entry.domain,
+            }
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{entry.target_slot_dmd_id}/{entry.domain}/events",
+                eof_msg,
+                retain=False,
+            )
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{entry.target_slot_dmd_id}/stream_state",
+                eof_msg,
+                retain=False,
+            )
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{entry.target_slot_dmd_id}/command",
+                {
+                    "action": "play_now",
+                    "domain": entry.domain,
+                    "item_id": pkg.item_id,
+                    "card": pkg.card.to_dict(),
+                },
+                retain=False,
+            )
+
     async def enqueue_on_demand(self, dmd_id: str, req: QueueAddRequest) -> Dict[str, Any]:
         """
         Enqueue (`mode='enqueue_next'`) or immediately preempt (`mode='play_now'`) a specific
-        media item on `dmd_id` using either a staged `candidate_id` (from `/search`) or a
-        1-shot `{domain, query, systems, lang, mark_seen}` payload (for `FrontendSync` / webhooks).
+        media item on `dmd_id` using:
+        - `preview_id`: 0 ms zero-retranscode promotion of an already-rendered Studio simulation,
+        - `candidate_id`: exact staged candidate from `/search`, or
+        - `{domain, query, systems, lang, mark_seen}`: 1-shot lookup for `FrontendSync` / webhooks.
         """
+        cached_sim = self.studio_previews.get(req.preview_id) if req.preview_id else None
+        eff_domain: DomainType = cached_sim.domain if cached_sim is not None else req.domain
+
         prof = self.profile_store.get_profile(dmd_id)
         is_server_managed = bool(
             (prof and prof.get("config_source") == "server") or dmd_id in self._server_managed_ids
         )
         target_slot_dmd_id = (
-            dmd_id if is_server_managed else self._resolve_target_slot_dmd_id(dmd_id, req.domain)
+            dmd_id if is_server_managed else self._resolve_target_slot_dmd_id(dmd_id, eff_domain)
         )
 
         # Resolve geometry and base criteria from profile or registered client config
-        existing_cfg = self.client_configs.get((target_slot_dmd_id, req.domain))
+        existing_cfg = self.client_configs.get((target_slot_dmd_id, eff_domain))
         if existing_cfg is None:
             for (oid, _odom), pair in self.client_configs.items():
                 if oid == target_slot_dmd_id or oid == dmd_id:
@@ -1603,10 +2000,13 @@ class ConsumeOnceOrchestrator:
             base_h = int(req.height or prof.get("height") or 32)
             base_lang = str(req.lang or prof.get("lang") or "fr").strip().lower()
             matching_slot = next(
-                (s for s in (prof.get("playlist") or []) if s.get("domain") == req.domain),
+                (s for s in (prof.get("playlist") or []) if s.get("domain") == eff_domain),
                 {},
             )
-            raw_merged: Dict[str, Any] = {**matching_slot}
+            raw_merged: Dict[str, Any] = {
+                **(prof.get("card_style") or {}),
+                **matching_slot,
+            }
             render_card = bool(
                 is_server_managed and not bool(prof.get("supports_local_card", True))
             )
@@ -1621,12 +2021,22 @@ class ConsumeOnceOrchestrator:
                 "decades": list(base_crit.decades),
                 "min_rating": base_crit.min_rating,
                 "video_type": base_crit.video_type,
+                "include_card_intro": base_crit.include_card_intro,
+                "card_layout": base_crit.card_layout,
+                "card_theme": base_crit.card_theme,
+                "card_font": base_crit.card_font,
+                "card_accent_color": base_crit.card_accent_color,
+                "show_badge": base_crit.show_badge,
+                "show_year": base_crit.show_year,
+                "show_rating": base_crit.show_rating,
+                "card_hold_s": base_crit.card_hold_s,
                 "include_poster": base_crit.include_poster,
                 "include_synopsis": base_crit.include_synopsis,
                 "text_scroll_speed": base_crit.text_scroll_speed,
                 "jacket_panorama": base_crit.jacket_panorama,
                 "marquee_panorama": base_crit.marquee_panorama,
                 "snapshot_panorama_count": base_crit.snapshot_panorama_count,
+                "panorama_duration_s": base_crit.panorama_duration_s,
                 "include_video": base_crit.include_video,
                 "video_max_duration_s": base_crit.video_max_duration_s,
                 "video_fps": base_crit.video_fps,
@@ -1635,11 +2045,43 @@ class ConsumeOnceOrchestrator:
             }
             render_card = base_crit.render_card_in_stream
         else:
-            base_w = int(req.width or 128)
-            base_h = int(req.height or 32)
-            base_lang = str(req.lang or settings.default_lang or "fr").strip().lower()
+            base_w = int(req.width or (cached_sim.geometry.width if cached_sim else 128))
+            base_h = int(req.height or (cached_sim.geometry.height if cached_sim else 32))
+            base_lang = str(
+                req.lang
+                or (cached_sim.criteria.lang if cached_sim else settings.default_lang)
+                or "fr"
+            ).strip().lower()
             raw_merged = {}
-            render_card = False
+            render_card = bool(cached_sim is not None)
+
+        if cached_sim is not None:
+            # Inherit full Studio simulation settings unless explicitly overridden on the queue request
+            raw_merged.update(
+                {
+                    "include_card_intro": cached_sim.criteria.include_card_intro,
+                    "card_layout": cached_sim.criteria.card_layout,
+                    "card_theme": cached_sim.criteria.card_theme,
+                    "card_font": cached_sim.criteria.card_font,
+                    "card_accent_color": cached_sim.criteria.card_accent_color,
+                    "show_badge": cached_sim.criteria.show_badge,
+                    "show_year": cached_sim.criteria.show_year,
+                    "show_rating": cached_sim.criteria.show_rating,
+                    "card_hold_s": cached_sim.criteria.card_hold_s,
+                    "include_poster": cached_sim.criteria.include_poster,
+                    "include_synopsis": cached_sim.criteria.include_synopsis,
+                    "text_scroll_speed": cached_sim.criteria.text_scroll_speed,
+                    "jacket_panorama": cached_sim.criteria.jacket_panorama,
+                    "marquee_panorama": cached_sim.criteria.marquee_panorama,
+                    "snapshot_panorama_count": cached_sim.criteria.snapshot_panorama_count,
+                    "panorama_duration_s": cached_sim.criteria.panorama_duration_s,
+                    "include_video": cached_sim.criteria.include_video,
+                    "video_max_duration_s": cached_sim.criteria.video_max_duration_s,
+                    "video_fps": cached_sim.criteria.video_fps,
+                    "video_mode": cached_sim.criteria.video_mode,
+                    "color_boost": cached_sim.criteria.color_boost,
+                }
+            )
 
         # Apply explicit request overrides
         raw_merged["lang"] = base_lang
@@ -1647,7 +2089,6 @@ class ConsumeOnceOrchestrator:
         if req.systems:
             raw_merged["systems"] = req.systems
         elif req.query.strip():
-            # Explicit text queries (e.g. FrontendSync / WebUI search) without a system filter search across all systems
             raw_merged["systems"] = []
         if req.genres:
             raw_merged["genres"] = req.genres
@@ -1660,12 +2101,22 @@ class ConsumeOnceOrchestrator:
         if req.video_type and req.video_type != "any":
             raw_merged["video_type"] = req.video_type
         for field_name in (
+            "include_card_intro",
+            "card_layout",
+            "card_theme",
+            "card_font",
+            "card_accent_color",
+            "show_badge",
+            "show_year",
+            "show_rating",
+            "card_hold_s",
             "include_poster",
             "include_synopsis",
             "text_scroll_speed",
             "jacket_panorama",
             "marquee_panorama",
             "snapshot_panorama_count",
+            "panorama_duration_s",
             "include_video",
             "video_max_duration_s",
             "video_fps",
@@ -1677,22 +2128,74 @@ class ConsumeOnceOrchestrator:
                 raw_merged[field_name] = override_val
 
         geometry = PanelGeometry(width=base_w, height=base_h)
-        criteria = self._parse_domain_criteria(req.domain, raw_merged, top_lang=base_lang)
+        criteria = self._parse_domain_criteria(eff_domain, raw_merged, top_lang=base_lang)
 
         # Ensure a Mode 1 slot exists if the client was not yet registered for this domain
-        if not is_server_managed and (target_slot_dmd_id, req.domain) not in self.client_configs:
-            self.client_configs[(target_slot_dmd_id, req.domain)] = (geometry, criteria)
+        if not is_server_managed and (target_slot_dmd_id, eff_domain) not in self.client_configs:
+            self.client_configs[(target_slot_dmd_id, eff_domain)] = (geometry, criteria)
 
-        # Resolve MediaCandidate (staged candidate_id OR 1-shot FrontendSync query)
-        cand: Optional[MediaCandidate] = None
-        if req.candidate_id:
+        from_studio = bool(
+            cached_sim is not None
+            or req.preview_id
+            or req.card_layout is not None
+            or req.card_theme is not None
+        )
+
+        # Fast-Path (0 ms Zero-Retranscode): reuse Studio full-preview artifact when geometry matches!
+        if (
+            cached_sim is not None
+            and cached_sim.preview_dir.exists()
+            and cached_sim.geometry.width == geometry.width
+            and cached_sim.geometry.height == geometry.height
+        ):
+            cloned_pkg = self._clone_package_from_studio_preview(
+                cached_sim,
+                target_slot_dmd_id=target_slot_dmd_id,
+                render_card_in_stream=render_card,
+            )
+            if cloned_pkg is not None:
+                entry = QueuedOnDemandEntry(
+                    queue_id=f"q_{uuid.uuid4().hex[:10]}",
+                    dmd_id=dmd_id,
+                    target_slot_dmd_id=target_slot_dmd_id,
+                    domain=eff_domain,
+                    candidate=cached_sim.candidate,
+                    criteria=criteria,
+                    geometry=geometry,
+                    mode=req.mode,
+                    mark_seen=req.mark_seen,
+                    from_studio_sim=True,
+                    status="ready",
+                    package=cloned_pkg,
+                )
+                q = self.priority_queues.setdefault(dmd_id, deque())
+                if req.mode == "play_now":
+                    q.appendleft(entry)
+                else:
+                    q.append(entry)
+                await self._activate_ready_priority_entry(
+                    entry, cloned_pkg, is_server_managed=is_server_managed
+                )
+                logger.info(
+                    "[ORCHESTRATOR] Promoted Studio simulation '%s' ('%s') into '%s' queue in 0ms (zero re-transcode)",
+                    cached_sim.preview_id,
+                    cached_sim.candidate.title,
+                    dmd_id,
+                )
+                return entry.to_dict()
+
+        # Resolve MediaCandidate (cached Studio sim OR staged candidate_id OR 1-shot query)
+        cand: Optional[MediaCandidate] = cached_sim.candidate if cached_sim is not None else None
+        if cand is None and req.candidate_id:
             cand = self.chain_service.get_staged_candidate(req.candidate_id)
             if cand is not None and req.lang and cand.lang != criteria.lang and req.query:
-                # Re-localize if caller explicitly requested a different broadcast language with a query
                 localized = await self.chain_service.search_candidates(
                     criteria=criteria, query=req.query, limit=3
                 )
-                cand = next((c for c in localized if c.id == req.candidate_id), localized[0] if localized else cand)
+                cand = next(
+                    (c for c in localized if c.id == req.candidate_id),
+                    localized[0] if localized else cand,
+                )
 
         if cand is None:
             if req.candidate_id and not req.query.strip():
@@ -1706,13 +2209,13 @@ class ConsumeOnceOrchestrator:
             )
             if not found and req.query.strip():
                 one = await self.chain_service.search_on_demand(
-                    domain=req.domain, query=req.query.strip(), lang=criteria.lang
+                    domain=eff_domain, query=req.query.strip(), lang=criteria.lang
                 )
                 if one is not None:
                     found = [one]
             if not found:
                 raise ValueError(
-                    f"No matching media found in '{req.domain}' for query='{req.query}' (lang='{criteria.lang}')."
+                    f"No matching media found in '{eff_domain}' for query='{req.query}' (lang='{criteria.lang}')."
                 )
             cand = found[0]
 
@@ -1720,12 +2223,13 @@ class ConsumeOnceOrchestrator:
             queue_id=f"q_{uuid.uuid4().hex[:10]}",
             dmd_id=dmd_id,
             target_slot_dmd_id=target_slot_dmd_id,
-            domain=req.domain,
+            domain=eff_domain,
             candidate=cand,
             criteria=criteria,
             geometry=geometry,
             mode=req.mode,
             mark_seen=req.mark_seen,
+            from_studio_sim=from_studio,
             status="preparing",
         )
         q = self.priority_queues.setdefault(dmd_id, deque())
@@ -1763,81 +2267,9 @@ class ConsumeOnceOrchestrator:
                     shutil.rmtree(pkg.item_dir, ignore_errors=True)
                 return
 
-            self.package_mark_seen[pkg.item_id] = entry.mark_seen
-            self.priority_item_ids.add(pkg.item_id)
-            self.active_packages[pkg.item_id] = pkg
-            entry.package = pkg
-            entry.status = "ready"
-
-            if is_server_managed:
-                if entry.mode == "play_now":
-                    self._director_skip_gap.add(entry.dmd_id)
-                    await self.streamer.stop_stream(entry.dmd_id)
-                    abort_ev = self._director_play_abort_events.get(entry.dmd_id)
-                    if abort_ev is not None:
-                        abort_ev.set()
-                self._wake_director(entry.dmd_id)
-                return
-
-            # Mode 1 (Client-Driven DMD): promote head priority item into `ready_packages`
-            slot_key = (entry.target_slot_dmd_id, entry.domain)
-            current_ready = self.ready_packages.get(slot_key)
-            should_promote = (
-                entry.mode == "play_now"
-                or current_ready is None
-                or current_ready.item_id not in self.priority_item_ids
+            await self._activate_ready_priority_entry(
+                entry, pkg, is_server_managed=is_server_managed
             )
-            if should_promote:
-                if current_ready is not None and not current_ready.consumed:
-                    if current_ready.item_id not in self.priority_item_ids:
-                        # Demote unconsumed random package cleanly into standby (zero wasted transcode!)
-                        old_standby = self.standby_packages.get(slot_key)
-                        if old_standby is not None and not old_standby.consumed:
-                            self.active_packages.pop(old_standby.item_id, None)
-                            shutil.rmtree(old_standby.item_dir, ignore_errors=True)
-                        self.standby_packages[slot_key] = current_ready
-
-                self.ready_packages[slot_key] = pkg
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{entry.target_slot_dmd_id}/{entry.domain}/ready",
-                    {
-                        "ready": True,
-                        "item_id": pkg.item_id,
-                        "domain": entry.domain,
-                        "on_demand": True,
-                        "card": pkg.card.to_dict(),
-                    },
-                    retain=True,
-                )
-
-            if entry.mode == "play_now":
-                await self.streamer.stop_stream(entry.target_slot_dmd_id)
-                eof_msg = {
-                    "event": "stream_eof",
-                    "action": "preempt_play_now",
-                    "item_id": pkg.item_id,
-                    "domain": entry.domain,
-                }
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{entry.target_slot_dmd_id}/{entry.domain}/events",
-                    eof_msg,
-                    retain=False,
-                )
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{entry.target_slot_dmd_id}/stream_state",
-                    eof_msg,
-                    retain=False,
-                )
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{entry.target_slot_dmd_id}/command",
-                    {
-                        "action": "play_now",
-                        "domain": entry.domain,
-                        "item_id": pkg.item_id,
-                        "card": pkg.card.to_dict(),
-                    },
-                    retain=False,
-                )
         except asyncio.CancelledError:
             logger.info("[ORCHESTRATOR] Cancelled priority queue prep '%s'", entry.queue_id)
         except Exception as exc:
@@ -2026,7 +2458,9 @@ class ConsumeOnceOrchestrator:
             width=int(prof.get("width") or 128),
             height=int(prof.get("height") or 32),
         )
+        base_card_style = dict(prof.get("card_style") or {})
         raw_slot = {
+            **base_card_style,
             **slot,
             "lang": slot.get("lang") or prof.get("lang") or "fr",
             "render_card_in_stream": not bool(prof.get("supports_local_card", True)),
