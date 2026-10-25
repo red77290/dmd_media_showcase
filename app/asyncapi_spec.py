@@ -8,29 +8,34 @@ from __future__ import annotations
 ASYNCAPI_YAML = """asyncapi: 2.6.0
 info:
   title: DMD Media Showcase Server — MQTT 3.1.1 & UDP DMDF Streaming Protocol
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server**,
-    powering **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** HUB75 LED panels.
+    powering **ArcadeMatrix (ESP32 / ESP32-S3)**, **Server-Managed Passive ESP32 Receivers**, and **ArcadeMatrix_RPi** HUB75 LED panels.
 
     ### Protocol Architecture
     1. **MQTT 3.1.1 Control Plane (`:1883`)**:
        - Uses `retain=True` for server availability (`dmd_showcase/server/status`), consolidated scraper
-         referentials (`dmd_showcase/catalog/{domain}/referential`), DMD client configuration
-         (`dmd_showcase/clients/{dmd_id}/config`), and per-domain prepared Consume-Once slots
-         (`dmd_showcase/clients/{dmd_id}/{domain}/ready`).
+         referentials (`dmd_showcase/catalog/{domain}/referential`), client-driven DMD configurations
+         (`dmd_showcase/clients/{dmd_id}/config`), server-managed passive/hybrid hardware announcements
+         (`dmd_showcase/clients/{dmd_id}/hello`, persisted against `./data/dmd_profiles.json`), and per-domain
+         prepared Consume-Once slots (`dmd_showcase/clients/{dmd_id}/{domain}/ready`).
+       - Uses `dmd_showcase/clients/{dmd_id}/command` for real-time server-to-DMD live control and on-demand
+         card push (`action: "play_card" | "skip" | "pause" | "resume" | "stop"`).
        - Uses `LWT` (Last Will and Testament) on both server and DMD clients for instant disconnect cleanup
          while preserving background `N+1` media transcoding tasks across rotation slot switches.
     2. **Real-Time UDP `DMDF` Data Plane (`udp://{client_ip}:{udp_port}`)**:
-       - Triggered when the DMD publishes `{"action": "start_stream", "item_id": "...", "udp_ip": "...", "udp_port": ...}`.
+       - Triggered when a client-driven/hybrid DMD publishes `{"action": "start_stream", "item_id": "...", "udp_ip": "...", "udp_port": ...}`
+         or automatically clocked by the server for 100% passive `supports_local_card: false` receivers (`:4210`).
        - `FfmpegUdpClockStreamer` strips the 16-byte `DMDS` file header (`<4sBBHHHHH`), clocks raw RGB565LE
          frames through `ffmpeg -re` at the negotiated `video_fps`, and slices each frame into Wi-Fi MTU-safe
          UDP datagrams (`<= 1034` bytes total: **10-byte Little-Endian `<4sHBBH` `DMDF` header** + `<= 1024` bytes RGB565LE).
        - Clients automatically fall back to HTTP `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
          (`DMDS` 16-byte header) if container-to-LAN UDP is blocked by host VM NAT.
-    3. **`N+1` Background Pipelining & Strict Consume-Once**:
-       - Publishing `start_card` immediately marks item `N` consumed in `seen_history.json`, updates the
-         retained `ready` topic to `{"ready": false}`, and starts preparing unseen item `N+1` in the background.
+    3. **`N+1` Background Pipelining, On-Demand Queue & Strict Consume-Once**:
+       - Publishing `start_card` immediately marks item `N` consumed in `seen_history.json` (unless `mark_seen: false`
+         was set by `FrontendSync` on-demand playback), updates the retained `ready` topic to `{"ready": false}`,
+         and starts preparing unseen item `N+1` in the background.
   contact:
     name: ArcadeMatrix Community
     url: https://t.me/+DrSdAO8UMUViNmE0
@@ -50,12 +55,12 @@ servers:
     protocol: udp
     description: >-
       Unidirectional real-time `ffmpeg -re` UDP `DMDF` RGB565LE chunk stream sent from the Showcase server
-      to the UDP socket bound by the active DMD engine (`5568 + domain_idx` on ESP32, ephemeral/configured port on RPi).
+      to the UDP socket bound by the active DMD (`4210` on passive ESP32 receivers, `5568 + domain_idx` on multi-engine ESP32, ephemeral/configured port on RPi).
     variables:
       client_ip:
         default: 192.168.1.50
       udp_port:
-        default: "5568"
+        default: "4210"
 
 channels:
   dmd_showcase/server/status:
@@ -103,10 +108,30 @@ channels:
       message:
         $ref: '#/components/messages/ClientStatusMessage'
 
+  dmd_showcase/clients/{dmd_id}/hello:
+    servers:
+      - embeddedMqttBroker
+    description: >-
+      Retained hardware announcement (`retain=True`) for `server`-managed passive or hybrid ESP32 receivers
+      (`dmd_showcase/clients/{dmdId}/hello`). Declares panel geometry (`width`, `height`), LAN UDP target
+      (`udp_ip`, `udp_port`), local Info Card capability (`supports_local_card`), and default `lang` while
+      leaving playlists, filters, and presets to `./data/dmd_profiles.json` on the Showcase server.
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    publish:
+      summary: Publish server-managed DMD hardware announcement (`retain=True`)
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+      message:
+        $ref: '#/components/messages/ClientHelloMessage'
+
   dmd_showcase/clients/{dmd_id}/config:
     servers:
       - embeddedMqttBroker
-    description: Retained DMD client geometry, LAN IP (`client_ip` / `udp_ip`), UDP port, and per-domain filter criteria (`retain=True`).
+    description: Retained client-driven DMD geometry, LAN IP (`client_ip` / `udp_ip`), UDP port, and per-domain filter criteria (`retain=True`).
     parameters:
       dmd_id:
         $ref: '#/components/parameters/DmdIdParam'
@@ -160,6 +185,25 @@ channels:
       message:
         $ref: '#/components/messages/ClientEventMessage'
 
+  dmd_showcase/clients/{dmd_id}/command:
+    servers:
+      - embeddedMqttBroker
+    description: >-
+      Server-to-DMD real-time playback control and server-managed card push (`dmd_showcase/clients/{dmdId}/command`).
+      Delivers `play_card`, `skip`, `pause`, `resume`, and `stop` directives triggered by the Showcase WebUI,
+      On-Demand Priority Queue (`play_now`), `FrontendSync` game launchers, or the server-managed playlist scheduler.
+    parameters:
+      dmd_id:
+        $ref: '#/components/parameters/DmdIdParam'
+    subscribe:
+      summary: Receive server-to-DMD live control & card push (`play_card`, `skip`, `pause`, `resume`, `stop`)
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+      message:
+        $ref: '#/components/messages/ClientCommandMessage'
+
   dmd_showcase/clients/{dmd_id}/stream_state:
     servers:
       - embeddedMqttBroker
@@ -190,7 +234,7 @@ channels:
 components:
   parameters:
     DmdIdParam:
-      description: Unique DMD client/engine identifier (e.g. `rpi_movies_128x32`, `esp32_games_128x32`).
+      description: Unique DMD client/engine identifier (e.g. `esp32_passive_128x32`, `esp32_games_128x32`, `rpi_movies_128x32`).
       schema:
         type: string
     DomainParam:
@@ -228,6 +272,57 @@ components:
             type: boolean
           dmd_id:
             type: string
+
+    ClientHelloMessage:
+      name: ClientHelloMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [width, height]
+        properties:
+          dmd_id:
+            type: string
+            example: esp32_passive_128x32
+          display_name:
+            type: string
+            description: Optional human-readable label displayed in the Showcase WebUI.
+          config_source:
+            type: string
+            enum: [server, client]
+            default: server
+            description: "Declares server-managed profile ownership (`server` loads playlist & filters from `./data/dmd_profiles.json`)."
+          supports_local_card:
+            type: boolean
+            default: false
+            description: >-
+              `true` (Model 2A Hybrid) if the ESP32 renders Phase 1 Info Cards locally;
+              `false` (Model 2B 100% Passive) if the server composites the Info Card directly into the RGB565 UDP `DMDF` stream.
+          width:
+            type: integer
+            example: 128
+          height:
+            type: integer
+            example: 32
+          client_ip:
+            type: string
+            description: Real LAN IPv4 of the DMD receiver (bypasses Docker bridge NAT `172.18.0.1`).
+          udp_ip:
+            type: string
+            description: Target IPv4 for real-time UDP `DMDF` datagrams.
+            example: 192.168.1.60
+          udp_port:
+            type: integer
+            default: 4210
+            example: 4210
+            description: UDP socket port bound by the receiver (`4210` default for passive ESP32 receivers).
+          lang:
+            type: string
+            default: fr
+            example: fr
+            description: Fallback ISO content language (`fr`, `en`, `es`, `de`, `it`, `ja`) before server profile override.
+          firmware:
+            type: string
+            description: Optional firmware identifier and version string.
 
     CatalogReferentialMessage:
       name: CatalogReferentialMessage
@@ -282,6 +377,11 @@ components:
         required: [width, height, lang]
         properties:
           dmd_id: { type: string }
+          config_source:
+            type: string
+            enum: [client, server]
+            default: client
+            description: "`client` when the DMD firmware owns its rotation and domain filters (Model 1)."
           client_ip:
             type: string
             description: Real LAN IPv4 of the DMD client (bypasses Docker bridge NAT `172.18.0.1`).
@@ -405,6 +505,38 @@ components:
             type: integer
             description: UDP port bound by the DMD client receiver socket (`1024..65535`).
 
+    ClientCommandMessage:
+      name: ClientCommandMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [action]
+        properties:
+          action:
+            type: string
+            enum: [play_card, skip, pause, resume, stop]
+            description: >-
+              Server-to-DMD control directive: `play_card` pushes an immediate Info Card + stream on
+              server-managed hybrid receivers (`supports_local_card: true`), while `skip`, `pause`, `resume`,
+              and `stop` control active playback in real time.
+          dmd_id:
+            type: string
+          domain:
+            type: string
+            enum: [games, movies, series, anime]
+          item_id:
+            type: string
+          mode:
+            type: string
+            enum: [enqueue_next, play_now]
+          mark_seen:
+            type: boolean
+            default: true
+            description: "`false` when triggered by `FrontendSync` (Batocera / RetroBat / LaunchBox / Playnite) so attract-mode `seen_history.json` is preserved."
+          card:
+            type: object
+            description: Full prepared showcase card object when `action == "play_card"`.
+
     StreamStateMessage:
       name: StreamStateMessage
       contentType: application/json
@@ -444,7 +576,9 @@ components:
           and `total_chunks <= 64`.
         - Set bit `(1 << chunk_idx)` in a 64-bit `chunk_mask`; commit the frame when `chunk_mask == (1 << total_chunks) - 1`
           (or flush partial non-zero `chunk_mask` if `frame_seq` advances on minor Wi-Fi packet loss).
-        - If zero UDP packets arrive within `850ms` of `start_stream` (e.g. Docker Desktop VM NAT blocking host UDP),
+        - Combine MQTT `stream_eof` with a local `2,500 ms` UDP inactivity watchdog (`millis() - lastUdpPacketMs > 2500`)
+          plus a max duration ceiling so a dropped Wi-Fi packet or server restart never freezes the display.
+        - If zero UDP packets arrive within `850ms` of `start_stream` on client-driven/hybrid engines (e.g. Docker Desktop VM NAT blocking host UDP),
           seamlessly play/fall back to the HTTP TCP stream `/api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
           (`DMDS` 16-byte `<4sBBHHHHH` header).
       payload:

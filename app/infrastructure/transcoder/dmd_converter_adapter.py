@@ -15,14 +15,18 @@ import base64
 import logging
 import struct
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from dmd_gif_converter import read_rgb565_stream_header
 
 from app.config import settings
 from app.domain.entities import FilterCriteria, MediaCandidate, PanelGeometry
 from app.domain.ports.media_transcoder import IMediaTranscoderPort
-from app.scheduler.asset_builder import build_static_assets_sync, build_video_assets_worker_task
+from app.scheduler.asset_builder import (
+    build_card_stream_sync,
+    build_static_assets_sync,
+    build_video_assets_worker_task,
+)
 
 logger = logging.getLogger("dmd_showcase.transcoder")
 
@@ -164,8 +168,35 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         if poster_rgb_path.exists():
             poster_b64 = base64.b64encode(poster_rgb_path.read_bytes()).decode("ascii")
 
-        # Build the unified stream sequence: [Jacket Panorama -> Marquee Panorama -> Snapshots -> Video]
+        # Optional Phase 1 server-rendered Info Card stream for Mode 2B passive UDP receivers
+        card_stream_name = ""
+        if criteria.render_card_in_stream:
+            card_stream_name = await loop.run_in_executor(
+                None,
+                build_card_stream_sync,
+                str(out_dir),
+                geometry.width,
+                geometry.height,
+                eff_fps,
+                candidate.title,
+                candidate.year,
+                candidate.badge,
+                candidate.badge_color,
+                candidate.subtitle,
+                candidate.rating,
+                candidate.synopsis,
+                str(files_map.get("poster_png") or ""),
+                criteria.include_poster,
+                criteria.include_synopsis,
+                criteria.text_scroll_speed,
+            )
+
+        # Build the unified stream sequence: [(Optional Card Intro) -> Jacket Panorama -> Marquee Panorama -> Snapshots -> Video]
         ordered_streams: List[Path] = []
+        if card_stream_name:
+            c_path = out_dir / card_stream_name
+            if c_path.exists():
+                ordered_streams.append(c_path)
         for pname in files_map.get("panorama_streams_rgb565") or []:  # type: ignore[union-attr]
             p_path = out_dir / str(pname)
             if p_path.exists():
@@ -196,6 +227,7 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
                     actual_fps = int(parsed_hdr["fps"])
 
         files_map["poster_rgb565_b64"] = poster_b64
+        files_map["card_stream_rgb565"] = card_stream_name
         files_map["has_panoramas"] = bool(files_map.get("panorama_streams_rgb565"))
         files_map["has_video"] = has_video
         files_map["video_gif"] = video_gif_name

@@ -9,12 +9,14 @@ Keyless public GraphQL anime adapter implementing `IScraperSource`:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from typing import Any, Dict, List, Optional, Set
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
+from app.domain.taxonomy import resolve_canonical_genre
 from app.infrastructure.scrapers.anime.jikan_animethemes_adapter import enrich_with_animethemes_webm
 from app.infrastructure.scrapers.catalog_metadata import ANIME_GENRES, DECADE_BOUNDS
 from app.infrastructure.scrapers.http_utils import (
@@ -39,7 +41,9 @@ query ($page: Int, $perPage: Int, $genre: String, $tag: String, $startGreater: F
       title {
         english
         romaji
+        native
       }
+      genres
       startDate {
         year
       }
@@ -85,7 +89,9 @@ class AniListAdapter(IScraperSource):
         g_meta: Dict[str, Any],
         lang: str,
         video_type: str,
+        enrich_heavy: bool = True,
     ) -> Optional[MediaCandidate]:
+        short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
         al_id = node.get("id")
         if not al_id:
             return None
@@ -94,7 +100,8 @@ class AniListAdapter(IScraperSource):
         orig_title = str(titles.get("english") or titles.get("romaji") or "").strip()
         if not orig_title:
             return None
-        title = orig_title
+        native_title = str(titles.get("native") or "").strip()
+        title = native_title if (short_lang == "ja" and native_title) else orig_title
 
         cover = node.get("coverImage") or {}
         poster_url = cover.get("extraLarge") or cover.get("large")
@@ -106,13 +113,13 @@ class AniListAdapter(IScraperSource):
         synopsis = clean_synopsis_text(node.get("description"), max_chars=300)
 
         resolved_trailer: Optional[str] = None
-        if lang != "en" or not synopsis:
+        if enrich_heavy and (short_lang != "en" or not synopsis):
             loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
-                client, orig_title, lang=lang, domain_hint="anime", year=year
+                client, orig_title, lang=short_lang, domain_hint="anime", year=year
             )
             if loc_syn:
                 synopsis = loc_syn
-            if loc_t:
+            if loc_t and short_lang != "ja":
                 title = loc_t
             if loc_tr:
                 resolved_trailer = loc_tr
@@ -132,7 +139,7 @@ class AniListAdapter(IScraperSource):
             subtitle=f"{g_meta['label']} • {year}"[:28],
             rating=f"{avg_score:.1f}",
             synopsis=synopsis or f"{title} ({year}) — {g_meta['label']} anime.",
-            lang=lang,
+            lang=short_lang,
             poster_url=str(poster_url),
             jacket_url=str(poster_url),
             marquee_url=str(banner_url or poster_url),
@@ -143,6 +150,9 @@ class AniListAdapter(IScraperSource):
         )
         if banner_url:
             cand.add_unique_snapshot(str(banner_url))
+
+        if not enrich_heavy:
+            return cand
 
         await enrich_with_animethemes_webm(
             client,
@@ -243,27 +253,143 @@ class AniListAdapter(IScraperSource):
 
         return results
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        if not query.strip():
-            return None
+    @staticmethod
+    def _infer_anilist_genre_meta(
+        node_genres: Set[str],
+        preferred_keys: List[str],
+    ) -> Dict[str, Any]:
+        if preferred_keys:
+            return ANIME_GENRES[preferred_keys[0]]
+        for gk, meta in ANIME_GENRES.items():
+            if not meta.get("anilist_tag") and str(meta.get("anilist") or "").lower() in node_genres:
+                return meta
+        return ANIME_GENRES["shonen"]
+
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        q_clean = (query or "").strip()
+        if not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        short_lang = (criteria.lang or "fr").split("-")[0].split("_")[0].lower()
+        video_type = (criteria.video_type or "opening").strip().lower()
+
+        valid_genres: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("anime", g)
+            gk = cg if cg in ANIME_GENRES else g.strip().lower()
+            if gk in ANIME_GENRES and gk not in valid_genres:
+                valid_genres.append(gk)
+        allowed_anilist_genres = {str(ANIME_GENRES[gk]["anilist"]).lower() for gk in valid_genres}
+
+        valid_decades = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() in DECADE_BOUNDS
+        ]
+
+        variables: Dict[str, Any] = {
+            "page": 1,
+            "perPage": min(25, max(10, target_limit * 3)),
+            "search": q_clean,
+        }
+        if len(valid_genres) == 1:
+            only_meta = ANIME_GENRES[valid_genres[0]]
+            if only_meta.get("anilist_tag"):
+                variables["tag"] = only_meta["anilist_tag"]
+            else:
+                variables["genre"] = only_meta["anilist"]
+        if len(valid_decades) == 1:
+            base_yr = int(valid_decades[0][:4])
+            variables["startGreater"] = base_yr * 10000
+            variables["startLesser"] = (base_yr + 9) * 10000 + 1231
+
         try:
-            async with create_async_http_client(timeout=5.0) as client:
+            async with create_async_http_client(timeout=5.5) as client:
                 resp = await client.post(
                     "https://graphql.anilist.co",
-                    json={
-                        "query": _ANILIST_QUERY,
-                        "variables": {"page": 1, "perPage": 5, "search": query.strip()},
-                    },
+                    json={"query": _ANILIST_QUERY, "variables": variables},
                 )
-                if resp.status_code == 200:
-                    items = ((resp.json().get("data") or {}).get("Page") or {}).get("media") or []
-                    for item in items:
-                        if isinstance(item, dict):
-                            cand = await self._build_anilist_candidate(
-                                client, item, ANIME_GENRES["shonen"], lang, "opening"
-                            )
-                            if cand:
-                                return cand
-        except Exception:
-            pass
-        return None
+                if resp.status_code != 200:
+                    return []
+                items = ((resp.json().get("data") or {}).get("Page") or {}).get("media") or []
+                matched_specs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+                seen_ids: Set[str] = set()
+
+                for node in items:
+                    if len(matched_specs) >= target_limit:
+                        break
+                    if not isinstance(node, dict) or not node.get("id"):
+                        continue
+                    cid = f"anime_anilist_{node.get('id')}"
+                    if cid in seen_ids:
+                        continue
+
+                    node_genres = {str(x).lower() for x in (node.get("genres") or []) if x}
+                    if len(valid_genres) > 1 and node_genres and not (node_genres & allowed_anilist_genres):
+                        continue
+
+                    if valid_decades:
+                        yr_raw = str((node.get("startDate") or {}).get("year") or "")[:4]
+                        if not yr_raw.isdigit():
+                            continue
+                        yr_val = int(yr_raw)
+                        if not any(
+                            int(DECADE_BOUNDS[d][0][:4]) <= yr_val <= int(DECADE_BOUNDS[d][1][:4])
+                            for d in valid_decades
+                        ):
+                            continue
+
+                    seen_ids.add(cid)
+                    g_meta = self._infer_anilist_genre_meta(node_genres, valid_genres)
+                    matched_specs.append((node, g_meta))
+
+                if not matched_specs:
+                    return []
+
+                sem = asyncio.Semaphore(4)
+
+                async def _build_idx(
+                    idx: int,
+                    spec: tuple[Dict[str, Any], Dict[str, Any]],
+                ) -> Optional[MediaCandidate]:
+                    nd, gm = spec
+                    async with sem:
+                        return await self._build_anilist_candidate(
+                            client,
+                            nd,
+                            gm,
+                            short_lang,
+                            video_type,
+                            enrich_heavy=(idx < min(target_limit, 4)),
+                        )
+
+                built = await asyncio.gather(
+                    *(_build_idx(i, sp) for i, sp in enumerate(matched_specs)),
+                    return_exceptions=True,
+                )
+                return [c for c in built if isinstance(c, MediaCandidate)][:target_limit]
+        except Exception as exc:
+            logger.debug("[AniList] Search error for '%s': %s", q_clean, exc)
+        return []
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(
+                domain="anime",
+                genres=[],
+                decades=[],
+                video_type="opening",
+                lang=lang,
+            ),
+            limit=1,
+        )
+        return cands[0] if cands else None

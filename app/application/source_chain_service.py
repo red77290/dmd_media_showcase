@@ -8,8 +8,11 @@ no title is ever repeated.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import logging
-from typing import Dict, List, Optional, Set
+import threading
+import time
+from typing import Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.seen_repository import ISeenHistoryRepository
@@ -33,6 +36,9 @@ class DomainSourceChainService:
     all previously consumed item IDs stored in `ISeenHistoryRepository`.
     """
 
+    _STAGED_MAX_ENTRIES: int = 256
+    _STAGED_TTL_S: float = 1800.0
+
     def __init__(
         self,
         registry: Optional[ScraperRegistry] = None,
@@ -40,6 +46,50 @@ class DomainSourceChainService:
     ) -> None:
         self.registry = registry or scraper_registry
         self.history_repo = history_repo or seen_repository
+        self._staged_candidates: OrderedDict[str, Tuple[float, MediaCandidate]] = OrderedDict()
+        self._stage_lock = threading.RLock()
+
+    def _prune_staged_locked(self, now: float) -> None:
+        expired_ids = [
+            cid
+            for cid, (ts, _) in self._staged_candidates.items()
+            if (now - ts) > self._STAGED_TTL_S
+        ]
+        for cid in expired_ids:
+            self._staged_candidates.pop(cid, None)
+        while len(self._staged_candidates) > self._STAGED_MAX_ENTRIES:
+            self._staged_candidates.popitem(last=False)
+
+    def stage_candidate(self, cand: MediaCandidate) -> None:
+        """Stage a discovered `MediaCandidate` in the bounded TTL cache for instant queue resolution."""
+        if cand is None or not cand.id:
+            return
+        now = time.monotonic()
+        with self._stage_lock:
+            self._prune_staged_locked(now)
+            self._staged_candidates[cand.id] = (now, cand)
+            self._staged_candidates.move_to_end(cand.id)
+            while len(self._staged_candidates) > self._STAGED_MAX_ENTRIES:
+                self._staged_candidates.popitem(last=False)
+        self._stage_candidate_fp(cand.domain, cand)
+
+    def get_staged_candidate(self, candidate_id: str) -> Optional[MediaCandidate]:
+        """Retrieve a previously staged `MediaCandidate` by ID if still within its TTL."""
+        cid = (candidate_id or "").strip()
+        if not cid:
+            return None
+        now = time.monotonic()
+        with self._stage_lock:
+            self._prune_staged_locked(now)
+            entry = self._staged_candidates.get(cid)
+            if entry is None:
+                return None
+            ts, cand = entry
+            if (now - ts) > self._STAGED_TTL_S:
+                self._staged_candidates.pop(cid, None)
+                return None
+            self._staged_candidates.move_to_end(cid)
+            return cand
 
     @staticmethod
     def _candidate_matches_criteria(cand: MediaCandidate, criteria: FilterCriteria) -> bool:
@@ -232,7 +282,93 @@ class DomainSourceChainService:
                     self._stage_candidate_fp(domain, cand)
                 results = probe_results
 
-        return results[:count]
+        final_results = results[:count]
+        for cand in final_results:
+            self.stage_candidate(cand)
+        return final_results
+
+    async def search_candidates(
+        self,
+        criteria: FilterCriteria,
+        query: str = "",
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        """
+        Search or sample up to `limit` candidates honoring `criteria`, staging all returned
+        candidates without marking them consumed in `ISeenHistoryRepository`.
+        """
+        clamped_limit = max(1, min(20, int(limit)))
+        q_clean = (query or "").strip()
+        if not q_clean:
+            unseen = await self.acquire_unseen_candidates(criteria, count=clamped_limit)
+            for cand in unseen:
+                self.stage_candidate(cand)
+            return unseen[:clamped_limit]
+
+        domain = criteria.domain
+        has_systems = any(
+            s and s.strip().lower() != "all" for s in (criteria.systems or [])
+        )
+        has_genres = any(
+            g and g.strip().lower() != "all" for g in (criteria.genres or [])
+        )
+        enforce_games_criteria = has_systems or has_genres
+
+        collected: List[MediaCandidate] = []
+        seen_keys: Set[str] = set()
+
+        for source in self.registry.get_chain(domain):
+            if not source.is_configured():
+                continue
+            if (
+                domain == "games"
+                and has_systems
+                and source.source_id != "arcadeitalia"
+                and not ReferentialConsolidator.source_supports_criteria(source.source_id, criteria)
+            ):
+                continue
+            needed = clamped_limit - len(collected)
+            if needed <= 0:
+                break
+            try:
+                batch = await source.search_candidates(
+                    query=q_clean,
+                    criteria=criteria,
+                    limit=needed,
+                )
+                for cand in batch or []:
+                    if cand is None or not cand.id or cand.id in seen_keys:
+                        continue
+                    if enforce_games_criteria and not self._candidate_matches_criteria(cand, criteria):
+                        continue
+                    fp = (
+                        build_game_fingerprint(
+                            str((cand.extra_meta or {}).get("system") or ""),
+                            cand.title,
+                        )
+                        if domain == "games"
+                        else ""
+                    )
+                    if fp and fp in seen_keys:
+                        continue
+                    seen_keys.add(cand.id)
+                    if fp:
+                        seen_keys.add(fp)
+                    self.stage_candidate(cand)
+                    collected.append(cand)
+                    if len(collected) >= clamped_limit:
+                        break
+            except Exception as exc:
+                logger.warning(
+                    "[SOURCE CHAIN] Search on source '%s' (%s) failed for domain '%s' (query='%s'): %s",
+                    source.source_id,
+                    source.role,
+                    domain,
+                    q_clean,
+                    exc,
+                )
+
+        return collected[:clamped_limit]
 
     async def search_on_demand(
         self,
@@ -244,9 +380,18 @@ class DomainSourceChainService:
         for source in self.registry.get_chain(domain):
             if not source.is_configured():
                 continue
-            cand = await source.search_by_query(query=query, lang=lang)
-            if cand is not None:
-                return cand
+            try:
+                cand = await source.search_by_query(query=query, lang=lang)
+                if cand is not None:
+                    self.stage_candidate(cand)
+                    return cand
+            except Exception as exc:
+                logger.warning(
+                    "[SOURCE CHAIN] On-demand search on '%s' failed for '%s': %s",
+                    source.source_id,
+                    query,
+                    exc,
+                )
         return None
 
     def available_filters(self, domain: DomainType, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:

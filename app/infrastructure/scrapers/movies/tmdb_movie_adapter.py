@@ -5,12 +5,14 @@ Implements `IScraperSource` with uniform random page sampling and HD YouTube tra
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
+from app.domain.taxonomy import MOVIE_GENRE_CATALOG, localize_label, resolve_canonical_genre
 from app.infrastructure.persistence.server_config_store import server_config_store
 from app.infrastructure.scrapers.catalog_metadata import DECADE_BOUNDS, MOVIE_GENRES, TMDB_LANG_MAP
 from app.infrastructure.scrapers.http_utils import (
@@ -277,47 +279,199 @@ class TmdbMovieAdapter(IScraperSource):
 
         return results
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+    @staticmethod
+    def _resolve_movie_genre_meta(
+        item_gids: List[int],
+        preferred_keys: List[str],
+    ) -> Tuple[str, Dict[str, Any]]:
+        if preferred_keys:
+            gk = preferred_keys[0]
+            return gk, MOVIE_GENRES[gk]
+        for gid in item_gids:
+            for gk, meta in MOVIE_GENRES.items():
+                if int(meta["tmdb_id"]) == int(gid) and not meta.get("tmdb_keyword_id"):
+                    return gk, meta
+        return "scifi", {"label": "Cinema", "color": "#E53935", "palette": (229, 57, 53)}
+
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
         api_key = self._api_key()
-        if not api_key or not query.strip():
-            return None
-        short_lang = (lang or "fr").split("-")[0].lower()
+        q_clean = (query or "").strip()
+        if not api_key or not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
+        short_lang = (criteria.lang or "fr").split("-")[0].split("_")[0].lower()
         tmdb_lang = TMDB_LANG_MAP.get(short_lang, "fr-FR")
         auth_params, auth_headers = build_tmdb_auth(api_key)
+
+        valid_genres: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("movies", g)
+            gk = cg if cg in MOVIE_GENRES else g.strip().lower()
+            if gk in MOVIE_GENRES and gk not in valid_genres:
+                valid_genres.append(gk)
+        allowed_gids = {int(MOVIE_GENRES[gk]["tmdb_id"]) for gk in valid_genres}
+
+        valid_decades = [
+            d.strip().lower()
+            for d in (criteria.decades or [])
+            if d and d.strip().lower() in DECADE_BOUNDS
+        ]
+
+        candidates: List[MediaCandidate] = []
+        orig_titles: Dict[str, str] = {}
+        tmdb_ids: Dict[str, int] = {}
+        seen_ids: Set[str] = set()
+
         try:
-            async with create_async_http_client(timeout=5.0) as client:
-                resp = await client.get(
-                    "https://api.themoviedb.org/3/search/movie",
-                    params={**auth_params, "language": tmdb_lang, "query": query.strip()},
-                    headers=auth_headers,
-                )
-                if resp.status_code == 200:
-                    items = resp.json().get("results") or []
-                    if items:
-                        first = items[0]
-                        tmdb_id = int(first["id"])
-                        poster_p = first.get("poster_path")
-                        poster_url = f"https://image.tmdb.org/t/p/w780{poster_p}" if poster_p else None
-                        orig_title = str(first.get("original_title") or first.get("title") or query)
+            async with create_async_http_client(timeout=5.5) as client:
+                max_pages = 2 if (allowed_gids or valid_decades) else 1
+                for page in range(1, max_pages + 1):
+                    if len(candidates) >= target_limit:
+                        break
+                    resp = await client.get(
+                        "https://api.themoviedb.org/3/search/movie",
+                        params={
+                            **auth_params,
+                            "language": tmdb_lang,
+                            "query": q_clean,
+                            "include_adult": "false",
+                            "page": str(page),
+                        },
+                        headers=auth_headers,
+                    )
+                    if resp.status_code != 200:
+                        break
+                    payload = resp.json()
+                    items = payload.get("results") or []
+                    if not items:
+                        break
+
+                    for idx, item in enumerate(items):
+                        if len(candidates) >= target_limit:
+                            break
+                        if not isinstance(item, dict) or not item.get("id"):
+                            continue
+                        tmdb_id = int(item["id"])
+                        cid = f"movies_tmdb_{tmdb_id}"
+                        if cid in seen_ids:
+                            continue
+
+                        item_gids = [
+                            int(x) for x in (item.get("genre_ids") or []) if str(x).isdigit()
+                        ]
+                        if allowed_gids and not (set(item_gids) & allowed_gids):
+                            continue
+
+                        year = str(item.get("release_date") or "")[:4]
+                        if valid_decades:
+                            if not year.isdigit():
+                                continue
+                            yr_val = int(year)
+                            if not any(
+                                int(DECADE_BOUNDS[d][0][:4]) <= yr_val <= int(DECADE_BOUNDS[d][1][:4])
+                                for d in valid_decades
+                            ):
+                                continue
+                        year = year if (len(year) == 4 and year.isdigit()) else "2000"
+
+                        poster_p = item.get("poster_path")
+                        backdrop_p = item.get("backdrop_path")
+                        if not poster_p and not backdrop_p and not (target_limit == 1 and idx == 0 and not candidates):
+                            continue
+
+                        poster_url = (
+                            f"https://image.tmdb.org/t/p/w780{poster_p}"
+                            if poster_p
+                            else (f"https://image.tmdb.org/t/p/w780{backdrop_p}" if backdrop_p else None)
+                        )
+                        backdrop_url = (
+                            f"https://image.tmdb.org/t/p/w1280{backdrop_p}" if backdrop_p else None
+                        )
+                        gk, g_meta = self._resolve_movie_genre_meta(item_gids, valid_genres)
+                        g_cat = MOVIE_GENRE_CATALOG.get(gk)
+                        genre_label = (
+                            localize_label(g_cat["labels"], short_lang, g_meta["label"])
+                            if g_cat
+                            else g_meta["label"]
+                        )
+
+                        orig_title = str(item.get("original_title") or item.get("title") or q_clean).strip()
+                        title = str(item.get("title") or orig_title).strip()
+                        vote = float(item.get("vote_average") or 7.8)
+                        synopsis = clean_synopsis_text(item.get("overview"))
+
                         cand = MediaCandidate(
-                            id=f"movies_tmdb_{tmdb_id}",
+                            id=cid,
                             domain="movies",
-                            title=str(first.get("title") or query),
-                            year=str(first.get("release_date") or "2000")[:4],
-                            badge="MOVIE",
-                            badge_color="#E53935",
-                            subtitle="Cinema",
-                            rating=f"{float(first.get('vote_average') or 8.0):.1f}",
-                            synopsis=clean_synopsis_text(first.get("overview")),
+                            title=title,
+                            year=year,
+                            badge=str(g_meta["label"])[:8].upper() if item_gids or valid_genres else "MOVIE",
+                            badge_color=str(g_meta["color"]),
+                            subtitle=f"{genre_label} • {year}"[:28],
+                            rating=f"{vote:.1f}",
+                            synopsis=synopsis or f"{title} ({year}).",
                             lang=short_lang,
                             poster_url=poster_url,
                             jacket_url=poster_url,
+                            marquee_url=backdrop_url,
+                            backdrop_url=backdrop_url,
                             source_id=self.source_id,
+                            theme_palette=tuple(g_meta["palette"]),
                         )
-                        await self._enrich_videos_and_images(
-                            client, tmdb_id, api_key, short_lang, tmdb_lang, cand, orig_title=orig_title
-                        )
-                        return cand
-        except Exception:
-            pass
-        return None
+                        if backdrop_url:
+                            cand.add_unique_snapshot(backdrop_url)
+
+                        seen_ids.add(cid)
+                        orig_titles[cid] = orig_title
+                        tmdb_ids[cid] = tmdb_id
+                        candidates.append(cand)
+
+                    if page >= int(payload.get("total_pages") or 1):
+                        break
+
+                if candidates:
+                    sem = asyncio.Semaphore(4)
+                    top_to_enrich = candidates[: min(len(candidates), 4)]
+
+                    async def _enrich_one(c: MediaCandidate) -> None:
+                        async with sem:
+                            ot = orig_titles.get(c.id, c.title)
+                            if len(c.synopsis) < 25 and short_lang != "en":
+                                loc_t, loc_syn, _ = await resolve_multilingual_media_details(
+                                    client, ot, lang=short_lang, domain_hint="film", year=c.year
+                                )
+                                if loc_syn:
+                                    c.synopsis = loc_syn
+                                if loc_t:
+                                    c.title = loc_t
+                            await self._enrich_videos_and_images(
+                                client,
+                                tmdb_ids[c.id],
+                                api_key,
+                                short_lang,
+                                tmdb_lang,
+                                c,
+                                orig_title=ot,
+                            )
+
+                    await asyncio.gather(*(_enrich_one(c) for c in top_to_enrich), return_exceptions=True)
+        except Exception as exc:
+            logger.debug("[TMDB Movies] Search error for '%s': %s", q_clean, exc)
+
+        return candidates[:target_limit]
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(domain="movies", genres=[], decades=[], lang=lang),
+            limit=1,
+        )
+        return cands[0] if cands else None

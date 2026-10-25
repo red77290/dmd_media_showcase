@@ -234,11 +234,11 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)",
+              "description": "Preferred UI/content language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)",
               "default": "fr",
               "title": "Lang"
             },
-            "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"
+            "description": "Preferred UI/content language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)"
           }
         ],
         "responses": {
@@ -297,11 +297,11 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)",
+              "description": "Preferred UI/content language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)",
               "default": "fr",
               "title": "Lang"
             },
-            "description": "Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"
+            "description": "Preferred UI/content language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)"
           }
         ],
         "responses": {
@@ -313,6 +313,652 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Get Domain Filters Api V1  Domain  Filters Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/{domain}/search": {
+      "get": {
+        "tags": [
+          "Discovery",
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Search Domain Candidates Get",
+        "description": "Search or browse multiple localized media candidates honoring `domain`, `lang`, `systems`, `genres`, `decades`,\nand optional text `q`. Returned candidates are staged in memory so selecting any `candidate_id` via\n`POST /api/v1/clients/{dmd_id}/queue` starts transcoding immediately without re-scraping.",
+        "operationId": "search_domain_candidates_get_api_v1__domain__search_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Optional text query (title, ROM name, franchise). Empty returns filtered browse candidates.",
+              "default": "",
+              "title": "Q"
+            },
+            "description": "Optional text query (title, ROM name, franchise). Empty returns filtered browse candidates."
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional alias for `q`.",
+              "title": "Query"
+            },
+            "description": "Optional alias for `q`."
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Content broadcast language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`).",
+              "default": "fr",
+              "title": "Lang"
+            },
+            "description": "Content broadcast language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)."
+          },
+          {
+            "name": "systems",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated canonical systems (for `games`).",
+              "title": "Systems"
+            },
+            "description": "Comma-separated canonical systems (for `games`)."
+          },
+          {
+            "name": "genres",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated canonical genres.",
+              "title": "Genres"
+            },
+            "description": "Comma-separated canonical genres."
+          },
+          {
+            "name": "decades",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated decades (e.g. `1990s,2000s`).",
+              "title": "Decades"
+            },
+            "description": "Comma-separated decades (e.g. `1990s,2000s`)."
+          },
+          {
+            "name": "video_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Preferred video type (`any`, `opening`, `ending`, `pv`, `trailer`).",
+              "default": "any",
+              "title": "Video Type"
+            },
+            "description": "Preferred video type (`any`, `opening`, `ending`, `pv`, `trailer`)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "description": "Maximum number of candidates to return (`1..20`).",
+              "default": 8,
+              "title": "Limit"
+            },
+            "description": "Maximum number of candidates to return (`1..20`)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchCandidatesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Discovery",
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Search Domain Candidates Post",
+        "description": "POST variant of `/api/v1/{domain}/search` accepting JSON filter arrays and content `lang`.",
+        "operationId": "search_domain_candidates_post_api_v1__domain__search_post",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequestPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchCandidatesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients": {
+      "get": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "List Dmd Clients",
+        "description": "Return the consolidated list of all connected DMD clients, persisted `dmd_profiles.json` profiles,\ntheir active operating mode (`client` vs `server` 2A/2B), broadcast `lang`, and On-Demand queue depth.",
+        "operationId": "list_dmd_clients_api_v1_clients_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Dmd Clients Api V1 Clients Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/hello": {
+      "post": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "Announce Passive Dmd Client",
+        "description": "Lightweight HTTP registration/heartbeat endpoint for passive ESP32/RPi receivers without MQTT.\nAuto-creates or updates hardware geometry and LAN IP in `dmd_profiles.json` without overwriting playlists.",
+        "operationId": "announce_passive_dmd_client_api_v1_clients_hello_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientHelloPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Announce Passive Dmd Client Api V1 Clients Hello Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/{dmd_id}/profile": {
+      "get": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "Get Dmd Client Profile",
+        "description": "Retrieve the persisted `dmd_profiles.json` configuration for `dmd_id` (or synthesize a live template if connected).",
+        "operationId": "get_dmd_client_profile_api_v1_clients__dmd_id__profile_get",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Dmd Client Profile Api V1 Clients  Dmd Id  Profile Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "Put Dmd Client Profile",
+        "description": "Create or update a DMD profile and multi-domain playlist in `./data/dmd_profiles.json` and hot-apply immediately.",
+        "operationId": "put_dmd_client_profile_api_v1_clients__dmd_id__profile_put",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DmdProfilePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Put Dmd Client Profile Api V1 Clients  Dmd Id  Profile Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "Delete Dmd Client Profile",
+        "description": "Delete a persisted DMD profile from `./data/dmd_profiles.json` and stop any associated passive loop.",
+        "operationId": "delete_dmd_client_profile_api_v1_clients__dmd_id__profile_delete",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Dmd Client Profile Api V1 Clients  Dmd Id  Profile Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/{dmd_id}/queue": {
+      "get": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Get Dmd Priority Queue",
+        "description": "Inspect the active On-Demand priority queue (`queued`, `preparing`, `ready`, `playing`) for `dmd_id`.",
+        "operationId": "get_dmd_priority_queue_api_v1_clients__dmd_id__queue_get",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Dmd Priority Queue Api V1 Clients  Dmd Id  Queue Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Add To Dmd Priority Queue",
+        "description": "Add a media item to `dmd_id`'s On-Demand priority queue (`mode='enqueue_next'`) or play it immediately\n(`mode='play_now'`). Supports both:\n- Exact selection via `candidate_id` from `/api/v1/{domain}/search`, and\n- Direct 1-shot lookup via `{domain, query, systems, lang, mark_seen}` (ready for `FrontendSync` & webhooks).",
+        "operationId": "add_to_dmd_priority_queue_api_v1_clients__dmd_id__queue_post",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueAddRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add To Dmd Priority Queue Api V1 Clients  Dmd Id  Queue Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/{dmd_id}/queue/{queue_id}": {
+      "delete": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Remove From Dmd Priority Queue",
+        "description": "Remove an item from `dmd_id`'s On-Demand priority queue and purge any unconsumed temporary files.",
+        "operationId": "remove_from_dmd_priority_queue_api_v1_clients__dmd_id__queue__queue_id__delete",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          },
+          {
+            "name": "queue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Queue Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Remove From Dmd Priority Queue Api V1 Clients  Dmd Id  Queue  Queue Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/{dmd_id}/control": {
+      "post": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "Control Dmd Client",
+        "description": "Send a real-time playback control (`skip`, `pause`, `resume`, `stop`) to `dmd_id`.",
+        "operationId": "control_dmd_client_api_v1_clients__dmd_id__control_post",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientControlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Control Dmd Client Api V1 Clients  Dmd Id  Control Post"
                 }
               }
             }
@@ -1566,6 +2212,341 @@
         "title": "BatchStatusResponse",
         "description": "Response to the fast LAN check `GET /api/v1/{domain}/batch?session_id=...`\n(\"Are you ready?\")."
       },
+      "ClientControlRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "skip",
+              "pause",
+              "resume",
+              "stop"
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "ClientControlRequest",
+        "description": "Live playback control command for a DMD client (`POST /api/v1/clients/{dmd_id}/control`)."
+      },
+      "ClientHelloPayload": {
+        "properties": {
+          "dmd_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Dmd Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "default": ""
+          },
+          "config_source": {
+            "type": "string",
+            "enum": [
+              "client",
+              "server"
+            ],
+            "title": "Config Source",
+            "default": "server"
+          },
+          "supports_local_card": {
+            "type": "boolean",
+            "title": "Supports Local Card",
+            "default": true
+          },
+          "width": {
+            "type": "integer",
+            "maximum": 512.0,
+            "minimum": 32.0,
+            "title": "Width",
+            "default": 128
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 256.0,
+            "minimum": 16.0,
+            "title": "Height",
+            "default": 32
+          },
+          "udp_ip": {
+            "type": "string",
+            "title": "Udp Ip",
+            "default": ""
+          },
+          "client_ip": {
+            "type": "string",
+            "title": "Client Ip",
+            "default": ""
+          },
+          "udp_port": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Udp Port",
+            "default": 4210
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dmd_id"
+        ],
+        "title": "ClientHelloPayload",
+        "description": "Lightweight hardware announcement payload for passive ESP32/RPi receivers (MQTT or HTTP)."
+      },
+      "DmdPlaylistSlotPayload": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain",
+            "default": "games"
+          },
+          "count": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "description": "Number of consecutive items played from this domain per playlist cycle.",
+            "default": 1
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang",
+            "description": "Optional per-slot content broadcast language override ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja')."
+          },
+          "systems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Systems"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "decades": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Decades"
+          },
+          "min_rating": {
+            "type": "number",
+            "maximum": 9.9,
+            "minimum": 0.0,
+            "title": "Min Rating",
+            "default": 6.0
+          },
+          "video_type": {
+            "type": "string",
+            "title": "Video Type",
+            "default": "any"
+          },
+          "include_poster": {
+            "type": "boolean",
+            "title": "Include Poster",
+            "default": true
+          },
+          "include_synopsis": {
+            "type": "boolean",
+            "title": "Include Synopsis",
+            "default": true
+          },
+          "text_scroll_speed": {
+            "type": "string",
+            "title": "Text Scroll Speed",
+            "default": "normal"
+          },
+          "jacket_panorama": {
+            "type": "boolean",
+            "title": "Jacket Panorama",
+            "default": true
+          },
+          "marquee_panorama": {
+            "type": "boolean",
+            "title": "Marquee Panorama",
+            "default": false
+          },
+          "snapshot_panorama_count": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Snapshot Panorama Count",
+            "default": 0
+          },
+          "include_video": {
+            "type": "boolean",
+            "title": "Include Video",
+            "default": true
+          },
+          "video_max_duration_s": {
+            "type": "number",
+            "maximum": 120.0,
+            "minimum": 1.5,
+            "title": "Video Max Duration S",
+            "default": 8.0
+          },
+          "video_fps": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 6.0,
+            "title": "Video Fps",
+            "default": 15
+          },
+          "video_mode": {
+            "type": "string",
+            "title": "Video Mode",
+            "default": "auto_action"
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Color Boost",
+            "default": "auto"
+          }
+        },
+        "type": "object",
+        "title": "DmdPlaylistSlotPayload",
+        "description": "Single domain rotation slot inside a server-managed DMD profile (`dmd_profiles.json`)."
+      },
+      "DmdProfilePayload": {
+        "properties": {
+          "dmd_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dmd Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "default": ""
+          },
+          "config_source": {
+            "type": "string",
+            "enum": [
+              "client",
+              "server"
+            ],
+            "title": "Config Source",
+            "default": "server"
+          },
+          "supports_local_card": {
+            "type": "boolean",
+            "title": "Supports Local Card",
+            "description": "True (Mode 2A): DMD renders 60 FPS text Info Card locally + streams UDP video. False (Mode 2B): Server renders Info Card directly into RGB565 UDP stream.",
+            "default": true
+          },
+          "always_stream_udp": {
+            "type": "boolean",
+            "title": "Always Stream Udp",
+            "description": "When True in Mode 2B, streams UDP DMDF frames continuously to udp_ip:udp_port even without MQTT presence.",
+            "default": false
+          },
+          "width": {
+            "type": "integer",
+            "maximum": 512.0,
+            "minimum": 32.0,
+            "title": "Width",
+            "default": 128
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 256.0,
+            "minimum": 16.0,
+            "title": "Height",
+            "default": 32
+          },
+          "udp_ip": {
+            "type": "string",
+            "title": "Udp Ip",
+            "default": ""
+          },
+          "udp_port": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Udp Port",
+            "default": 4210
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang",
+            "description": "Content broadcast language ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja') for titles, synopses, and posters.",
+            "default": "fr"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused",
+            "default": false
+          },
+          "inter_item_gap_s": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Inter Item Gap S",
+            "default": 1.0
+          },
+          "playlist": {
+            "items": {
+              "$ref": "#/components/schemas/DmdPlaylistSlotPayload"
+            },
+            "type": "array",
+            "title": "Playlist"
+          }
+        },
+        "type": "object",
+        "title": "DmdProfilePayload",
+        "description": "Persistent per-DMD profile & server-managed playlist stored in `./data/dmd_profiles.json`.\nSupports Mode 1 (`config_source='client'`), Mode 2A (`config_source='server', supports_local_card=True`),\nand Mode 2B (`config_source='server', supports_local_card=False`)."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2113,6 +3094,449 @@
         "title": "OnDemandRequest",
         "description": "Payload for triggering an immediate on-demand item from a voice\nassistant (Google Home / Alexa / Home Assistant) or external webhook."
       },
+      "QueueAddRequest": {
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id",
+            "description": "Exact staged candidate_id returned by `/api/v1/{domain}/search`."
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain",
+            "default": "games"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "Direct search query when `candidate_id` is omitted (e.g. FrontendSync game launch or voice command).",
+            "default": ""
+          },
+          "systems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Systems"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "decades": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Decades"
+          },
+          "video_type": {
+            "type": "string",
+            "title": "Video Type",
+            "default": "any"
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang",
+            "description": "Content broadcast language ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja'). Defaults to target DMD profile language."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "enqueue_next",
+              "play_now"
+            ],
+            "title": "Mode",
+            "default": "enqueue_next"
+          },
+          "mark_seen": {
+            "type": "boolean",
+            "title": "Mark Seen",
+            "description": "When False (e.g. FrontendSync), does not record the item in seen_history.json so it can be displayed again.",
+            "default": true
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 512.0,
+                "minimum": 32.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 256.0,
+                "minimum": 16.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "include_poster": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Poster"
+          },
+          "include_synopsis": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Synopsis"
+          },
+          "text_scroll_speed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Scroll Speed"
+          },
+          "jacket_panorama": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jacket Panorama"
+          },
+          "marquee_panorama": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marquee Panorama"
+          },
+          "snapshot_panorama_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 5.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Panorama Count"
+          },
+          "include_video": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Video"
+          },
+          "video_max_duration_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 120.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Max Duration S"
+          },
+          "video_fps": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 60.0,
+                "minimum": 6.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Fps"
+          },
+          "video_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Mode"
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color Boost"
+          }
+        },
+        "type": "object",
+        "title": "QueueAddRequest",
+        "description": "Enqueue or immediately play a specific media title on a target DMD (`POST /api/v1/clients/{dmd_id}/queue`).\nAccepts either `candidate_id` (from `/search` UI selection) or `{domain, query, systems, lang}` (1-shot FrontendSync / webhook)."
+      },
+      "SearchCandidateModel": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "title": "Candidate Id"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "year": {
+            "type": "string",
+            "title": "Year"
+          },
+          "badge": {
+            "type": "string",
+            "title": "Badge"
+          },
+          "badge_color": {
+            "type": "string",
+            "title": "Badge Color"
+          },
+          "subtitle": {
+            "type": "string",
+            "title": "Subtitle"
+          },
+          "rating": {
+            "type": "string",
+            "title": "Rating"
+          },
+          "synopsis": {
+            "type": "string",
+            "title": "Synopsis"
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "poster_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Poster Url"
+          },
+          "has_video": {
+            "type": "boolean",
+            "title": "Has Video",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "id",
+          "domain",
+          "title",
+          "year",
+          "badge",
+          "badge_color",
+          "subtitle",
+          "rating",
+          "synopsis",
+          "lang",
+          "source_id"
+        ],
+        "title": "SearchCandidateModel",
+        "description": "Single media item candidate returned by `/api/v1/{domain}/search`."
+      },
+      "SearchCandidatesResponse": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SearchCandidateModel"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain",
+          "query",
+          "lang",
+          "count",
+          "items"
+        ],
+        "title": "SearchCandidatesResponse",
+        "description": "Response returned by `GET/POST /api/v1/{domain}/search`."
+      },
+      "SearchRequestPayload": {
+        "properties": {
+          "q": {
+            "type": "string",
+            "title": "Q",
+            "description": "Optional text query (title, ROM name, franchise). Empty returns filtered browse items.",
+            "default": ""
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query",
+            "description": "Optional alias for `q`."
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang",
+            "description": "Content broadcast language ('fr', 'en', 'es', 'de', 'it', 'pt', 'ja').",
+            "default": "fr"
+          },
+          "systems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Systems"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "decades": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Decades"
+          },
+          "video_type": {
+            "type": "string",
+            "title": "Video Type",
+            "default": "any"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 8
+          }
+        },
+        "type": "object",
+        "title": "SearchRequestPayload",
+        "description": "Multi-candidate localized catalog search request (`POST /api/v1/{domain}/search`)."
+      },
       "SessionRegisterRequest": {
         "properties": {
           "client_id": {
@@ -2494,8 +3918,12 @@
       "description": "Proactive session/batch polling endpoints (`/session`, `/batch`, `/random`) for HTTP polling clients."
     },
     {
+      "name": "DMD Profiles & Passive Mode",
+      "description": "Persistent DMD profiles (`dmd_profiles.json`), server-managed playlists (Modes 2A & 2B), `hello` announcements, and live playback controls."
+    },
+    {
       "name": "On-Demand & Voice Assistant",
-      "description": "Priority queue endpoint (`POST /on-demand`) for voice assistants and webhooks."
+      "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants."
     },
     {
       "name": "Assets & Streaming",

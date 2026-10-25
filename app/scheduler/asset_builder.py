@@ -25,7 +25,7 @@ from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 from app.infrastructure.scrapers.youtube_resolver import (
     extract_hd_youtube_clip_ytdlp,
@@ -547,6 +547,234 @@ def build_static_assets_sync(
         "panorama_streams_rgb565": panorama_streams,
         "snapshots_pan_rgb565": snapshots_rgb565,
     }
+
+
+def _parse_hex_rgb(hex_color: str, fallback: Tuple[int, int, int] = (230, 74, 25)) -> Tuple[int, int, int]:
+    raw = str(hex_color or "").strip().lstrip("#")
+    if len(raw) == 6:
+        try:
+            return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+        except ValueError:
+            pass
+    return fallback
+
+
+def _sanitize_card_text(text: str) -> str:
+    if not text:
+        return ""
+    replacements = {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+        "\u0153": "oe",
+        "\u0152": "OE",
+        "\u00a0": " ",
+        "\n": " ",
+        "\r": " ",
+    }
+    cleaned = str(text)
+    for k, v in replacements.items():
+        cleaned = cleaned.replace(k, v)
+    return " ".join(cleaned.split())
+
+
+def _load_card_font(text_sample: str, size: int = 10) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    needs_unicode = any(ord(ch) > 255 for ch in text_sample)
+    if needs_unicode:
+        candidates = (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        )
+        for fp in candidates:
+            if os.path.exists(fp):
+                try:
+                    return ImageFont.truetype(fp, size=size)
+                except Exception:
+                    continue
+    return ImageFont.load_default()
+
+
+def _resolve_scroll_px_per_sec(speed: str) -> float:
+    raw = str(speed or "normal").strip().lower()
+    named = {"slow": 22.0, "normal": 34.0, "fast": 48.0, "turbo": 64.0}
+    if raw in named:
+        return named[raw]
+    try:
+        lvl = max(1, min(10, int(raw)))
+        return 16.0 + lvl * 5.0
+    except ValueError:
+        return 34.0
+
+
+def build_card_stream_sync(
+    item_dir: str,
+    width: int = 128,
+    height: int = 32,
+    fps: int = 15,
+    title: str = "",
+    year: str = "",
+    badge: str = "",
+    badge_color: str = "#FF6D00",
+    subtitle: str = "",
+    rating: str = "",
+    synopsis: str = "",
+    poster_png_name: str = "",
+    include_poster: bool = True,
+    include_synopsis: bool = True,
+    text_scroll_speed: str = "normal",
+) -> str:
+    """
+    Render the Phase 1 Info Card (mini-jacket + colored badge + year/rating + scrolling localized
+    title & synopsis) directly into a `DMDS` `.rgb565.stream` file (`card_intro_{W}x{H}.rgb565.stream`)
+    for 100% passive UDP framebuffer receivers (`Mode 2B`, `supports_local_card=False`).
+    """
+    out_dir = Path(item_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    eff_fps = max(8, min(60, int(fps)))
+    accent = _parse_hex_rgb(badge_color)
+
+    clean_title = _sanitize_card_text(title) or "SHOWCASE"
+    clean_badge = (_sanitize_card_text(badge) or "DMD").upper()[:10]
+    clean_year = _sanitize_card_text(year)[:6]
+    clean_rating = _sanitize_card_text(rating)[:5]
+    body_raw = synopsis if (include_synopsis and synopsis) else subtitle
+    clean_body = _sanitize_card_text(body_raw)
+
+    font = _load_card_font(f"{clean_title} {clean_body}", size=10 if height < 64 else 11)
+    if not isinstance(font, ImageFont.FreeTypeFont):
+        clean_title = clean_title.encode("latin-1", "replace").decode("latin-1")
+        clean_badge = clean_badge.encode("latin-1", "replace").decode("latin-1")
+        clean_body = clean_body.encode("latin-1", "replace").decode("latin-1")
+
+    poster_img: Optional[Image.Image] = None
+    if include_poster and poster_png_name:
+        p_path = out_dir / poster_png_name
+        if p_path.exists():
+            try:
+                with Image.open(p_path) as raw_p:
+                    poster_img = raw_p.convert("RGB")
+            except Exception:
+                poster_img = None
+
+    is_tate = height > width
+    if is_tate:
+        text_x = 2
+        text_w = max(16, width - 4)
+        poster_x = (width - poster_img.width) // 2 if poster_img else 0
+        poster_y = 2
+        top_y = (poster_img.height + 5) if poster_img else 3
+        title_y = top_y + 13
+        body_y = title_y + 13
+    else:
+        poster_x = 0
+        poster_y = (height - poster_img.height) // 2 if poster_img else 0
+        text_x = (poster_img.width + 3) if poster_img else 3
+        text_w = max(16, width - text_x - 2)
+        if height >= 64:
+            top_y = 3
+            title_y = 19
+            body_y = 36
+        else:
+            top_y = 1
+            title_y = 11
+            body_y = 21
+
+    dummy_draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+
+    def _measure_w(txt: str) -> int:
+        if not txt:
+            return 0
+        try:
+            bbox = dummy_draw.textbbox((0, 0), txt, font=font)
+            return max(0, int(bbox[2] - bbox[0]))
+        except Exception:
+            return len(txt) * 6
+
+    title_px = _measure_w(clean_title)
+    body_px = _measure_w(clean_body)
+    px_per_sec = _resolve_scroll_px_per_sec(text_scroll_speed)
+    px_per_frame = max(0.75, px_per_sec / float(eff_fps))
+
+    scroll_dist = max(
+        0,
+        (title_px - text_w + 16) if title_px > text_w else 0,
+        (body_px + text_w // 2) if body_px > 0 else 0,
+    )
+    hold_intro_frames = max(6, int(round(eff_fps * 0.9)))
+    hold_outro_frames = max(4, int(round(eff_fps * 0.5)))
+    scroll_frames = int(scroll_dist / px_per_frame) if scroll_dist > 0 else int(eff_fps * 2.0)
+    total_frames = max(
+        int(eff_fps * 2.8),
+        min(int(eff_fps * 16.0), hold_intro_frames + scroll_frames + hold_outro_frames),
+    )
+
+    bg_tint = (max(4, accent[0] // 14), max(4, accent[1] // 14), max(6, accent[2] // 14))
+    frames_np: List[np.ndarray] = []
+
+    for idx in range(total_frames):
+        canvas = Image.new("RGB", (width, height), bg_tint)
+        draw = ImageDraw.Draw(canvas)
+
+        scroll_px = 0
+        if idx > hold_intro_frames:
+            scroll_px = int(round((idx - hold_intro_frames) * px_per_frame))
+
+        # Render text region on an isolated strip so scrolling text never bleeds over the mini-jacket
+        strip = Image.new("RGB", (text_w, height), bg_tint)
+        sdraw = ImageDraw.Draw(strip)
+
+        # Row 1: Colored badge pill + Year + Rating
+        badge_w = min(text_w - 2, _measure_w(clean_badge) + 6)
+        sdraw.rectangle([0, top_y, badge_w, top_y + 9], fill=accent)
+        sdraw.text((3, top_y - 1), clean_badge, fill=(255, 255, 255), font=font)
+        meta_bits = " ".join(b for b in (clean_year, f"*{clean_rating}" if clean_rating else "") if b)
+        if meta_bits and badge_w + 4 < text_w:
+            sdraw.text((badge_w + 4, top_y - 1), meta_bits, fill=(255, 214, 102), font=font)
+
+        # Row 2: Title (static if fits, smooth horizontal scroll otherwise)
+        if title_px <= text_w:
+            tx = 0
+        else:
+            max_t_shift = title_px - text_w + 10
+            tx = -min(max_t_shift, scroll_px)
+        sdraw.text((tx, title_y), clean_title, fill=(255, 255, 255), font=font)
+
+        # Row 3: Localized Synopsis / Subtitle ticker
+        if clean_body and body_y + 8 <= height:
+            if body_px <= text_w:
+                bx = 0
+            else:
+                bx = max(8, text_w // 3) - scroll_px
+            sdraw.text((bx, body_y), clean_body, fill=(190, 225, 255), font=font)
+
+        canvas.paste(strip, (text_x, 0))
+
+        if poster_img is not None:
+            canvas.paste(poster_img, (poster_x, poster_y))
+            if not is_tate and poster_x + poster_img.width < width:
+                sep_x = poster_x + poster_img.width + 1
+                draw.line([(sep_x, 0), (sep_x, height - 1)], fill=(accent[0] // 2, accent[1] // 2, accent[2] // 2))
+
+        frames_np.append(np.asarray(canvas, dtype=np.uint8))
+
+    out_stream = out_dir / f"card_intro_{width}x{height}.rgb565.stream"
+    write_rgb565_stream(frames_np, out_stream, fps=eff_fps)
+    logger.info(
+        "[CONVERTER] Built server-side Info Card stream '%s' (%dx%d, %d frames @ %dfps)",
+        out_stream.name,
+        width,
+        height,
+        len(frames_np),
+        eff_fps,
+    )
+    return out_stream.name
 
 
 def build_video_assets_worker_task(
