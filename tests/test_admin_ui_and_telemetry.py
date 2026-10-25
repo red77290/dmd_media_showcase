@@ -57,6 +57,18 @@ def _make_sample_png_bytes() -> bytes:
     return buf.getvalue()
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_worker_pool_between_tests():
+    """Ensure global `batch_manager` workers are cleanly stopped after every test."""
+    yield
+    if batch_manager._running or batch_manager._worker_tasks:
+        cleanup_loop = asyncio.new_event_loop()
+        try:
+            cleanup_loop.run_until_complete(batch_manager.stop())
+        finally:
+            cleanup_loop.close()
+
+
 @pytest.mark.asyncio
 async def test_admin_dashboard_html_css_alignment_and_js_syntax(tmp_path: Path, monkeypatch):
     """
@@ -545,3 +557,74 @@ async def test_static_http_session_records_completed_jobs_and_excludes_webui_tes
         _session_client_meta.update(old_meta)
         consume_once_orchestrator._completed_jobs_total = old_completed
         consume_once_orchestrator._total_job_duration_s = old_duration
+
+
+def test_batch_manager_survives_closed_event_loop_transitions(tmp_path: Path, monkeypatch):
+    """
+    Regression test for Python 3.11 + `pytest-asyncio` function-scoped event loops:
+    1. Starting `batch_manager` on `loop_a`, cancelling tasks + closing `loop_a`, then calling
+       `await batch_manager.stop()` on `loop_b` must NOT raise `RuntimeError: Event loop is closed`.
+    2. Closing `loop_a` while `_worker_tasks` are still pending (`done() == False`), then calling
+       `await batch_manager.stop()` or `batch_manager.start()` on `loop_b` must safely discard
+       dead-loop tasks and spawn live workers bound to `loop_b`.
+    """
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "loop_cache")
+    monkeypatch.setattr(settings, "use_process_pool", False)
+
+    # Case 1: Tasks cancelled before loop closes (Python 3.11 asyncio.Runner.close() behavior)
+    loop_a = asyncio.new_event_loop()
+    try:
+        async def _start_and_cancel() -> None:
+            batch_manager.start()
+            assert len(batch_manager._worker_tasks) >= 1
+            for t in batch_manager._worker_tasks:
+                t.cancel()
+            await asyncio.gather(*batch_manager._worker_tasks, return_exceptions=True)
+
+        loop_a.run_until_complete(_start_and_cancel())
+    finally:
+        loop_a.close()
+
+    assert all(t.done() for t in batch_manager._worker_tasks)
+    assert batch_manager._worker_tasks[0].get_loop().is_closed()
+
+    loop_b = asyncio.new_event_loop()
+    try:
+        loop_b.run_until_complete(batch_manager.stop())
+        assert batch_manager._worker_tasks == []
+        assert batch_manager._running is False
+    finally:
+        loop_b.close()
+
+    # Case 2: Loop closed abruptly while worker tasks are still pending (`done() == False`)
+    loop_c = asyncio.new_event_loop()
+    try:
+        async def _start_leave_pending() -> None:
+            batch_manager.start()
+            await asyncio.sleep(0)
+
+        loop_c.run_until_complete(_start_leave_pending())
+    finally:
+        loop_c.close()
+
+    for orphan_task in batch_manager._worker_tasks:
+        orphan_task._log_destroy_pending = False  # Intentional closed-loop pending task test
+
+    assert len(batch_manager._worker_tasks) >= 1
+    assert not batch_manager._worker_tasks[0].done()
+    assert batch_manager._worker_tasks[0].get_loop().is_closed()
+
+    loop_d = asyncio.new_event_loop()
+    try:
+        async def _restart_and_stop_on_fresh_loop() -> None:
+            # Direct start() without prior stop() must replace dead-loop workers cleanly
+            batch_manager.start()
+            assert batch_manager._loop is loop_d
+            assert len(batch_manager._worker_tasks) >= 1
+            assert all(t.get_loop() is loop_d and not t.done() for t in batch_manager._worker_tasks)
+            await batch_manager.stop()
+            assert batch_manager._worker_tasks == []
+
+        loop_d.run_until_complete(_restart_and_stop_on_fresh_loop())
+    finally:
+        loop_d.close()
