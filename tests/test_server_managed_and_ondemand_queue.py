@@ -748,3 +748,184 @@ async def test_dmd_profiles_persistence_hello_and_server_managed_modes_2b_and_2a
         r_del_p1 = await client.delete("/api/v1/clients/esp32_passive_2b/profile")
         assert r_del_p1.status_code == 200
         await orch.stop_server_managed_profiles()
+
+
+@pytest.mark.asyncio
+async def test_mode1_multi_engine_mqtt_live_profile_inspector_and_readonly_put_guard(isolated_showcase_env):
+    """
+    Verify Mode 1 ('Active DMD / Passive Showcase', e.g. `ArcadeMatrix_RPi` over MQTT Retain):
+    1. `GET /api/v1/clients/{dmd_id}/profile` synthesizes the exact live configuration pushed by the
+       physical DMD's sibling engines (`rpi_games_128x32`, `rpi_movies_128x32`, `rpi_anime_128x32`)
+       instead of returning fake `default_playlist_slots()` defaults, marks uninstantiated domains
+       (`series`) as `enabled=False`, and exposes `read_only_client_managed=True` + `client_live_payload`.
+    2. Accidental `PUT /api/v1/clients/{dmd_id}/profile` is rejected with `409 Conflict` so `dmd_profiles.json`
+       cannot hijack future MQTT updates from `ArcadeMatrix_RPi` unless `?force_override=true` is passed.
+    3. Transient On-Demand / Studio Simulation Queue injection (`POST /api/v1/clients/{dmd_id}/queue`)
+       remains 100% operational on Mode 1 DMDs.
+    """
+    env = isolated_showcase_env
+    orch: ConsumeOnceOrchestrator = env["orch"]
+
+    # Register 3 Mode 1 Showcase engines on 1 physical RPi (`192.168.1.42`, UDP 5568), omitting `series`
+    await orch.handle_mqtt_client_config(
+        "rpi_games_128x32",
+        {
+            "dmd_id": "rpi_games_128x32",
+            "client_ip": "192.168.1.42",
+            "udp_ip": "192.168.1.42",
+            "udp_port": 5568,
+            "width": 128,
+            "height": 32,
+            "lang": "fr",
+            "domains": {
+                "games": {
+                    "lang": "fr",
+                    "systems": ["neogeo", "cps2"],
+                    "genres": ["fighting"],
+                    "decades": ["1990s"],
+                    "min_rating": 7.5,
+                    "show_poster": True,
+                    "show_synopsis": True,
+                    "text_scroll_speed": "fast",
+                    "jacket_panorama": True,
+                    "marquee_panorama": True,
+                    "snapshot_panorama_count": 3,
+                    "show_video": True,
+                    "video_max_duration_s": 11.0,
+                    "video_fps": 15,
+                    "video_mode": "auto_action",
+                    "color_boost": "pixel_art",
+                }
+            },
+        },
+    )
+    await orch.handle_mqtt_client_config(
+        "rpi_movies_128x32",
+        {
+            "dmd_id": "rpi_movies_128x32",
+            "client_ip": "192.168.1.42",
+            "udp_ip": "192.168.1.42",
+            "udp_port": 5568,
+            "width": 128,
+            "height": 32,
+            "lang": "fr",
+            "domains": {
+                "movies": {
+                    "lang": "fr",
+                    "genres": ["science-fiction"],
+                    "decades": ["1980s"],
+                    "show_video": True,
+                    "video_max_duration_s": 14.0,
+                    "video_fps": 15,
+                    "video_mode": "center_crop",
+                    "color_boost": "cinema",
+                    "video_type": "trailer",
+                    "snapshot_panorama_count": 2,
+                }
+            },
+        },
+    )
+    await orch.handle_mqtt_client_config(
+        "rpi_anime_128x32",
+        {
+            "dmd_id": "rpi_anime_128x32",
+            "client_ip": "192.168.1.42",
+            "udp_ip": "192.168.1.42",
+            "udp_port": 5568,
+            "width": 128,
+            "height": 32,
+            "lang": "ja",
+            "domains": {
+                "anime": {
+                    "lang": "ja",
+                    "video_type": "opening",
+                    "video_max_duration_s": 12.0,
+                    "video_fps": 15,
+                    "video_mode": "auto_action",
+                    "color_boost": "anime",
+                }
+            },
+        },
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Inspecting ANY engine of the physical RPi board returns consolidated live MQTT config (read-only)
+        r_prof = await client.get("/api/v1/clients/rpi_movies_128x32/profile")
+        assert r_prof.status_code == 200
+        body = r_prof.json()
+        assert body["persisted"] is False
+        assert body["read_only_client_managed"] is True
+
+        prof = body["profile"]
+        assert prof["config_source"] == "client"
+        assert prof["udp_ip"] == "192.168.1.42"
+        assert prof["udp_port"] == 5568
+
+        slots_by_dom = {s["domain"]: s for s in prof["playlist"]}
+        # `games` has exact MQTT systems/genres/decades/duration (not default 6-system fallback!)
+        assert slots_by_dom["games"]["enabled"] is True
+        assert slots_by_dom["games"]["engine_dmd_id"] == "rpi_games_128x32"
+        assert slots_by_dom["games"]["systems"] == ["neogeo", "cps2"]
+        assert slots_by_dom["games"]["genres"] == ["fighting"]
+        assert slots_by_dom["games"]["decades"] == ["1990s"]
+        assert slots_by_dom["games"]["video_max_duration_s"] == 11.0
+        assert slots_by_dom["games"]["color_boost"] == "pixel_art"
+        assert slots_by_dom["games"]["snapshot_panorama_count"] == 3
+
+        # `movies` has exact MQTT settings
+        assert slots_by_dom["movies"]["enabled"] is True
+        assert slots_by_dom["movies"]["engine_dmd_id"] == "rpi_movies_128x32"
+        assert slots_by_dom["movies"]["genres"] == ["scifi"]
+        assert slots_by_dom["movies"]["decades"] == ["1980s"]
+        assert slots_by_dom["movies"]["video_max_duration_s"] == 14.0
+        assert slots_by_dom["movies"]["video_mode"] == "center_crop"
+        assert slots_by_dom["movies"]["color_boost"] == "cinema"
+
+        # `series` was NOT instantiated on the RPi -> must be disabled with empty filters
+        assert slots_by_dom["series"]["enabled"] is False
+        assert slots_by_dom["series"]["engine_dmd_id"] is None
+        assert slots_by_dom["series"]["genres"] == []
+
+        # `anime` is active with opening + anime boost
+        assert slots_by_dom["anime"]["enabled"] is True
+        assert slots_by_dom["anime"]["engine_dmd_id"] == "rpi_anime_128x32"
+        assert slots_by_dom["anime"]["video_type"] == "opening"
+        assert slots_by_dom["anime"]["color_boost"] == "anime"
+
+        live_payload = body["client_live_payload"]
+        assert live_payload["read_only"] is True
+        assert set(live_payload["active_engines"].keys()) == {"games", "movies", "anime"}
+        assert "rpi_games_128x32" in live_payload["received_configs"]
+        assert live_payload["received_configs"]["rpi_games_128x32"]["udp_port"] == 5568
+
+        # 2. Accidental PUT /profile on an active Mode 1 DMD is rejected with 409 Conflict
+        r_hijack = await client.put(
+            "/api/v1/clients/rpi_games_128x32/profile",
+            json={"display_name": "Accidental Save", "config_source": "server"},
+        )
+        assert r_hijack.status_code == 409
+        assert env["profiles"].get_profile("rpi_games_128x32") is None
+
+        # 3. Transient Queue injection (On-Demand / Studio Simulation) still works 100% on Mode 1 DMD!
+        r_queue = await client.post(
+            "/api/v1/clients/rpi_games_128x32/queue",
+            json={
+                "domain": "games",
+                "query": "Metal Slug",
+                "lang": "fr",
+                "mode": "enqueue_next",
+                "mark_seen": False,
+            },
+        )
+        assert r_queue.status_code == 200
+        assert r_queue.json()["item"]["candidate_id"] == "games_ss_mslug"
+
+        # 4. Explicit `?force_override=true` escape hatch succeeds if an integrator intentionally converts it
+        r_force = await client.put(
+            "/api/v1/clients/rpi_games_128x32/profile?force_override=true",
+            json={"display_name": "Converted Passive", "config_source": "server", "paused": True},
+        )
+        assert r_force.status_code == 200
+        await orch.stop_server_managed_profiles()
+
