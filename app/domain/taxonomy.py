@@ -334,7 +334,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "1",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q10677",
+        "wikidata_qid": "Q10676",
         "libretro_repo": "Sega_-_Mega_Drive_-_Genesis",
         "archive_video_repo": "sega-genesis-video-snaps",
         "badge": "MD",
@@ -404,7 +404,7 @@ RETRO_SYSTEM_CATALOG: Dict[str, Dict[str, Any]] = {
         "is_arcade": False,
         "screenscraper_id": "57",
         "arcadeitalia_driver": None,
-        "wikidata_qid": "Q10680",
+        "wikidata_qid": "Q10677",
         "libretro_repo": "Sony_-_PlayStation",
         "archive_video_repo": "SonyPlaystationVideoSnaps",
         "badge": "PS1",
@@ -806,15 +806,26 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     "platform": {
         "wikidata_qid": "Q828322",
         "wikidata_qids": ["Q828322"],
-        "adb_keywords": ["platform / run jump", "platform / run jump scrolling", "platform"],
-        "screenscraper_keywords": ["plateforme", "platform"],
+        "adb_keywords": [
+            "platform / run jump",
+            "platform / run jump scrolling",
+            "plateforme / run jump",
+            "plateforme / run jump scrolling",
+            "platform",
+        ],
+        "screenscraper_keywords": ["plateforme", "platform", "plattform", "piattaforma", "plataforma"],
         "synonyms": [
             "platform",
             "platformer",
             "plateforme",
+            "plattform",
+            "piattaforma",
+            "plataforma",
             "platform_game",
             "platform_run_jump",
             "platform_run_jump_scrolling",
+            "plateforme_run_jump",
+            "plateforme_run_jump_scrolling",
             "metroidvania",
         ],
         "labels": {
@@ -828,9 +839,22 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     "action": {
         "wikidata_qid": "Q270948",
         "wikidata_qids": ["Q270948", "Q343568"],
-        "adb_keywords": ["action", "climbing", "platform / fighter scrolling"],
+        "adb_keywords": [
+            "action",
+            "climbing",
+            "platform / fighter scrolling",
+            "plateforme / combat scrolling",
+            "plateforme / fighter scrolling",
+        ],
         "screenscraper_keywords": ["action"],
-        "synonyms": ["action", "action_adventure", "action_game", "platform_fighter_scrolling"],
+        "synonyms": [
+            "action",
+            "action_adventure",
+            "action_game",
+            "platform_fighter_scrolling",
+            "plateforme_combat_scrolling",
+            "plateforme_fighter_scrolling",
+        ],
         "labels": {
             "fr": "Action / Aventure",
             "en": "Action / Adventure",
@@ -842,16 +866,52 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     "fighting": {
         "wikidata_qid": "Q846224",
         "wikidata_qids": ["Q846224"],
+        "wikidata_excluded_qids": ["Q401831", "Q1400669", "Q828322"],
         "adb_keywords": [
             "fighter / versus",
             "fighter / versus co-op",
             "fighter / 2d",
             "fighter / 3d",
+            "combat / versus",
+            "combat / versus co-op",
+            "combat / 2d",
+            "combat / 3d",
             "sports / wrestling",
             "wrestling",
         ],
-        "screenscraper_keywords": ["combat", "fighting"],
-        "synonyms": ["fighting", "fighter_versus", "combat", "versus", "vs_fighting", "fighting_game"],
+        "screenscraper_keywords": [
+            "combat",
+            "fighting",
+            "fighter",
+            "combat / versus",
+            "combat / 2d",
+            "combat / 3d",
+            "lucha",
+            "luta",
+            "kampfspiel",
+            "picchiaduro a incontri",
+        ],
+        "synonyms": [
+            "fighting",
+            "fighter",
+            "fighter_versus",
+            "fighter_versus_co_op",
+            "fighter_2d",
+            "fighter_3d",
+            "combat",
+            "combat_versus",
+            "combat_versus_co_op",
+            "combat_2d",
+            "combat_3d",
+            "versus",
+            "vs_fighting",
+            "versus_fighting",
+            "1v1",
+            "fighting_game",
+            "lucha",
+            "luta",
+            "kampfspiel",
+        ],
         "labels": {
             "fr": "Combat (1v1 / Versus)",
             "en": "Fighting (1v1)",
@@ -862,16 +922,52 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     },
     "beatemup": {
         "wikidata_qid": "Q401831",
-        "wikidata_qids": ["Q401831"],
+        "wikidata_qids": ["Q401831", "Q1400669"],
         "adb_keywords": [
             "fighter / 2.5d",
             "fighter / field",
             "fighter / misc",
             "fighter / vertical",
+            "fighter / scrolling",
             "beat-'em-up",
+            "combat / 2.5d",
+            "combat / vertical",
+            "combat / defilement",
+            "combat / défilement",
+            "combat / coop",
+            "combat / co-op",
+            "combat / champ",
+            "combat / rue",
+            "combat / misc",
         ],
-        "screenscraper_keywords": ["beat'em all", "beat em up"],
-        "synonyms": ["beatemup", "beat_em_up", "beat_em_all", "brawler", "hack_and_slash"],
+        "screenscraper_keywords": [
+            "beat'em all",
+            "beat em all",
+            "beat'em up",
+            "beat em up",
+            "brawler",
+            "combat / 2.5d",
+            "combat / défilement",
+            "combat / vertical",
+        ],
+        "synonyms": [
+            "beatemup",
+            "beat_em_up",
+            "beat_em_all",
+            "brawler",
+            "hack_and_slash",
+            "combat_2_5d",
+            "combat_vertical",
+            "combat_defilement",
+            "combat_coop",
+            "combat_co_op",
+            "combat_champ",
+            "combat_rue",
+            "combat_misc",
+            "yo_contra_el_barrio",
+            "picchiaduro_a_scorrimento",
+            "briga_de_rua",
+        ],
         "labels": {
             "fr": "Beat 'em up / Brawler",
             "en": "Beat 'em up / Brawler",
@@ -1600,6 +1696,19 @@ _GENRE_SYNONYM_BY_DOMAIN: Dict[DomainType, Dict[str, str]] = {
 def resolve_canonical_system(raw_system: str) -> str:
     """Resolve any scraper or user system token (`NES`, `Famicom`, `Nintendo Entertainment System`) to its canonical ID."""
     slug = normalize_category_slug(raw_system)
+    if slug in (
+        "mega_cd",
+        "sega_cd",
+        "sega_mega_cd",
+        "sega_32x",
+        "32x",
+        "mega_drive_32x",
+        "genesis_32x",
+        "playstation_2",
+        "sony_playstation_2",
+        "ps2",
+    ):
+        return slug
     return _SYSTEM_SYNONYM_INDEX.get(slug, slug)
 
 
@@ -1610,18 +1719,215 @@ def resolve_canonical_genre(domain: DomainType, raw_genre: str) -> str:
     if slug in domain_idx:
         return domain_idx[slug]
     if domain == "games" and slug:
-        if "lightgun" in slug or "shooter_gun" in slug or "rail_shooter" in slug or "gun_shooter" in slug:
+        if (
+            "lightgun" in slug
+            or "shooter_gun" in slug
+            or "rail_shooter" in slug
+            or "gun_shooter" in slug
+            or "tir_au_pistolet" in slug
+        ):
             return "lightgun"
-        if ("shoot" in slug or "shmup" in slug or "flying" in slug) and ("platform" in slug or "walking" in slug):
+        if ("shoot" in slug or "shmup" in slug or "flying" in slug or "tir" in slug) and (
+            "platform" in slug or "plateforme" in slug or "plattform" in slug or "walking" in slug
+        ):
             return "runandgun"
         if "shoot" in slug or "shmup" in slug or "flying" in slug or "gallery" in slug:
             return "shootemup"
-        if "fighter" in slug and "platform" in slug:
+        if ("fighter" in slug or "combat" in slug or "fighting" in slug) and (
+            "platform" in slug
+            or "plateforme" in slug
+            or "plattform" in slug
+            or "piattaforma" in slug
+            or "plataforma" in slug
+        ):
             return "action"
+        if (
+            "beat_em" in slug
+            or "beatem" in slug
+            or "brawler" in slug
+            or "hack_and_slash" in slug
+            or "scorrimento" in slug
+            or "yo_contra_el_barrio" in slug
+        ):
+            return "beatemup"
+        if (
+            ("fighter" in slug or "combat" in slug or "fighting" in slug)
+            and "versus" not in slug
+            and any(
+                tok in slug
+                for tok in (
+                    "2_5d",
+                    "field",
+                    "vertical",
+                    "misc",
+                    "scrolling",
+                    "defilement",
+                    "coop",
+                    "co_op",
+                    "champ",
+                    "rue",
+                )
+            )
+        ):
+            return "beatemup"
+        if ("fighter" in slug or "combat" in slug or "fighting" in slug or "lucha" in slug) and any(
+            tok in slug for tok in ("versus", "1v1", "2d", "3d")
+        ):
+            return "fighting"
     for syn_slug, canonical_id in sorted(domain_idx.items(), key=lambda kv: len(kv[0]), reverse=True):
         if syn_slug and len(syn_slug) >= 4 and syn_slug in slug:
             return canonical_id
     return slug
+
+
+_GAME_TITLE_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
+
+_EXACT_NON_FIGHTING_GAME_SLUGS: Set[str] = {
+    "x_men",
+    "the_uncanny_x_men",
+    "uncanny_x_men",
+    "spider_man",
+    "the_amazing_spider_man",
+    "spider_man_the_video_game",
+    "marvel_land",
+    "marvelland",
+    "wolverine",
+    "the_incredible_hulk",
+    "incredible_hulk",
+    "captain_america_and_the_avengers",
+    "the_punisher",
+    "punisher",
+    "batman",
+    "batman_returns",
+    "silver_surfer",
+    "fantastic_four",
+    "comix_zone",
+    "final_fight",
+    "final_fight_2",
+    "final_fight_3",
+    "final_fight_cd",
+    "mighty_final_fight",
+    "golden_axe",
+    "golden_axe_ii",
+    "golden_axe_2",
+    "golden_axe_iii",
+    "golden_axe_3",
+    "double_dragon_ii",
+    "double_dragon_ii_the_revenge",
+    "double_dragon_2",
+    "double_dragon_3",
+    "double_dragon_3_the_arcade_game",
+    "double_dragon_iii",
+    "super_double_dragon",
+}
+
+_NON_FIGHTING_GAME_SUBSTRING_SLUGS: Tuple[str, ...] = (
+    "marvel_land",
+    "marvelland",
+    "spider_man",
+    "maximum_carnage",
+    "separation_anxiety",
+    "arcade_s_revenge",
+    "arcades_revenge",
+    "clone_wars",
+    "adamantium_rage",
+    "captain_america_and_the_avengers",
+    "incredible_hulk",
+    "x_o_manowar",
+    "streets_of_rage",
+    "bare_knuckle",
+    "comix_zone",
+    "sonic_the_hedgehog",
+    "sonic_and_knuckles",
+    "sonic_knuckles",
+    "sonic_spinball",
+    "sonic_3d",
+    "shinobi",
+    "shadow_dancer",
+    "ghouls_n_ghosts",
+    "ghosts_n_goblins",
+    "castlevania",
+    "contra_hard_corps",
+    "probotector",
+    "gunstar_heroes",
+    "metal_slug",
+    "sunset_riders",
+    "ristar",
+    "kid_chameleon",
+    "vectorman",
+    "earthworm_jim",
+    "castle_of_illusion",
+    "world_of_illusion",
+    "quackshot",
+    "rocket_knight",
+    "sparkster",
+    "dynamite_headdy",
+    "alex_kidd",
+    "wonder_boy",
+    "toejam",
+    "ecco_the_dolphin",
+    "robocop_versus_the_terminator",
+    "robocop_vs_the_terminator",
+    "batman_beyond",
+    "batman_revenge_of_the_joker",
+    "return_of_the_joker",
+    "adventures_of_batman",
+    "hyperstone_heist",
+    "turtles_in_time",
+    "return_of_the_shredder",
+    "battletoads",
+    "alien_storm",
+    "altered_beast",
+    "eswat",
+    "rolling_thunder",
+    "moonwalker",
+    "splatterhouse",
+    "gauntlet",
+    "river_city_ransom",
+)
+
+
+def build_game_fingerprint(system: str, title: str) -> str:
+    """
+    Build a cross-source canonical game fingerprint (`games_fp_{system}:{title_slug}`)
+    that strips regional/revision parentheticals while preserving sequel numbers and subtitles.
+    """
+    canon_sys = resolve_canonical_system(system) if system else "games"
+    cleaned = _GAME_TITLE_PARENS_RE.sub("", str(title or "")).strip()
+    lower = cleaned.lower()
+    if lower.endswith(", the"):
+        cleaned = cleaned[:-5].strip()
+    elif lower.startswith("the "):
+        cleaned = cleaned[4:].strip()
+    slug = normalize_category_slug(cleaned)
+    if not slug:
+        return ""
+    return f"games_fp_{canon_sys}:{slug}"
+
+
+def is_disallowed_non_fighting_title(title: str) -> bool:
+    """
+    Return True when `title` is an unambiguous Platformer, Beat 'em up, or Action/Run&Gun game
+    that must never pass a strict 1v1 VS Fighting (`fighting`) filter even if an upstream catalog
+    tags it with a generic `Combat` / `Fighting` umbrella.
+    Preserves true 1v1 fighting games (`X-Men: Children of the Atom`, `X-Men vs. Street Fighter`,
+    `X-Men: Mutant Academy`, `Marvel Super Heroes`, `Marvel vs. Capcom`, `Golden Axe: The Duel`,
+    `Final Fight Revenge`, `Double Dragon V: The Shadow Falls`).
+    """
+    cleaned = _GAME_TITLE_PARENS_RE.sub("", str(title or "")).strip()
+    slug = normalize_category_slug(cleaned)
+    if not slug:
+        return False
+    if slug in _EXACT_NON_FIGHTING_GAME_SLUGS:
+        return True
+    if "golden_axe" in slug and "the_duel" not in slug and "duel" not in slug:
+        return True
+    if "final_fight" in slug and "revenge" not in slug:
+        return True
+    for bad in _NON_FIGHTING_GAME_SUBSTRING_SLUGS:
+        if bad in slug:
+            return True
+    return False
 
 
 def is_arcade_system(sys_key: str) -> bool:

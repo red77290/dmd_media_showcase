@@ -25,9 +25,12 @@ from typing import Any, Dict, List, Optional, Set
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
 from app.domain.taxonomy import (
+    CANONICAL_DECADES,
     GAME_GENRE_CATALOG,
     RETRO_SYSTEM_CATALOG,
     ReferentialConsolidator,
+    build_game_fingerprint,
+    is_disallowed_non_fighting_title,
     localize_label,
     resolve_canonical_genre,
     resolve_canonical_system,
@@ -43,6 +46,8 @@ from app.infrastructure.scrapers.referential_store import (
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.libretro_wikidata")
+
+_SYS_RNG = random.SystemRandom()
 
 _REGION_PAREN_RE = re.compile(r"\s*\([^)]*\)")
 _FORBIDDEN_HARDWARE_TITLES = {
@@ -88,10 +93,17 @@ _VERIFIED_GENRE_TITLE_SEEDS: Dict[str, List[str]] = {
         "Mega Turrican", "Ikari Warriors", "Mercs", "Shock Troopers", "Zombies Ate My Neighbors",
     ],
     "fighting": [
-        "Street Fighter II", "Super Street Fighter II", "Street Fighter Alpha 2",
-        "Mortal Kombat II", "Ultimate Mortal Kombat 3", "Killer Instinct", "Tekken 3",
-        "Soul Blade", "Dead or Alive", "Virtua Fighter 2", "Fatal Fury Special",
-        "Samurai Shodown", "The King of Fighters '98", "Marvel vs. Capcom",
+        "Street Fighter II", "Street Fighter II' - Special Champion Edition",
+        "Super Street Fighter II", "Street Fighter Alpha 2", "Eternal Champions",
+        "Mortal Kombat", "Mortal Kombat II", "Mortal Kombat 3", "Ultimate Mortal Kombat 3",
+        "Fatal Fury", "Fatal Fury 2", "Fatal Fury Special", "Samurai Shodown",
+        "Art of Fighting", "World Heroes", "Dragon Ball Z - L'Appel du Destin",
+        "Dragon Ball Z - Buyuu Retsuden", "Primal Rage", "ClayFighter", "WeaponLord",
+        "Justice League Task Force", "Fighting Masters", "Deadly Moves",
+        "Brutal - Paws of Fury", "Shaq-Fu", "Ballz 3D", "Double Dragon V - The Shadow Falls",
+        "King of the Monsters", "King of the Monsters 2", "Killer Instinct", "Tekken 3",
+        "Soul Blade", "Dead or Alive", "Virtua Fighter 2", "The King of Fighters '98",
+        "Marvel vs. Capcom",
     ],
     "beatemup": [
         "Streets of Rage", "Streets of Rage 2", "Streets of Rage 3", "Final Fight",
@@ -155,14 +167,18 @@ class LibretroWikidataAdapter(IScraperSource):
         }
 
     def _matches_decades(self, year_str: str, decades: List[str]) -> bool:
-        if not decades:
+        req_decs = [d.strip().lower() for d in (decades or []) if d and d.strip().lower() != "all"]
+        if not req_decs:
             return True
         if not year_str or len(year_str) < 4 or not year_str[:4].isdigit():
-            return True
+            return False
         yr = int(year_str[:4])
-        for dec in decades:
-            dec_clean = dec.strip().lower()
-            if len(dec_clean) >= 4 and dec_clean[:4].isdigit():
+        for dec_clean in req_decs:
+            if dec_clean in CANONICAL_DECADES:
+                low_b, high_b = CANONICAL_DECADES[dec_clean]["bounds"]
+                if low_b <= yr <= high_b:
+                    return True
+            elif len(dec_clean) >= 4 and dec_clean[:4].isdigit():
                 base = int(dec_clean[:4])
                 if base <= yr <= base + 9:
                     return True
@@ -189,6 +205,12 @@ class LibretroWikidataAdapter(IScraperSource):
         display_title = re.sub(r"\s*\([^)]*jeu vidéo[^)]*\)\s*$", "", display_title, flags=re.I).strip()
 
         if not display_title or display_title.lower() in _FORBIDDEN_HARDWARE_TITLES:
+            return None
+        if canon_genre == "fighting" and (
+            is_disallowed_non_fighting_title(display_title)
+            or is_disallowed_non_fighting_title(title_en)
+            or is_disallowed_non_fighting_title(title_fr)
+        ):
             return None
 
         # Match against verified Libretro file tree (lookup using English title first, then French title)
@@ -299,13 +321,13 @@ class LibretroWikidataAdapter(IScraperSource):
 
         # Prioritize regional filenames matching `short_lang`
         scored = [
-            (score_libretro_filename_for_lang(fname, short_lang) + random.randint(0, 15), fname)
+            (score_libretro_filename_for_lang(fname, short_lang) + _SYS_RNG.randint(0, 15), fname)
             for fname in boxarts
             if score_libretro_filename_for_lang(fname, short_lang) > 0
         ]
         scored.sort(key=lambda item: item[0], reverse=True)
-        pool = [fname for _, fname in scored[: max(40, count * 12)]]
-        random.shuffle(pool)
+        pool = [fname for _, fname in scored[: max(60, count * 16)]]
+        _SYS_RNG.shuffle(pool)
 
         results: List[MediaCandidate] = []
         for fname in pool:
@@ -316,7 +338,8 @@ class LibretroWikidataAdapter(IScraperSource):
                 continue
             slug = re.sub(r"[^a-z0-9]+", "_", clean_title.lower()).strip("_")
             cand_id = f"games_libretro_{canon_sys}_{slug}"
-            if not slug or cand_id in seen_ids:
+            fp_key = build_game_fingerprint(canon_sys, clean_title)
+            if not slug or cand_id in seen_ids or (fp_key and fp_key in seen_ids):
                 continue
 
             verified = await self.referential_strategy.resolve_verified_libretro_urls(
@@ -369,6 +392,8 @@ class LibretroWikidataAdapter(IScraperSource):
             if snap_url:
                 cand.add_unique_snapshot(snap_url)
             seen_ids.add(cand.id)
+            if fp_key:
+                seen_ids.add(fp_key)
             results.append(cand)
 
         return results
@@ -392,15 +417,15 @@ class LibretroWikidataAdapter(IScraperSource):
             for g in (criteria.genres or [])
             if g and g.lower() != "all" and resolve_canonical_genre("games", g) in GAME_GENRE_CATALOG
         ]
-        chosen_genre = random.choice(req_genres) if req_genres else "platform"
+        chosen_genre = _SYS_RNG.choice(req_genres) if req_genres else "platform"
 
         results: List[MediaCandidate] = []
         async with create_async_http_client(timeout=7.5) as client:
             for _ in range(max(2, count * 2)):
                 if len(results) >= count:
                     break
-                sys_key = random.choice(req_systems)
-                chosen_genre = random.choice(req_genres) if req_genres else None
+                sys_key = _SYS_RNG.choice(req_systems)
+                chosen_genre = _SYS_RNG.choice(req_genres) if req_genres else None
                 harvested = await self.referential_strategy.harvest_wikidata_games(
                     client, sys_key=sys_key, genre_key=chosen_genre
                 )
@@ -410,6 +435,8 @@ class LibretroWikidataAdapter(IScraperSource):
                     )
 
                 if not harvested and chosen_genre in _VERIFIED_GENRE_TITLE_SEEDS:
+                    smeta_decades = (RETRO_SYSTEM_CATALOG.get(sys_key) or {}).get("decades") or ["1990s"]
+                    seed_year = "1993" if "1990s" in smeta_decades else str(smeta_decades[0])[:4]
                     harvested = [
                         {
                             "qid": "",
@@ -417,7 +444,7 @@ class LibretroWikidataAdapter(IScraperSource):
                             "genre": chosen_genre,
                             "title_en": t,
                             "title_fr": t,
-                            "year": "",
+                            "year": seed_year,
                             "fr_wiki": t,
                             "en_wiki": t,
                         }
@@ -425,19 +452,25 @@ class LibretroWikidataAdapter(IScraperSource):
                     ]
 
                 if harvested:
+                    req_decs_clean = [
+                        d.strip().lower()
+                        for d in (criteria.decades or [])
+                        if d and d.strip().lower() != "all"
+                    ]
                     filtered = [
                         g
                         for g in harvested
-                        if self._matches_decades(str(g.get("year") or ""), criteria.decades)
-                    ] or list(harvested)
-                    random.shuffle(filtered)
+                        if self._matches_decades(str(g.get("year") or ""), req_decs_clean)
+                    ]
+                    _SYS_RNG.shuffle(filtered)
                     for entry in filtered:
                         if len(results) >= count:
                             break
                         title_probe = str(entry.get("title_en") or entry.get("title_fr") or "")
                         slug = re.sub(r"[^a-z0-9]+", "_", title_probe.lower()).strip("_")
                         cand_id = f"games_libretro_{sys_key}_{slug}"
-                        if not slug or cand_id in seen_ids:
+                        fp_probe = build_game_fingerprint(sys_key, title_probe)
+                        if not slug or cand_id in seen_ids or (fp_probe and fp_probe in seen_ids):
                             continue
                         cand = await self._build_candidate_from_wikidata_entry(
                             client,
@@ -447,7 +480,15 @@ class LibretroWikidataAdapter(IScraperSource):
                             lang=criteria.lang,
                         )
                         if cand and cand.id not in seen_ids:
+                            fp_cand = build_game_fingerprint(sys_key, cand.title)
+                            if fp_cand and fp_cand in seen_ids:
+                                seen_ids.add(cand.id)
+                                continue
                             seen_ids.add(cand.id)
+                            if fp_cand:
+                                seen_ids.add(fp_cand)
+                            if fp_probe:
+                                seen_ids.add(fp_probe)
                             results.append(cand)
 
                 # Strictly never fall back to uncategorized random Libretro boxarts when a specific genre filter was set

@@ -6,18 +6,22 @@ strictly following ScreenScraper's `jeuInfos.xml` / `jeuRecherche.php` schema.
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 import random
 import re
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
 from app.domain.taxonomy import (
     CANONICAL_DECADES,
     GAME_GENRE_CATALOG,
+    build_game_fingerprint,
+    is_disallowed_non_fighting_title,
     localize_label,
+    normalize_category_slug,
     resolve_canonical_genre,
     resolve_canonical_system,
 )
@@ -27,16 +31,104 @@ from app.infrastructure.scrapers.http_utils import clean_synopsis_text, create_a
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.screenscraper")
 
+_SYS_RNG = random.SystemRandom()
+
 _SEARCH_SYLLABLES = [
-    "ma", "st", "ca", "so", "dr", "fi", "ki", "me", "su", "ba",
-    "to", "ra", "da", "ko", "sh", "ga", "le", "pa", "ch", "bo",
-    "al", "ar", "ta", "mo", "ro", "ni", "sa", "te", "ka", "cr",
-    "sf", "vs", "mu", "pu", "sp", "wi", "bl", "gr", "tr", "de",
-    "fa", "go", "ha", "jo", "la", "lu", "mi", "na", "ne", "no",
-    "pe", "pl", "po", "pr", "qu", "re", "ri", "ru", "se", "si",
-    "sk", "sl", "sm", "sn", "sq", "sw", "th", "ti", "tu", "un",
-    "va", "ve", "vi", "wa", "wo", "xe", "ya", "yo", "za", "ze",
+    "al", "am", "an", "ar", "as", "at", "au", "ax", "az",
+    "ba", "be", "bi", "bl", "bo", "br", "bu",
+    "ca", "ce", "ch", "cl", "co", "cr", "cy",
+    "da", "de", "di", "do", "dr", "du", "dy",
+    "ea", "ec", "el", "em", "en", "er", "es", "et", "ex",
+    "fa", "fe", "fi", "fl", "fo", "fr", "fu",
+    "ga", "ge", "gh", "gi", "gl", "go", "gr", "gu",
+    "ha", "he", "hi", "ho", "hu", "hy",
+    "ic", "ik", "il", "in", "ir", "is",
+    "ja", "je", "jo", "ju",
+    "ka", "ke", "ki", "kl", "kn", "ko", "kr", "ku",
+    "la", "le", "li", "lo", "lu",
+    "ma", "me", "mi", "mo", "mu", "my",
+    "na", "ne", "ni", "no", "nu",
+    "ob", "od", "om", "on", "op", "or", "ou", "ov",
+    "pa", "pe", "ph", "pi", "pl", "po", "pr", "ps", "pu",
+    "qu", "ra", "re", "ri", "ro", "ru",
+    "sa", "sc", "se", "sf", "sh", "si", "sk", "sl", "sm", "sn", "so", "sp", "sq", "st", "su", "sw", "sy",
+    "ta", "te", "th", "ti", "to", "tr", "tu", "tw",
+    "ul", "un", "ur", "va", "ve", "vi", "vo", "vr",
+    "wa", "we", "wh", "wi", "wo", "wr",
+    "xe", "ya", "yo", "yu", "za", "ze", "zo",
 ]
+
+_GENRE_DISCOVERY_TOKENS: Dict[str, List[str]] = {
+    "fighting": [
+        "street fighter", "super street", "mortal kombat", "ultimate mortal", "eternal",
+        "fatal fury", "samurai", "art of fighting", "world heroes", "dragon ball",
+        "appel du destin", "buyuu", "hakusho", "yu yu", "primal rage", "clayfighter",
+        "weaponlord", "virtua fighter", "tournament", "brutal", "justice league",
+        "power instinct", "fighting masters", "deadly moves", "shadow falls", "ballz",
+        "shaq", "king of the monsters", "king of fighters", "garou", "last blade",
+        "darkstalkers", "vampire", "tekken", "soul", "dead or alive", "killer instinct",
+        "guilty gear", "rival schools", "pocket fighter", "cyberbots", "jojo",
+        "red earth", "toshinden", "bloody roar", "bushido blade", "tobal", "breakers",
+        "kizuna", "waku waku", "kaiser", "ranma", "gundam",
+    ],
+    "beatemup": [
+        "streets of rage", "bare knuckle", "golden axe", "final fight", "double dragon",
+        "comix zone", "maximum carnage", "separation anxiety", "captain america",
+        "punisher", "turtles", "hyperstone", "battletoads", "alien storm", "altered beast",
+        "cadillacs", "knights of the round", "warriors of fate", "king of dragons",
+        "sengoku", "mutation nation", "burning fight", "alien vs", "dungeons",
+        "river city", "splatterhouse", "vendetta", "crime fighters",
+    ],
+    "platform": [
+        "sonic", "mario", "castlevania", "mega man", "donkey kong", "kirby", "aladdin",
+        "lion king", "castle of illusion", "world of illusion", "quackshot", "ristar",
+        "dynamite headdy", "rocket knight", "sparkster", "shinobi", "kid chameleon",
+        "earthworm jim", "rayman", "crash", "spyro", "alex kidd", "wonder boy",
+        "ghouls", "strider", "bonk", "klonoa", "gex", "bubsy", "cool spot", "vectorman",
+    ],
+    "shootemup": [
+        "thunder force", "gradius", "r-type", "darius", "parodius", "twinbee", "musha",
+        "aleste", "raiden", "1942", "1943", "19xx", "giga wing", "mars matrix", "pulstar",
+        "blazing star", "gleylancer", "gaiares", "bio-hazard", "truxton", "fire shark",
+        "aero fighters", "strikers", "ikaruga", "radiant", "einhander", "axelay", "soldier",
+    ],
+    "runandgun": [
+        "contra", "probotector", "gunstar", "metal slug", "sunset riders", "turrican",
+        "mercs", "shock troopers", "midnight resistance", "rolling thunder", "eswat",
+        "vectorman", "doom troopers", "skeleton krew", "zombies", "smash tv", "ikari",
+    ],
+    "rpg": [
+        "phantasy star", "shining force", "chrono", "final fantasy", "dragon quest",
+        "dragon warrior", "mana", "breath of fire", "suikoden", "wild arms", "xenogears",
+        "landstalker", "beyond oasis", "story of thor", "soleil", "crusader of centy",
+        "lunar", "grandia", "star ocean", "valkyrie", "earthbound", "terranigma", "ys",
+    ],
+    "racing": [
+        "outrun", "road rash", "mario kart", "f-zero", "top gear", "virtua racing",
+        "ridge racer", "gran turismo", "wipeout", "micro machines", "rock n roll racing",
+        "super hang-on", "super monaco", "daytona", "sega rally", "lotus", "cruis",
+    ],
+    "puzzle": [
+        "columns", "puyo", "tetris", "dr. mario", "mean bean", "puzzle bobble",
+        "bust-a-move", "klax", "lemmings", "magical drop", "panel de pon", "lumines",
+        "boulder dash", "sokoban", "picross", "kula world", "intelligent qube",
+    ],
+    "sports": [
+        "nba jam", "fifa", "sensible soccer", "iss", "nhl", "madden", "windjammers",
+        "speedball", "mutant league", "virtua tennis", "tony hawk", "punch-out",
+        "super sidekicks", "turf masters", "track & field", "olympic", "tecmo super",
+    ],
+    "strategy": [
+        "dune", "herzog", "shining force", "warsong", "langrisser", "ogre battle",
+        "tactics", "advance wars", "populous", "syndicate", "theme park", "civilization",
+        "warcraft", "command & conquer", "romance of the three", "nobunaga", "worms",
+    ],
+    "action": [
+        "strider", "shinobi", "zelda", "metroid", "castlevania", "resident evil",
+        "metal gear", "tomb raider", "legacy of kain", "bomberman", "desert strike",
+        "jungle strike", "urban strike", "flashback", "another world", "ecc", "chaos engine",
+    ],
+}
 
 _SYSTEM_SPECIFIC_STEMS: Dict[str, List[str]] = {
     "cps1": [
@@ -205,14 +297,20 @@ def parse_jeu_infos_xml(xml_text: str) -> List[Dict[str, Any]]:
                     if txt:
                         syn_list.append(
                             {
-                                "langue": str(s_el.attrib.get("langue") or "").strip().lower(),
+                                "langue": str(
+                                    s_el.attrib.get("langue") or s_el.attrib.get("lang") or ""
+                                ).strip().lower(),
                                 "text": txt,
                             }
                         )
             elif (syn_parent.text or "").strip():
                 syn_list.append(
                     {
-                        "langue": str(syn_parent.attrib.get("langue") or "en").strip().lower(),
+                        "langue": str(
+                            syn_parent.attrib.get("langue")
+                            or syn_parent.attrib.get("lang")
+                            or "en"
+                        ).strip().lower(),
                         "text": (syn_parent.text or "").strip(),
                     }
                 )
@@ -244,7 +342,9 @@ def parse_jeu_infos_xml(xml_text: str) -> List[Dict[str, Any]]:
                             "nomcourt": str(g_el.attrib.get("nomcourt") or "").strip(),
                             "principale": str(g_el.attrib.get("principale") or "0").strip(),
                             "parentid": str(g_el.attrib.get("parentid") or "0").strip(),
-                            "langue": str(g_el.attrib.get("langue") or "").strip().lower(),
+                            "langue": str(
+                                g_el.attrib.get("langue") or g_el.attrib.get("lang") or ""
+                            ).strip().lower(),
                             "text": txt,
                         }
                     )
@@ -278,6 +378,9 @@ class ScreenScraperAdapter(IScraperSource):
     role: str = "primary"
 
     parse_jeu_infos_xml = staticmethod(parse_jeu_infos_xml)
+
+    def __init__(self) -> None:
+        self._recent_tokens: Dict[Tuple[str, str], Deque[str]] = {}
 
     def _credentials(self) -> Dict[str, str]:
         cfg = server_config_store.get_all()
@@ -318,7 +421,7 @@ class ScreenScraperAdapter(IScraperSource):
 
     @staticmethod
     def _extract_genre_entries(genres_raw: Any) -> List[Dict[str, str]]:
-        """Normalize ScreenScraper JSON/XML `<genres>` into a flat list of `{'langue', 'text', 'principale'}`."""
+        """Normalize ScreenScraper JSON/XML `<genres>` into a flat list with hierarchy metadata."""
         if isinstance(genres_raw, dict):
             genres_raw = genres_raw.get("genre") or genres_raw.get("genres") or [genres_raw]
         if not isinstance(genres_raw, list):
@@ -327,13 +430,17 @@ class ScreenScraperAdapter(IScraperSource):
         for g in genres_raw:
             if not isinstance(g, dict):
                 continue
+            gid = str(g.get("id") or "").strip()
+            parentid = str(g.get("parentid") or "0").strip()
             principale = str(g.get("principale") or "1").strip()
             if isinstance(g.get("noms"), list):
                 for n in g["noms"]:
                     if isinstance(n, dict) and n.get("text"):
                         entries.append(
                             {
-                                "langue": str(n.get("langue") or "").strip().lower(),
+                                "id": gid,
+                                "parentid": parentid,
+                                "langue": str(n.get("langue") or n.get("lang") or "").strip().lower(),
                                 "text": str(n["text"]).strip(),
                                 "principale": principale,
                             }
@@ -341,7 +448,9 @@ class ScreenScraperAdapter(IScraperSource):
             elif g.get("text"):
                 entries.append(
                     {
-                        "langue": str(g.get("langue") or "").strip().lower(),
+                        "id": gid,
+                        "parentid": parentid,
+                        "langue": str(g.get("langue") or g.get("lang") or "").strip().lower(),
                         "text": str(g["text"]).strip(),
                         "principale": principale,
                     }
@@ -386,35 +495,57 @@ class ScreenScraperAdapter(IScraperSource):
         short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
         reg_priority = _region_priority_order(short_lang)
 
-        # 1. Validate <systeme id="...">
+        # 1. Strictly validate <systeme id="..."> and <systeme> text for ALL systems
         sys_node = jeu.get("systeme")
         if isinstance(sys_node, dict):
             sys_id_resp = str(sys_node.get("id") or "").strip()
-            sys_text_resp = str(sys_node.get("text") or "").strip().lower()
+            sys_text_resp = str(sys_node.get("text") or sys_node.get("nom") or "").strip().lower()
         else:
             sys_id_resp = ""
             sys_text_resp = str(sys_node or "").strip().lower()
 
-        canon_sys = resolve_canonical_system(sys_key) if sys_key else ""
-        if (not canon_sys or canon_sys in ("arcade", "mame")) and sys_id_resp in _SS_ID_TO_SYS_KEY:
-            canon_sys = _SS_ID_TO_SYS_KEY[sys_id_resp]
-        elif not canon_sys and sys_text_resp:
+        resp_sys = ""
+        if sys_id_resp:
+            if sys_id_resp in _SS_ID_TO_SYS_KEY:
+                resp_sys = _SS_ID_TO_SYS_KEY[sys_id_resp]
+            elif sys_id_resp == "75":
+                resp_sys = "arcade"
+            else:
+                resp_sys = f"ss_other_{sys_id_resp}"
+        elif sys_text_resp:
             resolved_from_text = resolve_canonical_system(sys_text_resp)
             if resolved_from_text in SYSTEM_METADATA:
-                canon_sys = resolved_from_text
-        if not canon_sys or canon_sys not in SYSTEM_METADATA:
-            canon_sys = "arcade"
+                resp_sys = resolved_from_text
+            else:
+                resp_sys = f"ss_other_{resolved_from_text}"
 
-        if sys_key and resolve_canonical_system(sys_key) in _STRICT_HARDWARE_SS_IDS:
-            strict_sys = resolve_canonical_system(sys_key)
-            expected_tokens = _STRICT_HARDWARE_SS_IDS[strict_sys]
+        requested_sys = resolve_canonical_system(sys_key) if sys_key else ""
+        if requested_sys in _STRICT_HARDWARE_SS_IDS:
+            expected_tokens = _STRICT_HARDWARE_SS_IDS[requested_sys]
             expected_id = expected_tokens[0]
             if sys_id_resp or sys_text_resp:
                 id_ok = sys_id_resp == expected_id
-                text_ok = any(tok in sys_text_resp for tok in expected_tokens[1:])
+                text_ok = sys_id_resp in ("", "75") and any(
+                    tok in sys_text_resp for tok in expected_tokens[1:]
+                )
                 if not id_ok and not text_ok:
                     return None
-            canon_sys = strict_sys
+            canon_sys = requested_sys
+        elif requested_sys in ("arcade", "mame", "fbneo"):
+            if resp_sys and resp_sys not in ("arcade", "mame", "fbneo", "cps1", "cps2", "cps3", "neogeo"):
+                return None
+            canon_sys = resp_sys if resp_sys in ("cps1", "cps2", "cps3", "neogeo") else requested_sys
+        elif requested_sys and requested_sys in SYSTEM_METADATA:
+            expected_ss_id = str(SYSTEM_METADATA[requested_sys]["ss_id"])
+            if sys_id_resp and sys_id_resp != expected_ss_id:
+                return None
+            if not sys_id_resp and resp_sys and resp_sys != requested_sys:
+                return None
+            canon_sys = requested_sys
+        else:
+            if resp_sys and resp_sys not in SYSTEM_METADATA:
+                return None
+            canon_sys = resp_sys if resp_sys in SYSTEM_METADATA else "arcade"
 
         if criteria and criteria.systems:
             req_systems = {
@@ -423,7 +554,10 @@ class ScreenScraperAdapter(IScraperSource):
                 if s and s.strip().lower() != "all"
             }
             if req_systems and canon_sys not in req_systems:
-                if not (canon_sys in ("cps1", "cps2", "cps3", "neogeo") and req_systems & {"arcade", "mame"}):
+                if not (
+                    canon_sys in ("cps1", "cps2", "cps3", "neogeo")
+                    and (req_systems & {"arcade", "mame", "fbneo"})
+                ):
                     return None
 
         sys_meta = SYSTEM_METADATA.get(canon_sys, SYSTEM_METADATA["arcade"])
@@ -468,19 +602,49 @@ class ScreenScraperAdapter(IScraperSource):
             if not self._matches_decades(year, criteria.decades):
                 return None
 
-        # 4. Parse <genres> and enforce genre filter if requested
+        # 4. Parse <genres> with ScreenScraper umbrella disambiguation & strict genre enforcement
         genre_entries = self._extract_genre_entries(jeu.get("genres"))
-        canon_genres: List[str] = []
-        localized_genre_label = ""
+        raw_canon_genres: List[str] = []
+        entry_canon_pairs: List[Tuple[Dict[str, str], str]] = []
+        has_explicit_versus_fighting = False
+
         for g_entry in genre_entries:
             g_text = g_entry.get("text") or ""
             if not g_text:
                 continue
+            g_slug = normalize_category_slug(g_text)
             cg = resolve_canonical_genre("games", g_text)
-            if cg and cg not in canon_genres:
-                canon_genres.append(cg)
-            if g_entry.get("langue") == short_lang and not localized_genre_label:
-                localized_genre_label = g_text
+            if cg:
+                entry_canon_pairs.append((g_entry, cg))
+                if cg not in raw_canon_genres:
+                    raw_canon_genres.append(cg)
+            if cg == "fighting" and any(
+                tok in g_slug
+                for tok in (
+                    "versus",
+                    "1v1",
+                    "combat_2d",
+                    "combat_3d",
+                    "fighter_2d",
+                    "fighter_3d",
+                    "wrestling",
+                    "incontri",
+                )
+            ):
+                has_explicit_versus_fighting = True
+
+        # ScreenScraper uses top-level <genre id="5" parentid="0">Combat / Fighter</genre>
+        # as the umbrella parent of <genre parentid="5">Beat'em all</genre> and on melee
+        # action-platformers. Strip generic umbrella "fighting" whenever a concrete non-1v1
+        # genre ("beatemup", "platform", "runandgun", "shootemup") is present without an
+        # explicit 1v1 versus subgenre.
+        canon_genres = list(raw_canon_genres)
+        if (
+            "fighting" in canon_genres
+            and not has_explicit_versus_fighting
+            and (set(canon_genres) & {"beatemup", "platform", "runandgun", "shootemup"})
+        ):
+            canon_genres = [g for g in canon_genres if g != "fighting"]
 
         if criteria and criteria.genres:
             req_genres = {
@@ -491,8 +655,29 @@ class ScreenScraperAdapter(IScraperSource):
             if req_genres:
                 if not canon_genres or not (set(canon_genres) & req_genres):
                     return None
+                if "fighting" in req_genres:
+                    if "platform" not in req_genres and "platform" in raw_canon_genres:
+                        return None
+                    if "beatemup" not in req_genres and "beatemup" in raw_canon_genres:
+                        return None
+                    if (
+                        "platform" not in req_genres
+                        and "beatemup" not in req_genres
+                        and is_disallowed_non_fighting_title(title)
+                    ):
+                        return None
 
         primary_genre = canon_genres[0] if canon_genres else ""
+        localized_genre_label = ""
+        for g_entry, cg in entry_canon_pairs:
+            if g_entry.get("langue") == short_lang and cg == primary_genre:
+                localized_genre_label = g_entry.get("text") or ""
+                break
+        if not localized_genre_label:
+            for g_entry, cg in entry_canon_pairs:
+                if g_entry.get("langue") == short_lang and cg in canon_genres:
+                    localized_genre_label = g_entry.get("text") or ""
+                    break
         if not localized_genre_label and primary_genre in GAME_GENRE_CATALOG:
             localized_genre_label = localize_label(
                 GAME_GENRE_CATALOG[primary_genre]["labels"], short_lang, GAME_GENRES.get(primary_genre, "")
@@ -644,6 +829,66 @@ class ScreenScraperAdapter(IScraperSource):
             return [jeu_single]
         return []
 
+    def _pick_discovery_token(
+        self,
+        sys_key: str,
+        req_genres: List[str],
+        used_tokens: Set[Tuple[str, str]],
+    ) -> str:
+        """
+        Select a high-entropy search token for `jeuRecherche.php`, interleaving genre-affinitive
+        stems, hardware stems, and broad 2-letter prefixes while avoiding recently used tokens
+        across consecutive discovery calls.
+        """
+        genre_bucket = ",".join(sorted(req_genres)) if req_genres else "all"
+        recent = self._recent_tokens.get((sys_key, genre_bucket))
+        if recent is None:
+            recent = deque(maxlen=28)
+            self._recent_tokens[(sys_key, genre_bucket)] = recent
+
+        genre_pool: List[str] = []
+        for g in req_genres:
+            for tok in _GENRE_DISCOVERY_TOKENS.get(g, []):
+                if tok not in genre_pool:
+                    genre_pool.append(tok)
+        sys_stems = _SYSTEM_SPECIFIC_STEMS.get(sys_key) or []
+
+        roll = _SYS_RNG.random()
+        if genre_pool and sys_stems:
+            if roll < 0.45:
+                primary_pool = genre_pool
+            elif roll < 0.75:
+                primary_pool = sys_stems
+            else:
+                primary_pool = _SEARCH_SYLLABLES
+        elif genre_pool:
+            primary_pool = genre_pool if roll < 0.58 else _SEARCH_SYLLABLES
+        elif sys_stems:
+            primary_pool = sys_stems if roll < 0.65 else _SEARCH_SYLLABLES
+        else:
+            primary_pool = _SEARCH_SYLLABLES
+
+        recent_set = set(recent)
+        fresh = [
+            t
+            for t in primary_pool
+            if (sys_key, t) not in used_tokens and t not in recent_set
+        ]
+        if not fresh:
+            combined = list(dict.fromkeys(genre_pool + sys_stems + _SEARCH_SYLLABLES))
+            fresh = [
+                t
+                for t in combined
+                if (sys_key, t) not in used_tokens and t not in recent_set
+            ]
+        if not fresh:
+            fresh = [t for t in primary_pool if (sys_key, t) not in used_tokens] or list(primary_pool)
+
+        token = _SYS_RNG.choice(fresh)
+        used_tokens.add((sys_key, token))
+        recent.append(token)
+        return token
+
     async def fetch_random_unseen(
         self,
         criteria: FilterCriteria,
@@ -659,26 +904,25 @@ class ScreenScraperAdapter(IScraperSource):
             for s in (criteria.systems or [])
             if s and s.strip().lower() != "all" and resolve_canonical_system(s) in SYSTEM_METADATA
         ] or list(SYSTEM_METADATA.keys())
+        req_genres = [
+            resolve_canonical_genre("games", g)
+            for g in (criteria.genres or [])
+            if g and g.strip().lower() != "all"
+        ]
 
         results: List[MediaCandidate] = []
+        overflow_candidates: List[Tuple[MediaCandidate, Set[str]]] = []
+        staged_keys: Set[str] = set()
         used_tokens: Set[Tuple[str, str]] = set()
-        max_attempts = max(6, count * 4)
+        max_attempts = max(10 if req_genres else 6, count * 5)
 
         async with create_async_http_client(timeout=6.0) as client:
             for _ in range(max_attempts):
                 if len(results) >= count:
                     break
-                sys_key = random.choice(valid_systems)
+                sys_key = _SYS_RNG.choice(valid_systems)
                 sys_meta = SYSTEM_METADATA[sys_key]
-                sys_stems = _SYSTEM_SPECIFIC_STEMS.get(sys_key)
-                if sys_stems and random.random() < 0.7:
-                    token_pool = sys_stems
-                else:
-                    token_pool = _SEARCH_SYLLABLES
-
-                avail_tokens = [t for t in token_pool if (sys_key, t) not in used_tokens] or token_pool
-                token = random.choice(avail_tokens)
-                used_tokens.add((sys_key, token))
+                token = self._pick_discovery_token(sys_key, req_genres, used_tokens)
 
                 params: Dict[str, str] = {
                     "softname": "dmd-media-showcase",
@@ -701,36 +945,74 @@ class ScreenScraperAdapter(IScraperSource):
                     if resp.status_code != 200:
                         continue
                     jeux = self._extract_jeux_from_response(resp)
-                    random.shuffle(jeux)
-                    # Prioritize parent games (cloneof == 0) over clones
+                    _SYS_RNG.shuffle(jeux)
+                    # Prioritize parent games (cloneof == 0) over clones while preserving random order within each tier
                     jeux.sort(
                         key=lambda j: 0
                         if _extract_node_text(j.get("cloneof")) in ("", "0")
                         else 1
                     )
+                    token_primary_added = False
                     for jeu in jeux:
                         raw_gid = str(jeu.get("id") or "").strip()
-                        if raw_gid and f"games_ss_{raw_gid}" in seen_ids:
+                        if raw_gid and (
+                            f"games_ss_{raw_gid}" in seen_ids
+                            or f"games_ss_{raw_gid}" in staged_keys
+                        ):
                             continue
+                        clone_parent = _extract_node_text(jeu.get("cloneof"))
+                        if clone_parent not in ("", "0") and (
+                            f"games_ss_{clone_parent}" in seen_ids
+                            or f"games_ss_{clone_parent}" in staged_keys
+                        ):
+                            continue
+
                         cand = self._parse_game_node(jeu, sys_key, criteria.lang, criteria=criteria)
                         if not cand:
                             if raw_gid:
                                 seen_ids.add(f"games_ss_{raw_gid}")
                             continue
+
+                        cand_sys = str((cand.extra_meta or {}).get("system") or sys_key)
                         title_slug = re.sub(r"[^a-z0-9]+", "_", cand.title.lower()).strip("_")
                         title_key = f"games_ss_title_{title_slug}"
-                        if cand.id in seen_ids or title_key in seen_ids:
+                        fp_key = build_game_fingerprint(cand_sys, cand.title)
+
+                        dedup_keys = {cand.id, title_key}
+                        if fp_key:
+                            dedup_keys.add(fp_key)
+                        if clone_parent not in ("", "0"):
+                            dedup_keys.add(f"games_ss_{clone_parent}")
+
+                        if dedup_keys & seen_ids or dedup_keys & staged_keys:
                             seen_ids.add(cand.id)
                             continue
-                        seen_ids.add(cand.id)
-                        seen_ids.add(title_key)
-                        results.append(cand)
-                        if len(results) >= count:
-                            break
+
+                        # When count > 1, take at most 1 primary candidate per query token first
+                        # to guarantee cross-prefix diversity and prevent alphabetical clustering.
+                        if not token_primary_added:
+                            seen_ids.update(dedup_keys)
+                            results.append(cand)
+                            token_primary_added = True
+                            if len(results) >= count:
+                                break
+                        else:
+                            staged_keys.update(dedup_keys)
+                            overflow_candidates.append((cand, dedup_keys))
                 except Exception as exc:
                     logger.debug("[ScreenScraper] Discovery error: %s", exc)
 
-        return results
+        if len(results) < count and overflow_candidates:
+            _SYS_RNG.shuffle(overflow_candidates)
+            for cand, dedup_keys in overflow_candidates:
+                if len(results) >= count:
+                    break
+                if dedup_keys & seen_ids:
+                    continue
+                seen_ids.update(dedup_keys)
+                results.append(cand)
+
+        return results[:count]
 
     async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
         if not self.is_configured() or not query.strip():
@@ -756,7 +1038,7 @@ class ScreenScraperAdapter(IScraperSource):
                 if resp.status_code == 200:
                     jeux = self._extract_jeux_from_response(resp)
                     for jeu in jeux:
-                        cand = self._parse_game_node(jeu, "arcade", lang)
+                        cand = self._parse_game_node(jeu, "", lang)
                         if cand:
                             return cand
         except Exception:

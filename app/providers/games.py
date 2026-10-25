@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set
 
 from app.application.source_chain_service import source_chain_service
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
+from app.domain.taxonomy import resolve_canonical_genre, resolve_canonical_system
 from app.models import SessionRegisterRequest
 from app.providers.base import BaseMediaProvider, RawMediaCandidate
 
@@ -40,14 +41,34 @@ def candidate_to_raw(cand: MediaCandidate) -> RawMediaCandidate:
 
 
 def request_to_criteria(domain: DomainType, req: SessionRegisterRequest) -> FilterCriteria:
-    decades = list(req.decades)
-    if req.decade and req.decade not in decades:
+    decades = [d for d in req.decades if d and str(d).strip().lower() != "all"]
+    if req.decade and req.decade.strip().lower() != "all" and req.decade not in decades:
         decades.append(req.decade)
+
+    systems: List[str] = []
+    if domain == "games":
+        for s in req.systems or []:
+            if not s or str(s).strip().lower() == "all":
+                continue
+            canon_s = resolve_canonical_system(s)
+            if canon_s and canon_s not in systems:
+                systems.append(canon_s)
+    else:
+        systems = list(req.systems)
+
+    genres: List[str] = []
+    for g in req.genres or []:
+        if not g or str(g).strip().lower() == "all":
+            continue
+        canon_g = resolve_canonical_genre(domain, g)
+        if canon_g and canon_g not in genres:
+            genres.append(canon_g)
+
     return FilterCriteria(
         domain=domain,
         lang=req.lang,
-        systems=list(req.systems),
-        genres=list(req.genres),
+        systems=systems,
+        genres=genres,
         decades=decades,
         min_rating=req.min_rating,
         video_type=req.video_type,

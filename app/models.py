@@ -294,6 +294,13 @@ class OnDemandRequest(BaseModel):
     image_count: int = 0
     video_max_duration_s: float = 8.0
     video_fps: int = 15
+    include_video: bool = True
+    video_mode: Literal[
+        "auto_action", "panorama", "center_crop", "pixel_art", "anime", "cinema"
+    ] = "auto_action"
+    color_boost: Union[
+        Literal["auto", "pixel_art", "anime", "cinema"], bool, str
+    ] = "auto"
     primary_source: str = "auto"
     scraper_user: str = ""
     scraper_pass: str = ""
@@ -315,8 +322,16 @@ class HealthResponse(BaseModel):
     completed_jobs_total: int
     avg_job_duration_s: float
     providers_configured: Dict[str, str]
+    providers_detailed: Dict[str, List[Dict[str, Union[str, bool]]]] = Field(default_factory=dict)
     mqtt_mode: str = "embedded"
     mqtt_port: int = 1883
+    mqtt_connected_clients: int = 0
+    mqtt_tcp_sessions: int = 0
+    registered_dmd_slots: int = 0
+    ready_slots: int = 0
+    standby_slots: int = 0
+    active_udp_streams: int = 0
+    active_broadcasts: int = 0
     seen_history_counts: Dict[str, int] = Field(default_factory=dict)
 
 
