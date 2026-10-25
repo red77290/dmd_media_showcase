@@ -25,6 +25,52 @@ logger = logging.getLogger("dmd_showcase.persistence.dmd_profiles")
 
 SUPPORTED_CONTENT_LANGS = ("fr", "en", "es", "de", "it", "pt", "ja")
 VALID_DOMAINS = ("games", "movies", "series", "anime")
+VALID_CARD_LAYOUTS = (
+    "classic_split",
+    "poster_right",
+    "badge_header",
+    "hero_banner",
+    "minimal_arcade",
+)
+VALID_CARD_THEMES = (
+    "tinted",
+    "pure_black",
+    "neon_border",
+    "poster_wash",
+    "amber_dmd",
+)
+VALID_CARD_FONTS = ("arcade_pixel", "clean_sans")
+
+
+def normalize_card_style(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize Mode 2B / Studio Info Card style settings with safe pixel-perfect defaults."""
+    src = raw if isinstance(raw, dict) else {}
+    layout = str(src.get("card_layout") or "classic_split").strip().lower()
+    if layout not in VALID_CARD_LAYOUTS:
+        layout = "classic_split"
+    theme = str(src.get("card_theme") or "tinted").strip().lower()
+    if theme not in VALID_CARD_THEMES:
+        theme = "tinted"
+    font = str(src.get("card_font") or "arcade_pixel").strip().lower()
+    if font not in VALID_CARD_FONTS:
+        font = "arcade_pixel"
+    accent = str(src.get("card_accent_color") or "auto").strip() or "auto"
+    hold_raw = src.get("card_hold_s")
+    hold_s = max(0.2, min(5.0, float(hold_raw if hold_raw is not None else 0.9)))
+    return {
+        "include_card_intro": bool(src.get("include_card_intro", True)),
+        "card_layout": layout,
+        "card_theme": theme,
+        "card_font": font,
+        "card_accent_color": accent,
+        "include_poster": bool(src.get("include_poster", True)),
+        "show_badge": bool(src.get("show_badge", True)),
+        "show_year": bool(src.get("show_year", True)),
+        "show_rating": bool(src.get("show_rating", True)),
+        "include_synopsis": bool(src.get("include_synopsis", True)),
+        "text_scroll_speed": str(src.get("text_scroll_speed") or "normal").strip().lower() or "normal",
+        "card_hold_s": hold_s,
+    }
 
 
 def default_playlist_slots(lang: str = "fr") -> List[Dict[str, Any]]:
@@ -138,7 +184,7 @@ def normalize_playlist_slot(raw: Dict[str, Any], fallback_lang: str = "fr") -> D
     slot_lang = str(slot_lang_raw).strip().lower() if slot_lang_raw else ""
     if slot_lang and slot_lang not in SUPPORTED_CONTENT_LANGS:
         slot_lang = fallback_lang
-    return {
+    out: Dict[str, Any] = {
         "enabled": bool(raw.get("enabled", True)),
         "domain": dom,
         "count": max(1, min(10, int(raw.get("count") or 1))),
@@ -164,6 +210,24 @@ def normalize_playlist_slot(raw: Dict[str, Any], fallback_lang: str = "fr") -> D
             else str(raw.get("color_boost") or settings.default_color_boost or "auto").strip().lower()
         ),
     }
+    if raw.get("include_card_intro") is not None:
+        out["include_card_intro"] = bool(raw["include_card_intro"])
+    if raw.get("card_layout") in VALID_CARD_LAYOUTS:
+        out["card_layout"] = str(raw["card_layout"])
+    if raw.get("card_theme") in VALID_CARD_THEMES:
+        out["card_theme"] = str(raw["card_theme"])
+    if raw.get("card_font") in VALID_CARD_FONTS:
+        out["card_font"] = str(raw["card_font"])
+    if raw.get("card_accent_color"):
+        out["card_accent_color"] = str(raw["card_accent_color"]).strip()
+    for bkey in ("show_badge", "show_year", "show_rating"):
+        if raw.get(bkey) is not None:
+            out[bkey] = bool(raw[bkey])
+    if raw.get("card_hold_s") is not None:
+        out["card_hold_s"] = max(0.2, min(5.0, float(raw["card_hold_s"])))
+    if raw.get("panorama_duration_s") is not None:
+        out["panorama_duration_s"] = max(1.5, min(15.0, float(raw["panorama_duration_s"])))
+    return out
 
 
 def normalize_dmd_profile(dmd_id: str, raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -197,6 +261,7 @@ def normalize_dmd_profile(dmd_id: str, raw: Dict[str, Any]) -> Dict[str, Any]:
         "lang": lang,
         "paused": bool(raw.get("paused", False)),
         "inter_item_gap_s": max(0.0, min(10.0, float(raw.get("inter_item_gap_s") if raw.get("inter_item_gap_s") is not None else 1.0))),
+        "card_style": normalize_card_style(raw.get("card_style")),
         "playlist": playlist,
         "updated_at": float(raw.get("updated_at") or time.time()),
     }

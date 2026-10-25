@@ -15,6 +15,7 @@ from app.portable_env import enforce_hermetic_environment
 # Lock down portable environment before any media/subprocess imports
 enforce_hermetic_environment()
 
+import json
 import logging
 import sys
 import time
@@ -68,6 +69,8 @@ from app.models import (
     SearchRequestPayload,
     SessionRegisterRequest,
     SessionRegisterResponse,
+    StudioCardPreviewRequest,
+    StudioFullPreviewRequest,
 )
 from app.scheduler.worker_pool import batch_manager
 
@@ -87,7 +90,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Discovery",
-        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` DDD scraper sources.",
+        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` metadata scraper sources.",
     },
     {
         "name": "Consume-Once Protocol",
@@ -104,6 +107,10 @@ OPENAPI_TAGS = [
     {
         "name": "On-Demand & Voice Assistant",
         "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants.",
+    },
+    {
+        "name": "Card Studio & Simulator",
+        "description": "Interactive Mode 2B Card Customizer, Full Sequence Builder, HUB75 LED Simulator (`DMDS` binary streams), and zero-retranscode promotion (`preview_id`) into active DMD queues.",
     },
     {
         "name": "Assets & Streaming",
@@ -149,12 +156,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="DMD Media Showcase Server API",
-    summary="DDD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 DMDs",
+    summary="DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
     description=(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
         "### Architecture Highlights\n"
-        "- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n"
+        "- **Resilient Scraper Chains (`Primary` + `Fallback`)**: 2 dedicated metadata & video sources per domain.\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
         "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming "
         "(`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at "
@@ -254,7 +261,7 @@ def _normalized_seen_stats() -> Dict[str, int]:
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["System & Admin"])
 async def get_health() -> HealthResponse:
-    """Return server health, worker pool saturation, MQTT broker mode, and DDD scraper chains."""
+    """Return server health, worker pool saturation, MQTT broker mode, and active scraper chains."""
     batch_manager.start()
     srv_cfg = server_config_store.get_all()
     mqtt_port = (
@@ -544,7 +551,7 @@ async def get_domain_filters(
     domain: DomainType,
     lang: str = Query(default="fr", description="Preferred UI/content language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)"),
 ) -> Dict[str, object]:
-    """Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources."""
+    """Return consolidated localized filter categories, relational system capabilities, genres, decades, and metadata sources."""
     filters = scraper_registry.available_filters(domain=domain, lang=lang)
     return {
         "domain": domain,
@@ -553,6 +560,9 @@ async def get_domain_filters(
         "video_modes": ["auto_action", "panorama", "center_crop"],
         "color_boost_modes": ["auto", "pixel_art", "anime", "cinema"],
         "video_types": ["any", "opening", "ending", "pv", "trailer"],
+        "card_layouts": ["classic_split", "poster_right", "badge_header", "hero_banner", "minimal_arcade"],
+        "card_themes": ["tinted", "pure_black", "neon_border", "poster_wash", "amber_dmd"],
+        "card_fonts": ["arcade_pixel", "clean_sans"],
         **filters,
     }
 
@@ -572,6 +582,8 @@ def _candidate_to_search_model(cand: MediaCandidate, fallback_lang: str) -> Sear
         lang=cand.lang or fallback_lang,
         source_id=cand.source_id,
         poster_url=cand.resolved_jacket_url(),
+        marquee_url=cand.marquee_url or cand.backdrop_url,
+        snapshot_count=len(cand.snapshot_urls),
         has_video=bool(cand.video_url or cand.youtube_url),
     )
 
@@ -824,6 +836,73 @@ async def control_dmd_client(
     """Send a real-time playback control (`skip`, `pause`, `resume`, `stop`) to `dmd_id`."""
     res = await consume_once_orchestrator.control_client(dmd_id, req.action)
     return {"status": "ok", **res}
+
+
+@app.post(
+    "/api/v1/studio/card-preview",
+    tags=["Card Studio & Simulator"],
+    responses={
+        200: {
+            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Fast (< 100 ms) binary `DMDS` RGB565LE stream of the customized Mode 2B Info Card.",
+        }
+    },
+)
+async def build_studio_card_preview_endpoint(
+    payload: StudioCardPreviewRequest,
+) -> Response:
+    """
+    Render an ultra-fast (`< 100 ms`) binary `DMDS` (`<4sBBHHHHH` + RGB565LE frames) preview of the
+    Mode 2B Info Card honoring `width` x `height` (YOKO & TATE), `card_layout`, `card_theme`, `card_font`,
+    `text_scroll_speed`, and `card_hold_s`. Runs outside the heavy video transcoding semaphore and
+    caches poster downloads on disk so UI slider tweaks respond instantaneously.
+    """
+    dmds_bytes, chapters = await consume_once_orchestrator.build_studio_card_preview(payload)
+    return Response(
+        content=dmds_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(dmds_bytes)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DMD-Chapters": json.dumps(chapters),
+            "Access-Control-Expose-Headers": "X-DMD-Chapters",
+        },
+    )
+
+
+@app.post(
+    "/api/v1/studio/full-preview",
+    tags=["Card Studio & Simulator"],
+    responses={
+        200: {
+            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Full customized binary `DMDS` stream (`Card + Panoramas + Snapshots + Video`) with `X-DMD-Preview-Id` and `X-DMD-Chapters` headers.",
+        }
+    },
+)
+async def build_studio_full_preview_endpoint(
+    payload: StudioFullPreviewRequest,
+) -> Response:
+    """
+    Assemble the complete Mode 2B `DMDS` sequence (`Card Intro + Jacket/Marquee Panoramas + 0..5 Snapshots + Video`)
+    for interactive playback in the WebUI HUB75 LED Simulator.
+
+    Returns `X-DMD-Preview-Id` (`sim_...`) in response headers so clicking **Add Simulation to Active DMD Queue**
+    (`POST /api/v1/clients/{dmd_id}/queue` with `preview_id`) promotes the rendered stream into the live DMD queue
+    in `0 ms` with zero re-transcoding when panel dimensions match.
+    """
+    dmds_bytes, preview_id, chapters = await consume_once_orchestrator.build_studio_full_preview(payload)
+    return Response(
+        content=dmds_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(dmds_bytes)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DMD-Preview-Id": preview_id,
+            "X-DMD-Chapters": json.dumps(chapters),
+            "Access-Control-Expose-Headers": "X-DMD-Preview-Id, X-DMD-Chapters",
+        },
+    )
 
 
 @app.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])

@@ -4,15 +4,17 @@ Centralized Multilingual Web Administration Dashboard (`http://dmdmediashowcase.
 Features:
 1. Real-Time Overview: Worker pool & Consume-Once transcode telemetry, Embedded MQTT (:1883) status,
    active UDP `DMDF` streams, connected DMD clients (`ArcadeMatrix` ESP32 & `ArcadeMatrix_RPi`) with
-   live playback, N (Ready) and N+1 (Standby) Consume-Once slots, and active DDD `[Primary, Fallback]`
-   scraper chains.
-2. Live Showcase Tester: Interactive domain/system/genre/decade selector, orthogonal `video_mode`
-   and `color_boost` selectors, and on-demand card preview.
-3. API Keys & Encrypted Vault Status: Shows active status of `.env` / `docker-compose` or CI/CD
+   live playback, N (Ready) and N+1 (Standby) Consume-Once slots, and active `[Primary, Fallback]`
+   metadata & trailer scraper chains.
+2. Runtime, Workers & Video Limits: Hot-reloadable worker concurrency, ceilings, and cache controls.
+3. Search, On-Demand DMD Queue & Live Showcase Tester: Interactive localized catalog search and queue control.
+4. Mode 2B Card Studio & Real-Time HUB75 DMD Simulator: Pixel-perfect Card layout/theme customizer
+   (YOKO & TATE), binary `DMDS` RGB565 LED simulator, and 0 ms simulation injection into active DMD queues.
+5. API Keys & Encrypted Vault Status: Shows active status of `.env` / `docker-compose` or CI/CD
    Production Native Vault keys (`ScreenScraper Dev`, `TMDB`, `TheTVDB`) without ever exposing them
    in plaintext, while allowing users to configure their personal ScreenScraper player account
    (`SSID` / password) or optional overrides.
-4. Network, MQTT & Maintenance: Default metadata language, MQTT broker mode, live referential sync,
+6. Network, MQTT & Maintenance: Default metadata language, MQTT broker mode, live referential sync,
    and selective or full `seen_history.json` reset.
 """
 
@@ -348,11 +350,236 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     }
     .playlist-table select { padding-right: 28px; }
 
+    /* Mode 2B Card Studio & HUB75 LED Simulator */
+    .studio-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .studio-search-bar {
+      display: grid;
+      grid-template-columns: 150px 135px 155px 155px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .studio-cand-strip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 10px 0 4px 0;
+      margin-top: 8px;
+    }
+    .studio-cand-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #0d121b;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      min-width: 190px;
+      max-width: 260px;
+      flex-shrink: 0;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .studio-cand-pill:hover { border-color: #3b4d6b; background: #141c2b; }
+    .studio-cand-pill.active {
+      border-color: var(--accent);
+      background: rgba(255, 109, 0, 0.12);
+      box-shadow: 0 0 0 1px rgba(255, 109, 0, 0.35);
+    }
+    .studio-cand-pill img {
+      width: 30px;
+      height: 38px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #05070b;
+      flex-shrink: 0;
+    }
+    .studio-res-bar {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .res-chip {
+      height: 32px;
+      padding: 0 11px;
+      font-size: 0.8rem;
+      border-radius: 7px;
+      background: #0d121b;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .res-chip:hover { background: #182234; border-color: #3b4d6b; }
+    .res-chip.active {
+      background: rgba(0, 229, 255, 0.14);
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+    .tate-btn {
+      height: 32px;
+      padding: 0 12px;
+      font-size: 0.8rem;
+      border-radius: 7px;
+      background: #222c3c;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .tate-btn.active {
+      background: linear-gradient(135deg, var(--accent), #e65100);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .layout-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .layout-card-btn {
+      background: #0d121b;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 6px;
+      text-align: center;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 600;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+    }
+    .layout-card-btn:hover { background: #151e2d; color: var(--text); }
+    .layout-card-btn.active {
+      border-color: var(--accent);
+      background: rgba(255, 109, 0, 0.14);
+      color: #fff;
+    }
+    .layout-wire {
+      width: 44px;
+      height: 20px;
+      border: 1px solid #3b4d6b;
+      border-radius: 3px;
+      display: flex;
+      overflow: hidden;
+      background: #06080d;
+    }
+    .studio-toggles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .chk-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #0d121b;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 6px 10px;
+      font-size: 0.8rem;
+      color: var(--text);
+      cursor: pointer;
+      margin: 0;
+      user-select: none;
+    }
+    input[type="checkbox"].studio-chk {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    input[type="range"].studio-range {
+      height: 26px;
+      padding: 0;
+      background: transparent;
+      border: none;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    input[type="color"].studio-color {
+      width: 44px;
+      height: 42px;
+      padding: 3px;
+      cursor: pointer;
+    }
+    .sim-stage-wrap {
+      background: #05070b;
+      border: 2px solid #1f2a3c;
+      border-radius: 10px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 210px;
+      overflow: auto;
+      box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.85);
+    }
+    #studio-dmd-canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      background: #020305;
+      border: 1px solid #222d40;
+      border-radius: 4px;
+      image-rendering: pixelated;
+    }
+    .sim-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .sim-controls-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .chapter-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .chapter-pill {
+      height: 26px;
+      padding: 0 9px;
+      font-size: 0.74rem;
+      border-radius: 999px;
+      background: #101725;
+      border: 1px solid var(--border);
+      color: var(--cyan);
+    }
+    .chapter-pill.active {
+      background: rgba(0, 229, 255, 0.18);
+      border-color: var(--cyan);
+      color: #fff;
+    }
+
     @media (max-width: 960px) {
       .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .providers-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .vault-grid { grid-template-columns: 1fr; }
       .form-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .studio-grid { grid-template-columns: 1fr; }
+      .studio-search-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .layout-cards-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
       .form-grid-2, .form-grid-3, .kpi-grid, .providers-grid, .cand-grid { grid-template-columns: 1fr; }
@@ -368,7 +595,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         <div>
           <h1>DMD Media Showcase Server</h1>
           <div class="subtitle" data-i18n="header_sub">
-            DDD Architecture • MQTT Retain (:1883) + Real-Time UDP • Consume-Once
+            MQTT Retain (:1883) + Real-Time UDP • Consume-Once • HUB75 LED Matrices
           </div>
         </div>
       </div>
@@ -396,13 +623,16 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         2. Runtime, Workers &amp; Video Limits
       </button>
       <button class="tab-btn" onclick="switchTab('tester')" data-i18n="tab_tester">
-        3. Live Showcase Tester
+        3. Search &amp; On-Demand Queue
+      </button>
+      <button class="tab-btn" onclick="switchTab('studio')" data-i18n="tab_studio">
+        4. Studio Card &amp; Sim DMD (2B)
       </button>
       <button class="tab-btn" onclick="switchTab('keys')" data-i18n="tab_keys">
-        4. API Keys &amp; Encrypted Vault
+        5. API Keys &amp; Encrypted Vault
       </button>
       <button class="tab-btn" onclick="switchTab('network')" data-i18n="tab_network">
-        5. Network, MQTT &amp; Maintenance
+        6. Network, MQTT &amp; Maintenance
       </button>
     </div>
 
@@ -563,9 +793,9 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="card">
-        <h2 data-i18n="chains_title">DDD Scraper Chains ([Primary, Fallback])</h2>
+        <h2 data-i18n="chains_title">Metadata &amp; Trailer Sources ([Primary, Fallback])</h2>
         <p class="desc" data-i18n="chains_desc">
-          Each domain queries its Primary adapter first and seamlessly fails over to its Fallback adapter if unconfigured or rate-limited.
+          Each domain queries its Primary source first and seamlessly switches to its Fallback source if unconfigured or rate-limited.
         </p>
         <div class="providers-grid" id="providers-grid"></div>
       </div>
@@ -834,7 +1064,322 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- TAB 3: API KEYS & ENCRYPTED VAULT -->
+    <!-- TAB 4: MODE 2B CARD STUDIO & REAL-TIME HUB75 DMD SIMULATOR -->
+    <div id="tab-studio" class="tab-pane">
+      <!-- TOP SEARCH & RESOLUTION BAR -->
+      <div class="card" style="padding:16px 20px">
+        <h2>
+          <span data-i18n="studio_title">Mode 2B Card Studio &amp; Real-Time HUB75 DMD Simulator</span>
+          <span id="studio-geom-pill" class="pill info">128×32 • YOKO</span>
+        </h2>
+        <p class="desc" data-i18n="studio_desc">
+          Search any game, movie, series, or anime via the On-Demand catalog, customize the Mode 2B pixel-art Info Card &amp; sequence options across standard and TATE resolutions, preview on the live HUB75 LED Simulator, and push your simulation directly into the active DMD queue.
+        </p>
+
+        <div class="studio-search-bar">
+          <div class="field">
+            <label data-i18n="lbl_domain">Domain</label>
+            <select id="studio-domain" onchange="loadStudioFilters()">
+              <option value="games" data-i18n="opt_dom_games">🕹️ Retro Games (games)</option>
+              <option value="movies" data-i18n="opt_dom_movies">🎬 Movies / Films (movies)</option>
+              <option value="series" data-i18n="opt_dom_series">📺 TV Series (series)</option>
+              <option value="anime" data-i18n="opt_dom_anime">⛩️ Anime / Japanimation (anime)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_content_lang">Content Broadcast Language (lang)</label>
+            <select id="studio-lang" onchange="loadStudioFilters()">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_system">System (Games)</label>
+            <select id="studio-system"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_genre">Genre</label>
+            <select id="studio-genre"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="studio_lbl_search">Search Catalog Content (Title / ROM / Franchise)</label>
+            <input type="text" id="studio-query" onkeydown="if(event.key==='Enter') runStudioSearch()" data-i18n-placeholder="ph_query" placeholder="e.g. Metal Slug X, Blade Runner, Akira..." />
+          </div>
+          <button type="button" id="btn-studio-search" onclick="runStudioSearch()" style="height:42px;white-space:nowrap" data-i18n="studio_btn_search">
+            🔍 Search
+          </button>
+        </div>
+
+        <div id="studio-search-status" class="toast" style="margin-top:8px"></div>
+        <div id="studio-cand-strip" class="studio-cand-strip"></div>
+
+        <div class="studio-res-bar">
+          <span style="font-size:0.8rem;font-weight:600;color:var(--muted)" data-i18n="studio_lbl_res_presets">HUB75 Presets:</span>
+          <button type="button" class="res-chip" data-res="64x32" onclick="setStudioBaseRes(64, 32)">64×32</button>
+          <button type="button" class="res-chip active" data-res="128x32" onclick="setStudioBaseRes(128, 32)">128×32</button>
+          <button type="button" class="res-chip" data-res="64x64" onclick="setStudioBaseRes(64, 64)">64×64</button>
+          <button type="button" class="res-chip" data-res="128x64" onclick="setStudioBaseRes(128, 64)">128×64</button>
+          <button type="button" class="res-chip" data-res="256x64" onclick="setStudioBaseRes(256, 64)">256×64</button>
+          <button type="button" id="btn-studio-tate" class="tate-btn" onclick="toggleStudioTate()" data-i18n="studio_btn_tate">
+            ⇄ Mode TATE (Vertical)
+          </button>
+        </div>
+      </div>
+
+      <!-- TWO-COLUMN WORKSPACE: CUSTOMIZER (LEFT) + LED SIMULATOR & ACTIVE DMD QUEUE (RIGHT) -->
+      <div class="studio-grid">
+        <!-- LEFT COLUMN: CARD & SEQUENCE BUILDER -->
+        <div>
+          <div class="card">
+            <h2 data-i18n="studio_card_sec_title">1. Mode 2B Card Layout, Theme &amp; Scroll</h2>
+            <p class="desc" data-i18n="studio_card_sec_desc">
+              Every tweak updates the binary RGB565 Card stream in under 100 ms. Layouts automatically reflow in TATE vertical orientation.
+            </p>
+
+            <label data-i18n="studio_lbl_layout">Pixel-Art Card Layout (5 Presets)</label>
+            <div class="layout-cards-grid" id="studio-layout-grid">
+              <button type="button" class="layout-card-btn active" data-layout="classic_split" onclick="selectStudioLayout('classic_split')">
+                <span class="layout-wire"><span style="width:36%;background:#ff6d00;opacity:0.75"></span><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span></span>
+                <span data-i18n="lay_classic_split">Classic Split</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="poster_right" onclick="selectStudioLayout('poster_right')">
+                <span class="layout-wire"><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span><span style="width:36%;background:#ff6d00;opacity:0.75"></span></span>
+                <span data-i18n="lay_poster_right">Poster Right</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="badge_header" onclick="selectStudioLayout('badge_header')">
+                <span class="layout-wire" style="flex-direction:column"><span style="height:5px;background:#ff6d00"></span><span style="flex:1;display:flex"><span style="width:32%;background:#2c394f"></span><span style="flex:1"></span></span></span>
+                <span data-i18n="lay_badge_header">Badge Header</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="hero_banner" onclick="selectStudioLayout('hero_banner')">
+                <span class="layout-wire" style="flex-direction:column;background:linear-gradient(180deg,#2c394f,#06080d)"><span style="flex:1"></span><span style="height:7px;background:rgba(0,0,0,0.8);border-top:1px solid #00e5ff"></span></span>
+                <span data-i18n="lay_hero_banner">Hero Banner</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="minimal_arcade" onclick="selectStudioLayout('minimal_arcade')">
+                <span class="layout-wire" style="flex-direction:column;justify-content:center;padding:0 4px;gap:2px"><span style="height:4px;background:#ffab00"></span><span style="height:2px;background:#8b949e;width:80%"></span></span>
+                <span data-i18n="lay_minimal_arcade">Minimal Text</span>
+              </button>
+            </div>
+
+            <div class="form-grid-3">
+              <div class="field">
+                <label data-i18n="studio_lbl_theme">Visual Theme (card_theme)</label>
+                <select id="studio-theme" onchange="scheduleStudioCardPreview()">
+                  <option value="tinted" data-i18n="thm_tinted">Tinted Dark (Badge Glow)</option>
+                  <option value="pure_black" data-i18n="thm_pure_black">Pure Black HUB75 (Zero Glow)</option>
+                  <option value="neon_border" data-i18n="thm_neon_border">Neon Arcade Frame (1px)</option>
+                  <option value="poster_wash" data-i18n="thm_poster_wash">Poster Color Wash</option>
+                  <option value="amber_dmd" data-i18n="thm_amber_dmd">Amber Pinball DMD (#FF7300)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_font">Pixel Typography (card_font)</label>
+                <select id="studio-font" onchange="scheduleStudioCardPreview()">
+                  <option value="arcade_pixel" data-i18n="fnt_arcade_pixel">Arcade Pixel (1-bit Crisp)</option>
+                  <option value="clean_sans" data-i18n="fnt_clean_sans">Clean Sans (Smooth)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_accent">Accent Color</label>
+                <div class="input-row">
+                  <select id="studio-accent-mode" onchange="onStudioAccentModeChange()" style="flex:1">
+                    <option value="auto" data-i18n="opt_accent_auto">Auto (Badge)</option>
+                    <option value="custom" data-i18n="opt_accent_custom">Custom #Hex</option>
+                  </select>
+                  <input type="color" id="studio-accent-picker" class="studio-color" value="#ff6d00" onchange="scheduleStudioCardPreview()" disabled />
+                </div>
+              </div>
+            </div>
+
+            <div class="studio-toggles">
+              <label class="chk-pill"><input type="checkbox" id="st-inc-card" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_card">Card Intro</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-inc-poster" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_poster">Poster / Boxart</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-show-badge" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_badge">System / Genre Badge</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-show-year" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_year">Year</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-show-rating" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_rating">★ Rating</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-inc-synopsis" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_synopsis">Synopsis Ticker</span></label>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label><span data-i18n="studio_lbl_scroll_speed">Scroll Speed (1..10)</span>: <b id="lbl-val-scroll" style="color:var(--cyan)">4 (Normal)</b></label>
+                <input type="range" id="st-scroll-speed" class="studio-range" min="1" max="10" step="1" value="4" oninput="updateStudioSliderLabels(); scheduleStudioCardPreview();" />
+              </div>
+              <div class="field">
+                <label><span data-i18n="studio_lbl_card_hold">Intro Static Hold (s)</span>: <b id="lbl-val-hold" style="color:var(--cyan)">0.9s</b></label>
+                <input type="range" id="st-card-hold" class="studio-range" min="0.2" max="4.0" step="0.1" value="0.9" oninput="updateStudioSliderLabels(); scheduleStudioCardPreview();" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 data-i18n="studio_seq_sec_title">2. Full Sequence Content (Panoramas, Screenshots &amp; Video)</h2>
+            <p class="desc" data-i18n="studio_seq_sec_desc">
+              Choose which visual chapters follow the Info Card (ArcadeMatrix parity + extended screenshot &amp; framing controls).
+            </p>
+            <div class="studio-toggles" style="margin-top:0">
+              <label class="chk-pill"><input type="checkbox" id="st-jacket-pan" class="studio-chk" checked onchange="markStudioFullDirty()" /> <span data-i18n="st_tog_jacket_pan">Poster Vertical Scan</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-marquee-pan" class="studio-chk" onchange="markStudioFullDirty()" /> <span data-i18n="st_tog_marquee_pan">Marquee / Backdrop Scan</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-inc-video" class="studio-chk" checked onchange="markStudioFullDirty()" /> <span data-i18n="st_tog_video">Video Trailer / Gameplay</span></label>
+            </div>
+            <div class="form-grid-3">
+              <div class="field">
+                <label data-i18n="studio_lbl_snaps">Screenshots Count (0..5)</label>
+                <select id="st-snap-count" onchange="markStudioFullDirty()">
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2" selected>2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_pan_dur">Panorama Scan Duration (s)</label>
+                <input type="number" id="st-pan-dur" min="1.5" max="15" step="0.5" value="3.5" onchange="markStudioFullDirty()" />
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_vid_dur">Max Video Clip (s)</label>
+                <input type="number" id="st-vid-dur" min="1.5" max="60" step="0.5" value="8.0" onchange="markStudioFullDirty()" />
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_vid_fps">Stream Frame Rate (FPS)</label>
+                <select id="st-vid-fps" onchange="scheduleStudioCardPreview()">
+                  <option value="12">12 FPS</option>
+                  <option value="15" selected>15 FPS</option>
+                  <option value="20">20 FPS</option>
+                  <option value="25">25 FPS</option>
+                  <option value="30">30 FPS</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_video_mode">Video Framing Mode (video_mode)</label>
+                <select id="st-video-mode" onchange="markStudioFullDirty()">
+                  <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
+                  <option value="panorama" data-i18n="opt_vmode_panorama">Panorama (Top-Bottom Scan)</option>
+                  <option value="center_crop" data-i18n="opt_vmode_crop">Static Center Crop</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_color_boost">LED Color Boost (color_boost)</label>
+                <select id="st-color-boost" onchange="scheduleStudioCardPreview()">
+                  <option value="auto" data-i18n="opt_cboost_auto">Auto (Let Me Handle It AI)</option>
+                  <option value="pixel_art" data-i18n="opt_cboost_pixel">Pixel Art (Crisp Retro)</option>
+                  <option value="anime" data-i18n="opt_cboost_anime">Anime (Vibrant Cel-Shaded)</option>
+                  <option value="cinema" data-i18n="opt_cboost_cinema">Cinema (Balanced Contrast &amp; Shadows)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: REAL-TIME MOD SIM DMD + ACTIVE DMD QUEUE -->
+        <div>
+          <div class="card">
+            <div class="sim-toolbar">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <b style="color:var(--cyan)" data-i18n="studio_sim_title">HUB75 Mod Sim DMD</b>
+                <span id="studio-sim-badge" class="pill ok">⚡ Card Preview</span>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <select id="studio-led-mode" onchange="redrawCurrentStudioFrame()" style="width:auto;height:32px;line-height:30px;font-size:0.8rem;padding:0 28px 0 8px">
+                  <option value="smd_round" data-i18n="sim_mode_smd">💡 SMD Round LEDs</option>
+                  <option value="pixel_grid" data-i18n="sim_mode_grid">🟦 Square LED Grid</option>
+                  <option value="raw" data-i18n="sim_mode_raw">🖼️ Raw 1:1 Pixels</option>
+                </select>
+                <select id="studio-led-zoom" onchange="redrawCurrentStudioFrame()" style="width:auto;height:32px;line-height:30px;font-size:0.8rem;padding:0 28px 0 8px">
+                  <option value="auto" data-i18n="sim_zoom_auto">Zoom: Auto</option>
+                  <option value="3">3×</option>
+                  <option value="4">4×</option>
+                  <option value="6">6×</option>
+                  <option value="8">8×</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="sim-stage-wrap">
+              <canvas id="studio-dmd-canvas" width="512" height="128"></canvas>
+              <div style="display:flex;justify-content:space-between;width:100%;margin-top:8px;font-size:0.76rem;color:var(--muted)">
+                <span id="studio-sim-meta">128×32 • 15 FPS</span>
+                <span id="studio-sim-frame-lbl">Frame 0 / 0</span>
+              </div>
+            </div>
+
+            <div id="studio-chapters-bar" class="chapter-pills"></div>
+
+            <div class="sim-controls-row">
+              <button type="button" class="secondary mini-btn" onclick="studioStepFrame(-1)">⏮</button>
+              <button type="button" class="secondary mini-btn" id="btn-studio-play" onclick="toggleStudioPlay()">⏸</button>
+              <button type="button" class="secondary mini-btn" onclick="studioStepFrame(1)">⏭</button>
+              <input type="range" id="studio-scrubber" class="studio-range" min="0" max="0" value="0" style="flex:1;min-width:110px" oninput="onStudioScrub(this.value)" />
+            </div>
+
+            <div class="form-actions" style="margin-top:12px">
+              <button type="button" class="secondary" onclick="requestStudioCardPreviewNow()" data-i18n="studio_btn_fast_card">
+                ⚡ Refresh Card (&lt;100ms)
+              </button>
+              <button type="button" id="btn-studio-full-sim" onclick="runStudioFullPreview()" data-i18n="studio_btn_full_sim">
+                🎬 Simulate Full Sequence (Card + Snaps + Video)
+              </button>
+            </div>
+            <div id="studio-sim-status" class="toast" style="margin-top:8px"></div>
+          </div>
+
+          <!-- ACTIVE DMD LIVE QUEUE INJECTION -->
+          <div class="card">
+            <h2>
+              <span data-i18n="studio_queue_sec_title">3. Active DMD &amp; Live Simulation Queue</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" class="secondary mini-btn" onclick="syncStudioResFromActiveDmd()" data-i18n="studio_btn_sync_res">📐 Match DMD Res</button>
+                <button type="button" class="secondary mini-btn" onclick="skipStudioTargetDmd()" data-i18n="btn_skip_now">⏭ Skip Current</button>
+              </div>
+            </h2>
+            <p class="desc" data-i18n="studio_queue_sec_desc">
+              Inject this exact customized simulation into the active DMD's queue (0 ms instant promotion without re-transcoding when Full Sequence matches DMD geometry) or save the style as its default Mode 2B profile.
+            </p>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label data-i18n="studio_lbl_active_dmd">Active DMD Matrix</label>
+                <select id="studio-target-dmd" onchange="onStudioTargetDmdChange()">
+                  <option value="" data-i18n="studio_opt_no_dmd">— Select or connect a DMD —</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_mark_seen">Consume-Once History Policy</label>
+                <select id="studio-mark-seen">
+                  <option value="false" data-i18n="opt_mark_seen_no">Keep repeatable (FrontendSync mode)</option>
+                  <option value="true" data-i18n="opt_mark_seen_yes">Mark as Seen after playback</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="studio-active-dmd-banner" style="margin-top:10px;padding:8px 11px;background:#0d121b;border:1px solid var(--border);border-radius:8px;font-size:0.82rem;color:var(--muted)"></div>
+
+            <div class="form-actions" style="margin-top:12px">
+              <button type="button" onclick="enqueueStudioSim('enqueue_next')" data-i18n="studio_btn_add_sim_queue">
+                ➕ Add Simulation to Active DMD Queue
+              </button>
+              <button type="button" class="secondary" onclick="enqueueStudioSim('play_now')" data-i18n="studio_btn_play_sim_now">
+                ⚡ Broadcast Simulation Now
+              </button>
+              <button type="button" class="secondary" onclick="saveStudioStyleToDmdProfile()" data-i18n="studio_btn_save_2b_prof">
+                💾 Save Mode 2B Style to DMD
+              </button>
+            </div>
+            <div id="studio-queue-action-msg" class="toast" style="margin-top:8px"></div>
+
+            <div id="studio-dmd-queue-list" style="margin-top:12px;font-size:0.84rem;color:var(--muted)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: API KEYS & ENCRYPTED VAULT -->
     <div id="tab-keys" class="tab-pane">
       <div class="card">
         <h2 data-i18n="vault_title">Built-in &amp; Environment Key Status (Prod Vault / .env / docker-compose)</h2>
@@ -1007,14 +1552,15 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
   <script>
     const I18N = {
       en: {
-        header_sub: "DDD Architecture • MQTT Retain (:1883) + Real-Time UDP • Consume-Once",
+        header_sub: "MQTT Retain (:1883) + Real-Time UDP • Consume-Once • HUB75 LED Matrices",
         status_online: "● Online",
         status_offline: "● Unreachable",
         tab_overview: "1. Overview & DMD Matrices",
         tab_runtime: "2. Runtime, Workers & Video Limits",
-        tab_tester: "3. Live Showcase Tester",
-        tab_keys: "4. API Keys & Encrypted Vault",
-        tab_network: "5. Network, MQTT & Maintenance",
+        tab_tester: "3. Search & On-Demand Queue",
+        tab_studio: "4. Studio Card & Sim DMD (2B)",
+        tab_keys: "5. API Keys & Encrypted Vault",
+        tab_network: "6. Network, MQTT & Maintenance",
         rt_workers_title: "Workers, Concurrency & CPU Protection",
         rt_workers_desc: "Adjust background transcoding workers, executor isolation, FFmpeg threads, queue capacity, and live log verbosity in real time with zero server restart and zero interruption to active DMD streams.",
         rt_workers_pill_fmt: "⚡ Active: {w} workers • {c} CPU cores • {p}",
@@ -1077,8 +1623,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         no_clients: "No active DMD client registered yet.",
         pill_preparing: "⏳ Preparing...",
         pill_streaming: "📡 UDP:",
-        chains_title: "DDD Scraper Chains ([Primary, Fallback])",
-        chains_desc: "Each domain queries its Primary adapter first and seamlessly fails over to its Fallback adapter if unconfigured or rate-limited.",
+        chains_title: "Metadata & Trailer Sources ([Primary, Fallback])",
+        chains_desc: "Each domain queries its Primary source first and seamlessly switches to its Fallback source if unconfigured or rate-limited.",
         role_primary: "PRIMARY",
         role_fallback: "FALLBACK",
         tester_title: "Live Showcase Tester & Preview",
@@ -1204,17 +1750,88 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         msg_need_target_dmd: "⚠️ Select a Target DMD first to enqueue or play on hardware.",
         msg_prof_saved: "✓ DMD profile '{d}' saved & applied live!",
         msg_prof_deleted: "✓ DMD profile '{d}' deleted.",
-        msg_prof_id_req: "⚠️ Please enter a DMD ID (e.g. esp32_cab_1)."
+        msg_prof_id_req: "⚠️ Please enter a DMD ID (e.g. esp32_cab_1).",
+        studio_title: "Mode 2B Card Studio & Real-Time HUB75 DMD Simulator",
+        studio_desc: "Search any game, movie, series, or anime via the On-Demand catalog, customize the Mode 2B pixel-art Info Card & sequence options across standard and TATE resolutions, preview on the live HUB75 LED Simulator, and push your simulation directly into the active DMD queue.",
+        studio_lbl_search: "Search Catalog Content (Title / ROM / Franchise)",
+        studio_btn_search: "🔍 Search",
+        studio_lbl_res_presets: "HUB75 Presets:",
+        studio_btn_tate: "⇄ Mode TATE (Vertical)",
+        studio_card_sec_title: "1. Mode 2B Card Layout, Theme & Scroll",
+        studio_card_sec_desc: "Every tweak updates the binary RGB565 Card stream in under 100 ms. Layouts automatically reflow in TATE vertical orientation.",
+        studio_lbl_layout: "Pixel-Art Card Layout (5 Presets)",
+        lay_classic_split: "Classic Split",
+        lay_poster_right: "Poster Right",
+        lay_badge_header: "Badge Header",
+        lay_hero_banner: "Hero Banner",
+        lay_minimal_arcade: "Minimal Text",
+        studio_lbl_theme: "Visual Theme (card_theme)",
+        thm_tinted: "Tinted Dark (Badge Glow)",
+        thm_pure_black: "Pure Black HUB75 (Zero Glow)",
+        thm_neon_border: "Neon Arcade Frame (1px)",
+        thm_poster_wash: "Poster Color Wash",
+        thm_amber_dmd: "Amber Pinball DMD (#FF7300)",
+        studio_lbl_font: "Pixel Typography (card_font)",
+        fnt_arcade_pixel: "Arcade Pixel (1-bit Crisp)",
+        fnt_clean_sans: "Clean Sans (Smooth)",
+        studio_lbl_accent: "Accent Color",
+        opt_accent_auto: "Auto (Badge)",
+        opt_accent_custom: "Custom #Hex",
+        st_tog_card: "Card Intro",
+        st_tog_poster: "Poster / Boxart",
+        st_tog_badge: "System / Genre Badge",
+        st_tog_year: "Year",
+        st_tog_rating: "★ Rating",
+        st_tog_synopsis: "Synopsis Ticker",
+        studio_lbl_scroll_speed: "Scroll Speed (1..10)",
+        studio_lbl_card_hold: "Intro Static Hold (s)",
+        studio_seq_sec_title: "2. Full Sequence Content (Panoramas, Screenshots & Video)",
+        studio_seq_sec_desc: "Choose which visual chapters follow the Info Card (ArcadeMatrix parity + extended screenshot & framing controls).",
+        st_tog_jacket_pan: "Poster Vertical Scan",
+        st_tog_marquee_pan: "Marquee / Backdrop Scan",
+        st_tog_video: "Video Trailer / Gameplay",
+        studio_lbl_snaps: "Screenshots Count (0..5)",
+        studio_lbl_pan_dur: "Panorama Scan Duration (s)",
+        studio_lbl_vid_dur: "Max Video Clip (s)",
+        studio_lbl_vid_fps: "Stream Frame Rate (FPS)",
+        studio_sim_title: "HUB75 Mod Sim DMD",
+        sim_mode_smd: "💡 SMD Round LEDs",
+        sim_mode_grid: "🟦 Square LED Grid",
+        sim_mode_raw: "🖼️ Raw 1:1 Pixels",
+        sim_zoom_auto: "Zoom: Auto",
+        studio_btn_fast_card: "⚡ Refresh Card (<100ms)",
+        studio_btn_full_sim: "🎬 Simulate Full Sequence (Card + Snaps + Video)",
+        studio_queue_sec_title: "3. Active DMD & Live Simulation Queue",
+        studio_btn_sync_res: "📐 Match DMD Res",
+        studio_queue_sec_desc: "Inject this exact customized simulation into the active DMD's queue (0 ms instant promotion without re-transcoding when Full Sequence matches DMD geometry) or save the style as its default Mode 2B profile.",
+        studio_lbl_active_dmd: "Active DMD Matrix",
+        studio_opt_no_dmd: "— Select or connect a DMD —",
+        studio_btn_add_sim_queue: "➕ Add Simulation to Active DMD Queue",
+        studio_btn_play_sim_now: "⚡ Broadcast Simulation Now",
+        studio_btn_save_2b_prof: "💾 Save Mode 2B Style to DMD",
+        btn_open_studio: "🎨 Studio",
+        msg_studio_card_ok: "✓ Card stream rendered ({f} frames @ {fps} FPS)",
+        msg_studio_full_building: "⏳ Building full sequence (Card + Panoramas + Snapshots + Video)...",
+        msg_studio_full_ok: "✓ Full sequence ready ({f} frames • 0ms Queue Ready)",
+        msg_studio_sim_queued_0ms: "✓ Simulation '{t}' injected into {d} in 0ms (zero re-transcode)!",
+        msg_studio_sim_queued_bg: "✓ Simulation '{t}' queued on {d} ({s})",
+        msg_studio_2b_saved: "✓ Saved Mode 2B Card Style on DMD '{d}'!",
+        studio_badge_card_fast: "⚡ Fast Card Preview",
+        studio_badge_full_0ms: "🎬 Full Sequence (0ms Queue)",
+        studio_dmd_idle: "Idle / Ready for broadcast",
+        studio_dmd_res_mismatch: "Note: Studio is {sw}×{sh} while '{d}' is {dw}×{dh} (will adapt on queue).",
+        pill_sim_studio: "🎨 Studio Sim"
       },
       fr: {
-        header_sub: "Architecture DDD • MQTT Retain (:1883) + UDP Temps Réel • Consume-Once",
+        header_sub: "MQTT Retain (:1883) + UDP Temps Réel • Consume-Once • Matrices LED HUB75",
         status_online: "● En ligne",
         status_offline: "● Injoignable",
         tab_overview: "1. Vue d'ensemble & Matrices DMD",
         tab_runtime: "2. Runtime, Workers & Limites Vidéo",
-        tab_tester: "3. Testeur & Aperçu Showcase",
-        tab_keys: "4. Clés API & Coffre Chiffré",
-        tab_network: "5. Réseau, MQTT & Maintenance",
+        tab_tester: "3. Recherche & File On-Demand",
+        tab_studio: "4. Studio Card & Sim DMD (2B)",
+        tab_keys: "5. Clés API & Coffre Chiffré",
+        tab_network: "6. Réseau, MQTT & Maintenance",
         rt_workers_title: "Workers, Parallélisme & Protection CPU",
         rt_workers_desc: "Modifie à chaud le nombre de workers de transcodage, le mode d'exécution, les threads FFmpeg, la file d'attente et le niveau de log sans redémarrer le serveur ni couper les flux DMD actifs.",
         rt_workers_pill_fmt: "⚡ Actifs : {w} workers • {c} cœurs CPU • {p}",
@@ -1277,8 +1894,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         no_clients: "Aucun client DMD actif pour le moment.",
         pill_preparing: "⏳ Préparation...",
         pill_streaming: "📡 UDP :",
-        chains_title: "Chaînes de Scrapers DDD ([Primary, Fallback])",
-        chains_desc: "Chaque domaine utilise sa source Primaire et bascule automatiquement sans interruption sur sa source Fallback en cas de quota atteint ou d'absence de clé.",
+        chains_title: "Sources Métadonnées & Bandes-Annonces ([Primaire, Secours])",
+        chains_desc: "Chaque domaine interroge sa source Primaire et bascule automatiquement sur sa source de Secours en cas de quota atteint ou d'absence de clé.",
         role_primary: "PRIMAIRE",
         role_fallback: "FALLBACK",
         tester_title: "Testeur & Aperçu Live Showcase",
@@ -1404,17 +2021,88 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         msg_need_target_dmd: "⚠️ Sélectionne d'abord un DMD Cible pour ajouter à la file ou diffuser.",
         msg_prof_saved: "✓ Profil DMD « {d} » enregistré et appliqué !",
         msg_prof_deleted: "✓ Profil DMD « {d} » supprimé.",
-        msg_prof_id_req: "⚠️ Indique un identifiant DMD (ex : esp32_cab_1)."
+        msg_prof_id_req: "⚠️ Indique un identifiant DMD (ex : esp32_cab_1).",
+        studio_title: "Studio Card Mode 2B & Simulateur DMD HUB75 Temps Réel",
+        studio_desc: "Recherche un jeu, film, série ou anime via les APIs On-Demand, personnalise la Card pixel-art du Mode 2B et la séquence complète (YOKO & TATE), visualise le rendu sur le Mod Sim DMD, puis ajoute directement ta simulation à la queue du DMD en cours.",
+        studio_lbl_search: "Rechercher un Contenu (Titre / ROM / Saga)",
+        studio_btn_search: "🔍 Chercher",
+        studio_lbl_res_presets: "Résolutions HUB75 :",
+        studio_btn_tate: "⇄ Mode TATE (Vertical)",
+        studio_card_sec_title: "1. Mise en Page Card Mode 2B, Thème & Défilement",
+        studio_card_sec_desc: "Chaque réglage régénère le flux binaire RGB565 de la Card en moins de 100 ms. La mise en page s'adapte automatiquement en orientation verticale TATE.",
+        studio_lbl_layout: "Disposition Pixel-Art de la Card (5 Presets)",
+        lay_classic_split: "Split Classique",
+        lay_poster_right: "Affiche Droite",
+        lay_badge_header: "Bandeau Haut",
+        lay_hero_banner: "Bannière Hero",
+        lay_minimal_arcade: "Texte Minimal",
+        studio_lbl_theme: "Thème Visuel (card_theme)",
+        thm_tinted: "Sombre Teinté (Halo Badge)",
+        thm_pure_black: "Noir Pur HUB75 (Zéro Halo)",
+        thm_neon_border: "Cadre Néon Arcade (1px)",
+        thm_poster_wash: "Fond Coloré Affiche",
+        thm_amber_dmd: "DMD Flipper Ambre (#FF7300)",
+        studio_lbl_font: "Typographie Pixel (card_font)",
+        fnt_arcade_pixel: "Arcade Pixel (1-bit Net)",
+        fnt_clean_sans: "Sans Lissé",
+        studio_lbl_accent: "Couleur d'Accent",
+        opt_accent_auto: "Auto (Badge)",
+        opt_accent_custom: "#Hex Perso",
+        st_tog_card: "Intro Card",
+        st_tog_poster: "Affiche / Jaquette",
+        st_tog_badge: "Badge Système / Genre",
+        st_tog_year: "Année",
+        st_tog_rating: "★ Note",
+        st_tog_synopsis: "Synopsis Défilant",
+        studio_lbl_scroll_speed: "Vitesse Défilement (1..10)",
+        studio_lbl_card_hold: "Pause Fixe Intro (s)",
+        studio_seq_sec_title: "2. Contenu de la Séquence (Panoramas, Screenshots & Vidéo)",
+        studio_seq_sec_desc: "Choisis ce qui s'enchaîne après la Card (options ArcadeMatrix + nombre de screenshots, panoramas et cadrage vidéo).",
+        st_tog_jacket_pan: "Panorama Jaquette",
+        st_tog_marquee_pan: "Panorama Marquee / Backdrop",
+        st_tog_video: "Bande-Annonce / Vidéo",
+        studio_lbl_snaps: "Nombre de Screenshots (0..5)",
+        studio_lbl_pan_dur: "Durée Balayage Panorama (s)",
+        studio_lbl_vid_dur: "Durée Max Vidéo (s)",
+        studio_lbl_vid_fps: "Cadence du Flux (FPS)",
+        studio_sim_title: "Mod Sim DMD HUB75",
+        sim_mode_smd: "💡 LEDs SMD Rondes",
+        sim_mode_grid: "🟦 Grille Pixels Carrés",
+        sim_mode_raw: "🖼️ Pixels Bruts 1:1",
+        sim_zoom_auto: "Zoom : Auto",
+        studio_btn_fast_card: "⚡ Rafraîchir Card (<100ms)",
+        studio_btn_full_sim: "🎬 Simuler Séquence Complète (Card + Snaps + Vidéo)",
+        studio_queue_sec_title: "3. DMD en Cours & Injection dans la Queue",
+        studio_btn_sync_res: "📐 Copier Rés. DMD",
+        studio_queue_sec_desc: "Ajoute cette simulation personnalisée directement à la queue du DMD en cours (promotion instantanée en 0 ms sans re-transcodage si la Séquence Complète a la même résolution) ou sauvegarde ce style comme profil Mode 2B.",
+        studio_lbl_active_dmd: "DMD en Cours",
+        studio_opt_no_dmd: "— Sélectionner ou connecter un DMD —",
+        studio_btn_add_sim_queue: "➕ Ajouter cette Simulation à la Queue du DMD",
+        studio_btn_play_sim_now: "⚡ Diffuser Simulation Maintenant",
+        studio_btn_save_2b_prof: "💾 Sauver Style Mode 2B sur ce DMD",
+        btn_open_studio: "🎨 Studio",
+        msg_studio_card_ok: "✓ Flux Card généré ({f} frames @ {fps} FPS)",
+        msg_studio_full_building: "⏳ Assemblage de la séquence complète (Card + Panoramas + Screenshots + Vidéo)...",
+        msg_studio_full_ok: "✓ Séquence complète prête ({f} frames • Prête Queue 0ms)",
+        msg_studio_sim_queued_0ms: "✓ Simulation « {t} » injectée dans la queue de {d} en 0 ms (zéro re-transcodage) !",
+        msg_studio_sim_queued_bg: "✓ Simulation « {t} » ajoutée à la queue de {d} ({s})",
+        msg_studio_2b_saved: "✓ Style Mode 2B sauvegardé sur le DMD « {d} » !",
+        studio_badge_card_fast: "⚡ Aperçu Rapide Card",
+        studio_badge_full_0ms: "🎬 Séquence Complète (Queue 0ms)",
+        studio_dmd_idle: "En attente / Prêt à diffuser",
+        studio_dmd_res_mismatch: "Note : le Studio est en {sw}×{sh} alors que « {d} » est en {dw}×{dh} (adaptation auto à l'envoi).",
+        pill_sim_studio: "🎨 Sim Studio"
       },
       es: {
-        header_sub: "Arquitectura DDD • MQTT Retain (:1883) + UDP en Tiempo Real • Consume-Once",
+        header_sub: "MQTT Retain (:1883) + UDP en Tiempo Real • Consume-Once • Matrices LED HUB75",
         status_online: "● En línea",
         status_offline: "● Sin conexión",
         tab_overview: "1. Vista General y Matrices DMD",
         tab_runtime: "2. Runtime, Workers y Límites de Vídeo",
-        tab_tester: "3. Probador Showcase en Vivo",
-        tab_keys: "4. Claves API y Bóveda Cifrada",
-        tab_network: "5. Red, MQTT y Mantenimiento",
+        tab_tester: "3. Búsqueda y Cola On-Demand",
+        tab_studio: "4. Estudio Card y Sim DMD (2B)",
+        tab_keys: "5. Claves API y Bóveda Cifrada",
+        tab_network: "6. Red, MQTT y Mantenimiento",
         rt_workers_title: "Workers, Concurrencia y Protección CPU",
         rt_workers_desc: "Ajusta en caliente los workers de transcodificación, el modo de ejecutor, hilos FFmpeg, cola máxima y nivel de registro sin reiniciar el servidor ni interrumpir emisiones DMD activas.",
         rt_workers_pill_fmt: "⚡ Activos: {w} workers • {c} núcleos CPU • {p}",
@@ -1477,8 +2165,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         no_clients: "Ningún cliente DMD activo por ahora.",
         pill_preparing: "⏳ Preparando...",
         pill_streaming: "📡 UDP:",
-        chains_title: "Cadenas de Scrapers DDD ([Primary, Fallback])",
-        chains_desc: "Cada dominio consulta primero su fuente Primaria y conmuta automáticamente a su fuente Fallback si falta clave o límite.",
+        chains_title: "Fuentes de Metadatos y Tráilers ([Primaria, Respaldo])",
+        chains_desc: "Cada dominio consulta primero su fuente Primaria y conmuta automáticamente a su fuente de Respaldo si falta clave o límite.",
         role_primary: "PRIMARIA",
         role_fallback: "FALLBACK",
         tester_title: "Probador y Vista Previa en Vivo",
@@ -1604,7 +2292,77 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         msg_need_target_dmd: "⚠️ Selecciona primero un DMD Destino para encolar o emitir.",
         msg_prof_saved: "✓ ¡Perfil DMD '{d}' guardado y aplicado!",
         msg_prof_deleted: "✓ Perfil DMD '{d}' eliminado.",
-        msg_prof_id_req: "⚠️ Introduce un identificador DMD (ej: esp32_cab_1)."
+        msg_prof_id_req: "⚠️ Introduce un identificador DMD (ej: esp32_cab_1).",
+        studio_title: "Estudio Card Modo 2B y Simulador DMD HUB75 en Tiempo Real",
+        studio_desc: "Busca cualquier juego, película, serie o anime en el catálogo On-Demand, personaliza la Card pixel-art del Modo 2B y su secuencia (YOKO y TATE), previsualiza en el Simulador LED HUB75 e inyecta tu simulación directamente en la cola del DMD activo.",
+        studio_lbl_search: "Buscar Contenido (Título / ROM / Franquicia)",
+        studio_btn_search: "🔍 Buscar",
+        studio_lbl_res_presets: "Resoluciones HUB75:",
+        studio_btn_tate: "⇄ Modo TATE (Vertical)",
+        studio_card_sec_title: "1. Diseño de Card Modo 2B, Tema y Desplazamiento",
+        studio_card_sec_desc: "Cada ajuste actualiza el flujo binario RGB565 de la Card en menos de 100 ms. Los diseños se adaptan automáticamente en orientación vertical TATE.",
+        studio_lbl_layout: "Diseño Pixel-Art de la Card (5 Ajustes)",
+        lay_classic_split: "Split Clásico",
+        lay_poster_right: "Póster Derecha",
+        lay_badge_header: "Franja Superior",
+        lay_hero_banner: "Banner Hero",
+        lay_minimal_arcade: "Texto Minimal",
+        studio_lbl_theme: "Tema Visual (card_theme)",
+        thm_tinted: "Oscuro Teñido (Brillo)",
+        thm_pure_black: "Negro Puro HUB75 (Cero Brillo)",
+        thm_neon_border: "Marco Neón Arcade (1px)",
+        thm_poster_wash: "Fondo de Color Póster",
+        thm_amber_dmd: "DMD Pinball Ámbar (#FF7300)",
+        studio_lbl_font: "Tipografía Pixel (card_font)",
+        fnt_arcade_pixel: "Arcade Pixel (1-bit Nítido)",
+        fnt_clean_sans: "Sans Suave",
+        studio_lbl_accent: "Color de Acento",
+        opt_accent_auto: "Auto (Insignia)",
+        opt_accent_custom: "#Hex Personal",
+        st_tog_card: "Intro Card",
+        st_tog_poster: "Póster / Carátula",
+        st_tog_badge: "Insignia Sistema / Género",
+        st_tog_year: "Año",
+        st_tog_rating: "★ Nota",
+        st_tog_synopsis: "Sinopsis Deslizante",
+        studio_lbl_scroll_speed: "Velocidad Desplazamiento (1..10)",
+        studio_lbl_card_hold: "Pausa Inicial Fija (s)",
+        studio_seq_sec_title: "2. Contenido de Secuencia (Panoramas, Capturas y Vídeo)",
+        studio_seq_sec_desc: "Elige qué capítulos siguen a la Card (paridad ArcadeMatrix + número de capturas, panoramas y encuadre de vídeo).",
+        st_tog_jacket_pan: "Barrido Vertical Póster",
+        st_tog_marquee_pan: "Barrido Marquee / Fondo",
+        st_tog_video: "Tráiler / Vídeo",
+        studio_lbl_snaps: "Número de Capturas (0..5)",
+        studio_lbl_pan_dur: "Duración Barrido Panorama (s)",
+        studio_lbl_vid_dur: "Duración Máx Vídeo (s)",
+        studio_lbl_vid_fps: "Frecuencia de Flujo (FPS)",
+        studio_sim_title: "Mod Sim DMD HUB75",
+        sim_mode_smd: "💡 LEDs SMD Redondos",
+        sim_mode_grid: "🟦 Cuadrícula LED Cuadrada",
+        sim_mode_raw: "🖼️ Píxeles Puros 1:1",
+        sim_zoom_auto: "Zoom: Auto",
+        studio_btn_fast_card: "⚡ Actualizar Card (<100ms)",
+        studio_btn_full_sim: "🎬 Simular Secuencia Completa (Card + Capturas + Vídeo)",
+        studio_queue_sec_title: "3. DMD Activo e Inyección en Cola",
+        studio_btn_sync_res: "📐 Igualar Res. DMD",
+        studio_queue_sec_desc: "Añade esta simulación personalizada directamente a la cola del DMD activo (promoción en 0 ms sin recodificar si la Secuencia Completa coincide en resolución) o guarda el estilo como perfil Modo 2B.",
+        studio_lbl_active_dmd: "Matriz DMD Activa",
+        studio_opt_no_dmd: "— Seleccionar o conectar un DMD —",
+        studio_btn_add_sim_queue: "➕ Añadir Simulación a la Cola del DMD",
+        studio_btn_play_sim_now: "⚡ Emitir Simulación Ahora",
+        studio_btn_save_2b_prof: "💾 Guardar Estilo Modo 2B en DMD",
+        btn_open_studio: "🎨 Estudio",
+        msg_studio_card_ok: "✓ Flujo Card generado ({f} fotogramas @ {fps} FPS)",
+        msg_studio_full_building: "⏳ Generando secuencia completa (Card + Panoramas + Capturas + Vídeo)...",
+        msg_studio_full_ok: "✓ Secuencia completa lista ({f} fotogramas • Cola 0ms)",
+        msg_studio_sim_queued_0ms: "✓ ¡Simulación '{t}' añadida a la cola de {d} en 0 ms (cero recodificación)!",
+        msg_studio_sim_queued_bg: "✓ Simulación '{t}' encolada en {d} ({s})",
+        msg_studio_2b_saved: "✓ ¡Estilo Modo 2B guardado en el DMD '{d}'!",
+        studio_badge_card_fast: "⚡ Vista Rápida Card",
+        studio_badge_full_0ms: "🎬 Secuencia Completa (Cola 0ms)",
+        studio_dmd_idle: "En espera / Listo para emitir",
+        studio_dmd_res_mismatch: "Nota: el Estudio usa {sw}×{sh} y '{d}' usa {dw}×{dh} (se adaptará al encolar).",
+        pill_sim_studio: "🎨 Sim Estudio"
       }
     };
 
@@ -1758,14 +2516,20 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       renderSeen(lastSeenStats);
       if (lastHealth) renderHealth(lastHealth);
       loadDomainFilters();
+      loadStudioFilters();
+      updateStudioSliderLabels();
+      renderStudioActiveDmdBanner();
     }
 
     function switchTab(name) {
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.getElementById('tab-' + name).classList.add('active');
-      const idx = {overview: 0, runtime: 1, tester: 2, keys: 3, network: 4}[name] || 0;
+      const idx = {overview: 0, runtime: 1, tester: 2, studio: 3, keys: 4, network: 5}[name] || 0;
       document.querySelectorAll('.tab-btn')[idx].classList.add('active');
+      if (name === 'studio') {
+        initStudioIfNeeded();
+      }
     }
 
     function togglePwd(id) {
@@ -1917,6 +2681,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
                 <button type="button" class="secondary mini-btn" title="Skip" onclick="controlDmd('${safeId}', 'skip')">⏭</button>
                 <button type="button" class="secondary mini-btn" title="Pause / Resume" onclick="controlDmd('${safeId}', '${pauseAct}')">${pauseIcon}</button>
                 <button type="button" class="secondary mini-btn" title="On-Demand Queue" onclick="jumpToQueueStudio('${safeId}')">🎯</button>
+                <button type="button" class="secondary mini-btn" title="Card Studio 2B & Sim" onclick="openStudioForDmd('${safeId}')">🎨</button>
               </div>
             </td>
           </tr>
@@ -2071,6 +2836,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           renderClients(d.clients || []);
           renderSeen(d.seen_history || {});
           loadTargetDmdQueue();
+          renderStudioActiveDmdBanner();
+          loadStudioDmdQueue();
         } catch (err) {
           console.error('Failed parsing /api/v1/admin/config:', err);
         }
@@ -2346,6 +3113,26 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       } else if (!prev && known.size === 1) {
         sel.value = Array.from(known.keys())[0];
       }
+
+      const stSel = document.getElementById('studio-target-dmd');
+      if (stSel) {
+        const stPrev = stSel.value;
+        let stHtml = `<option value="">${esc(t('studio_opt_no_dmd'))}</option>`;
+        known.forEach((lbl, id) => {
+          stHtml += `<option value="${esc(id)}">📺 ${esc(lbl)}</option>`;
+        });
+        stSel.innerHTML = stHtml;
+        if (stPrev && known.has(stPrev)) {
+          stSel.value = stPrev;
+        } else if (known.size > 0) {
+          const activeCli = (lastClients || []).find(
+            c => c && c.dmd_id && (c.udp_streaming || c.is_playing || c.playing_title)
+          );
+          stSel.value = (activeCli && known.has(activeCli.dmd_id))
+            ? activeCli.dmd_id
+            : Array.from(known.keys())[0];
+        }
+      }
     }
 
     function jumpToQueueStudio(dmdId) {
@@ -2422,6 +3209,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }).join('');
     }
 
+    let editingProfileCardStyle = null;
+
     async function openProfileEditor(dmdId) {
       const card = document.getElementById('dmd-profile-editor-card');
       if (!card) return;
@@ -2454,6 +3243,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           playlist: defaultPlaylistRows((lastServerConfig && lastServerConfig.default_lang) || 'fr')
         };
       }
+      editingProfileCardStyle = prof.card_style || null;
       document.getElementById('prof-dmd-id').value = prof.dmd_id || '';
       document.getElementById('prof-display-name').value = prof.display_name || prof.dmd_id || '';
       const modeVal = prof.config_source === 'client'
@@ -2525,6 +3315,9 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         inter_item_gap_s: Math.max(0, Math.min(10, parseFloat(document.getElementById('prof-gap-s').value) || 0)),
         playlist: playlist
       };
+      if (editingProfileCardStyle) {
+        payload.card_style = editingProfileCardStyle;
+      }
 
       try {
         const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`, {
@@ -2652,6 +3445,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="cand-syn">${esc(c.synopsis || c.subtitle || '')}</div>
             <div class="cand-actions">
               <button type="button" class="secondary mini-btn" onclick="previewCandidate(${idx})">${esc(t('btn_preview_cand'))}</button>
+              <button type="button" class="secondary mini-btn" onclick="openCandidateInStudio(${idx})">${esc(t('btn_open_studio'))}</button>
               <button type="button" class="secondary mini-btn" onclick="enqueueCandidate(${idx}, 'enqueue_next')">${esc(t('btn_queue_next'))}</button>
               <button type="button" class="mini-btn" onclick="enqueueCandidate(${idx}, 'play_now')">${esc(t('btn_play_now'))}</button>
             </div>
@@ -2750,6 +3544,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
               <span class="pill info" style="margin-left:6px">${esc((it.domain || '').toUpperCase())}</span>
               <span class="pill info">${esc((it.lang || 'fr').toUpperCase())}</span>
               <span class="pill ${stClass}">${esc(it.status)}</span>
+              ${it.from_studio_sim ? `<span class="pill ok">${esc(t('pill_sim_studio'))}</span>` : ''}
             </div>
             <button type="button" class="danger mini-btn" onclick="removeQueueItem('${safeDmd}', '${safeQid}')">✕</button>
           </div>`;
@@ -2765,9 +3560,992 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           method: 'DELETE'
         });
         await loadTargetDmdQueue();
+        await loadStudioDmdQueue();
         loadHealthAndConfig(false);
       } catch (e) {
         console.error(e);
+      }
+    }
+
+    /* =========================================================================
+       MODE 2B CARD STUDIO, BINARY DMDS PLAYER & HUB75 MOD SIM DMD
+       ========================================================================= */
+    let studioInitialized = false;
+    let studioWidth = 128;
+    let studioHeight = 32;
+    let studioCardLayout = 'classic_split';
+    let studioCandidates = [];
+    let studioActiveCandIdx = -1;
+    let studioFullPreviewId = '';
+    let studioCardDebounceTimer = null;
+    let studioCardAbortCtrl = null;
+
+    // Decoded DMDS playback state
+    let studioStreamW = 128;
+    let studioStreamH = 32;
+    let studioStreamFps = 15;
+    let studioFrameDurMs = 67;
+    let studioFrames = [];
+    let studioChapters = [];
+    let studioFrameIdx = 0;
+    let studioPlaying = true;
+    let studioLastTickMs = 0;
+    let studioRafId = 0;
+    const studioOffscreenCanvas = document.createElement('canvas');
+
+    const STUDIO_DEMO_FALLBACKS = {
+      games: {
+        candidate_id: '',
+        domain: 'games',
+        title: 'Metal Slug X',
+        year: '1999',
+        badge: 'NEOGEO',
+        badge_color: '#FF6D00',
+        subtitle: 'SNK • Run & Gun',
+        rating: '9.3',
+        synopsis: 'Marco, Tarma, Eri, and Fio return to stop General Morden and a mysterious alien armada in crisp Neo-Geo pixel art.',
+        lang: 'fr',
+        poster_url: '',
+        has_video: false
+      },
+      movies: {
+        candidate_id: '',
+        domain: 'movies',
+        title: 'Blade Runner',
+        year: '1982',
+        badge: 'SCI-FI',
+        badge_color: '#00E5FF',
+        subtitle: 'Ridley Scott',
+        rating: '8.7',
+        synopsis: 'In a neon-soaked 2019 Los Angeles, Rick Deckard hunts four bioengineered replicants seeking their creator.',
+        lang: 'fr',
+        poster_url: '',
+        has_video: false
+      },
+      series: {
+        candidate_id: '',
+        domain: 'series',
+        title: 'Stranger Things',
+        year: '2016',
+        badge: 'SERIES',
+        badge_color: '#FF1744',
+        subtitle: 'Hawkins, 1983',
+        rating: '8.6',
+        synopsis: 'A vanished boy uncovers secret experiments, supernatural forces, and a mysterious girl in 1980s Indiana.',
+        lang: 'fr',
+        poster_url: '',
+        has_video: false
+      },
+      anime: {
+        candidate_id: '',
+        domain: 'anime',
+        title: 'Akira',
+        year: '1988',
+        badge: 'ANIME',
+        badge_color: '#FFAB00',
+        subtitle: 'Katsuhiro Otomo',
+        rating: '8.8',
+        synopsis: 'Kaneda races through Neo-Tokyo on his iconic red bike after Tetsuo awakens uncontrollable psychic powers.',
+        lang: 'fr',
+        poster_url: '',
+        has_video: false
+      }
+    };
+
+    function getActiveStudioCandidate() {
+      if (studioActiveCandIdx >= 0 && studioCandidates[studioActiveCandIdx]) {
+        return studioCandidates[studioActiveCandIdx];
+      }
+      const dom = (document.getElementById('studio-domain') || {}).value || 'games';
+      return STUDIO_DEMO_FALLBACKS[dom] || STUDIO_DEMO_FALLBACKS.games;
+    }
+
+    function initStudioIfNeeded() {
+      updateStudioResUi();
+      updateStudioSliderLabels();
+      renderStudioActiveDmdBanner();
+      loadStudioDmdQueue();
+      if (!studioInitialized) {
+        studioInitialized = true;
+        const langEl = document.getElementById('studio-lang');
+        if (langEl && lastServerConfig && lastServerConfig.default_lang) {
+          langEl.value = lastServerConfig.default_lang;
+        }
+        loadStudioFilters();
+        requestStudioCardPreviewNow();
+      }
+      startStudioAnimationLoop();
+    }
+
+    async function loadStudioFilters() {
+      const domEl = document.getElementById('studio-domain');
+      const sysEl = document.getElementById('studio-system');
+      const genEl = document.getElementById('studio-genre');
+      if (!domEl || !sysEl || !genEl) return;
+      const dom = domEl.value;
+      const isGames = dom === 'games';
+      sysEl.disabled = !isGames;
+      if (!isGames) {
+        sysEl.innerHTML = `<option value="">${esc(t('opt_na'))}</option>`;
+      }
+      try {
+        const lang = (document.getElementById('studio-lang') || {}).value || currentUiLang;
+        const r = await apiFetch(`/api/v1/${dom}/filters?lang=${encodeURIComponent(lang)}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const allOpt = `<option value="">${esc(t('opt_all'))}</option>`;
+        if (isGames) {
+          sysEl.innerHTML = allOpt + (d.systems || []).map(
+            s => `<option value="${esc(s.id)}">${esc(s.label)} (${esc(s.id)})</option>`
+          ).join('');
+        }
+        genEl.innerHTML = allOpt + (d.genres || []).map(
+          g => `<option value="${esc(g.id)}">${esc(g.label)}</option>`
+        ).join('');
+      } catch (err) {
+        console.error(err);
+      }
+      if (studioActiveCandIdx < 0 && studioInitialized) {
+        scheduleStudioCardPreview();
+      }
+    }
+
+    async function runStudioSearch() {
+      const dom = document.getElementById('studio-domain').value;
+      const lang = document.getElementById('studio-lang').value || 'fr';
+      const sys = document.getElementById('studio-system').value;
+      const gen = document.getElementById('studio-genre').value;
+      const q = document.getElementById('studio-query').value.trim();
+      const st = document.getElementById('studio-search-status');
+      const btn = document.getElementById('btn-studio-search');
+      btn.disabled = true;
+      st.style.color = 'var(--cyan)';
+      st.textContent = t('msg_searching');
+
+      try {
+        const params = new URLSearchParams({lang: lang, limit: '8'});
+        if (q) params.set('q', q);
+        if (dom === 'games' && sys) params.set('systems', sys);
+        if (gen) params.set('genres', gen);
+        const r = await apiFetch(`/api/v1/${dom}/search?` + params.toString());
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const d = await r.json();
+        studioCandidates = Array.isArray(d.items) ? d.items : [];
+        if (!studioCandidates.length) {
+          studioActiveCandIdx = -1;
+          renderStudioCandidateStrip();
+          st.style.color = 'var(--amber)';
+          st.textContent = t('msg_no_candidate');
+          return;
+        }
+        studioActiveCandIdx = 0;
+        studioFullPreviewId = '';
+        renderStudioCandidateStrip();
+        st.style.color = 'var(--green)';
+        st.textContent = t('msg_search_count', {n: studioCandidates.length, l: lang.toUpperCase()});
+        requestStudioCardPreviewNow();
+      } catch (err) {
+        st.style.color = 'var(--red)';
+        st.textContent = '⚠️ ' + (err.message || String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function renderStudioCandidateStrip() {
+      const strip = document.getElementById('studio-cand-strip');
+      if (!strip) return;
+      if (!studioCandidates.length) {
+        strip.innerHTML = '';
+        return;
+      }
+      strip.innerHTML = studioCandidates.map((c, idx) => {
+        const activeCls = idx === studioActiveCandIdx ? ' active' : '';
+        const imgHtml = c.poster_url
+          ? `<img src="${esc(c.poster_url)}" alt="" loading="lazy" onerror="this.style.display='none'" />`
+          : '';
+        const snapTag = c.snapshot_count ? ` • 📸${Number(c.snapshot_count)}` : '';
+        const vidTag = c.has_video ? ' • 🎬' : '';
+        return `<div class="studio-cand-pill${activeCls}" onclick="selectStudioCandidate(${idx})">
+          ${imgHtml}
+          <div style="min-width:0;overflow:hidden">
+            <div style="font-weight:700;font-size:0.82rem;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.title)}</div>
+            <div style="font-size:0.72rem;color:var(--muted)">${esc(c.badge || c.domain.toUpperCase())} ${c.year ? '• ' + esc(c.year) : ''}${esc(snapTag)}${vidTag}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function selectStudioCandidate(idx) {
+      if (!studioCandidates[idx]) return;
+      studioActiveCandIdx = idx;
+      markStudioFullDirty();
+      renderStudioCandidateStrip();
+      requestStudioCardPreviewNow();
+    }
+
+    function openCandidateInStudio(idx) {
+      const c = lastSearchCandidates[idx];
+      if (!c) return;
+      switchTab('studio');
+      const domEl = document.getElementById('studio-domain');
+      const langEl = document.getElementById('studio-lang');
+      if (domEl && c.domain) domEl.value = c.domain;
+      if (langEl && c.lang) langEl.value = c.lang;
+      studioCandidates = lastSearchCandidates.slice();
+      studioActiveCandIdx = idx;
+      markStudioFullDirty();
+      renderStudioCandidateStrip();
+      requestStudioCardPreviewNow();
+    }
+
+    async function openStudioForDmd(dmdId) {
+      switchTab('studio');
+      syncTargetDmdSelector();
+      const stSel = document.getElementById('studio-target-dmd');
+      if (stSel && dmdId) {
+        stSel.value = dmdId;
+        await onStudioTargetDmdChange();
+        syncStudioResFromActiveDmd();
+      }
+    }
+
+    function updateStudioResUi() {
+      const isTate = studioHeight > studioWidth;
+      const geomPill = document.getElementById('studio-geom-pill');
+      if (geomPill) {
+        geomPill.textContent = `${studioWidth}×${studioHeight} • ${isTate ? 'TATE' : (studioWidth === studioHeight ? 'SQUARE' : 'YOKO')}`;
+      }
+      const tateBtn = document.getElementById('btn-studio-tate');
+      if (tateBtn) {
+        tateBtn.classList.toggle('active', isTate);
+      }
+      const normKey = isTate ? `${studioHeight}x${studioWidth}` : `${studioWidth}x${studioHeight}`;
+      document.querySelectorAll('.res-chip').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-res') === normKey);
+      });
+      renderStudioActiveDmdBanner();
+    }
+
+    function setStudioBaseRes(w, h) {
+      const wasTate = studioHeight > studioWidth;
+      if (wasTate && w !== h) {
+        studioWidth = h;
+        studioHeight = w;
+      } else {
+        studioWidth = w;
+        studioHeight = h;
+      }
+      markStudioFullDirty();
+      updateStudioResUi();
+      scheduleStudioCardPreview();
+    }
+
+    function toggleStudioTate() {
+      if (studioWidth === studioHeight) {
+        studioWidth = 64;
+        studioHeight = 128;
+      } else {
+        const tmp = studioWidth;
+        studioWidth = studioHeight;
+        studioHeight = tmp;
+      }
+      markStudioFullDirty();
+      updateStudioResUi();
+      scheduleStudioCardPreview();
+    }
+
+    function selectStudioLayout(layoutId) {
+      studioCardLayout = layoutId;
+      document.querySelectorAll('#studio-layout-grid .layout-card-btn').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-layout') === layoutId);
+      });
+      scheduleStudioCardPreview();
+    }
+
+    function onStudioAccentModeChange() {
+      const mode = document.getElementById('studio-accent-mode').value;
+      const picker = document.getElementById('studio-accent-picker');
+      if (picker) picker.disabled = mode !== 'custom';
+      scheduleStudioCardPreview();
+    }
+
+    function getStudioAccentValue() {
+      const modeEl = document.getElementById('studio-accent-mode');
+      const picker = document.getElementById('studio-accent-picker');
+      if (modeEl && modeEl.value === 'custom' && picker) {
+        return picker.value || '#ff6d00';
+      }
+      return 'auto';
+    }
+
+    function updateStudioSliderLabels() {
+      const spEl = document.getElementById('st-scroll-speed');
+      const spLbl = document.getElementById('lbl-val-scroll');
+      if (spEl && spLbl) {
+        const v = parseInt(spEl.value, 10) || 4;
+        const tag = v <= 2 ? 'Slow' : (v <= 5 ? 'Normal' : (v <= 8 ? 'Fast' : 'Turbo'));
+        spLbl.textContent = `${v} (${tag})`;
+      }
+      const holdEl = document.getElementById('st-card-hold');
+      const holdLbl = document.getElementById('lbl-val-hold');
+      if (holdEl && holdLbl) {
+        holdLbl.textContent = `${parseFloat(holdEl.value || '0.9').toFixed(1)}s`;
+      }
+    }
+
+    function markStudioFullDirty() {
+      studioFullPreviewId = '';
+      const badge = document.getElementById('studio-sim-badge');
+      if (badge) {
+        badge.className = 'pill info';
+        badge.textContent = t('studio_badge_card_fast');
+      }
+    }
+
+    function buildStudioCommonPayload() {
+      const cand = getActiveStudioCandidate();
+      const dom = (document.getElementById('studio-domain') || {}).value || cand.domain || 'games';
+      const lang = (document.getElementById('studio-lang') || {}).value || cand.lang || 'fr';
+      const fps = parseInt((document.getElementById('st-vid-fps') || {}).value || '15', 10) || 15;
+      return {
+        domain: dom,
+        candidate_id: cand.candidate_id || '',
+        query: cand.title || '',
+        lang: lang,
+        width: studioWidth,
+        height: studioHeight,
+        fps: fps,
+        video_fps: fps,
+        title: cand.title || 'Metal Slug X',
+        year: cand.year || '',
+        badge: cand.badge || dom.toUpperCase(),
+        badge_color: cand.badge_color || '#FF6D00',
+        subtitle: cand.subtitle || '',
+        rating: cand.rating || '',
+        synopsis: cand.synopsis || '',
+        poster_url: cand.poster_url || '',
+        include_card_intro: document.getElementById('st-inc-card').checked,
+        card_layout: studioCardLayout,
+        card_theme: document.getElementById('studio-theme').value,
+        card_font: document.getElementById('studio-font').value,
+        card_accent_color: getStudioAccentValue(),
+        include_poster: document.getElementById('st-inc-poster').checked,
+        show_badge: document.getElementById('st-show-badge').checked,
+        show_year: document.getElementById('st-show-year').checked,
+        show_rating: document.getElementById('st-show-rating').checked,
+        include_synopsis: document.getElementById('st-inc-synopsis').checked,
+        text_scroll_speed: String(document.getElementById('st-scroll-speed').value || '4'),
+        card_hold_s: parseFloat(document.getElementById('st-card-hold').value || '0.9'),
+        jacket_panorama: document.getElementById('st-jacket-pan').checked,
+        marquee_panorama: document.getElementById('st-marquee-pan').checked,
+        snapshot_panorama_count: parseInt(document.getElementById('st-snap-count').value || '0', 10) || 0,
+        panorama_duration_s: Math.max(1.5, Math.min(15.0, parseFloat(document.getElementById('st-pan-dur').value || '3.5') || 3.5)),
+        include_video: document.getElementById('st-inc-video').checked,
+        video_max_duration_s: Math.max(1.5, Math.min(60.0, parseFloat(document.getElementById('st-vid-dur').value || '8.0') || 8.0)),
+        video_mode: document.getElementById('st-video-mode').value,
+        color_boost: document.getElementById('st-color-boost').value
+      };
+    }
+
+    function scheduleStudioCardPreview() {
+      markStudioFullDirty();
+      if (studioCardDebounceTimer) clearTimeout(studioCardDebounceTimer);
+      studioCardDebounceTimer = setTimeout(() => {
+        requestStudioCardPreviewNow();
+      }, 170);
+    }
+
+    function decodeDmdsBinaryBuffer(buf) {
+      if (!buf || buf.byteLength < 16) return null;
+      const dv = new DataView(buf);
+      const m0 = dv.getUint8(0), m1 = dv.getUint8(1), m2 = dv.getUint8(2), m3 = dv.getUint8(3);
+      if (m0 !== 0x44 || m1 !== 0x4d || m2 !== 0x44 || m3 !== 0x53) return null;
+      const fps = Math.max(1, dv.getUint8(5) || 15);
+      const w = dv.getUint16(6, true);
+      const h = dv.getUint16(8, true);
+      const declaredFrames = dv.getUint16(10, true);
+      const frameDurMs = Math.max(16, dv.getUint16(12, true) || Math.round(1000 / fps));
+      const frameBytes = w * h * 2;
+      if (w <= 0 || h <= 0 || frameBytes <= 0) return null;
+      const availFrames = Math.floor((buf.byteLength - 16) / frameBytes);
+      const totalFrames = Math.min(declaredFrames || availFrames, availFrames);
+      const frames = [];
+      const pxCount = w * h;
+      for (let f = 0; f < totalFrames; f++) {
+        const base = 16 + f * frameBytes;
+        const rgba = new Uint8ClampedArray(pxCount * 4);
+        for (let p = 0; p < pxCount; p++) {
+          const px565 = dv.getUint16(base + p * 2, true);
+          const r5 = (px565 >> 11) & 0x1f;
+          const g6 = (px565 >> 5) & 0x3f;
+          const b5 = px565 & 0x1f;
+          const o = p * 4;
+          rgba[o] = (r5 << 3) | (r5 >> 2);
+          rgba[o + 1] = (g6 << 2) | (g6 >> 4);
+          rgba[o + 2] = (b5 << 3) | (b5 >> 2);
+          rgba[o + 3] = 255;
+        }
+        frames.push(rgba);
+      }
+      return {w, h, fps, frameDurMs, frames};
+    }
+
+    function applyDecodedStudioStream(decoded, chapters, isFullSeq) {
+      if (!decoded || !decoded.frames.length) return;
+      studioStreamW = decoded.w;
+      studioStreamH = decoded.h;
+      studioStreamFps = decoded.fps;
+      studioFrameDurMs = decoded.frameDurMs;
+      studioFrames = decoded.frames;
+      studioChapters = Array.isArray(chapters) ? chapters : [];
+      studioFrameIdx = 0;
+      studioPlaying = true;
+      const playBtn = document.getElementById('btn-studio-play');
+      if (playBtn) playBtn.textContent = '⏸';
+      const scrub = document.getElementById('studio-scrubber');
+      if (scrub) {
+        scrub.max = String(Math.max(0, studioFrames.length - 1));
+        scrub.value = '0';
+      }
+      const badge = document.getElementById('studio-sim-badge');
+      if (badge) {
+        badge.className = isFullSeq ? 'pill ok' : 'pill info';
+        badge.textContent = isFullSeq ? t('studio_badge_full_0ms') : t('studio_badge_card_fast');
+      }
+      renderStudioChaptersBar();
+      redrawCurrentStudioFrame();
+      startStudioAnimationLoop();
+    }
+
+    function renderStudioChaptersBar() {
+      const bar = document.getElementById('studio-chapters-bar');
+      if (!bar) return;
+      if (!studioChapters.length) {
+        bar.innerHTML = '';
+        return;
+      }
+      bar.innerHTML = studioChapters.map((ch, idx) => {
+        const startF = Number(ch.start_frame || 0);
+        const durS = Number(ch.duration_s || 0).toFixed(1);
+        return `<button type="button" class="chapter-pill" data-ch-idx="${idx}" onclick="jumpToStudioChapter(${startF})">
+          ${esc(ch.label || ch.id)} (${durS}s)
+        </button>`;
+      }).join('');
+    }
+
+    function jumpToStudioChapter(startFrame) {
+      if (!studioFrames.length) return;
+      studioFrameIdx = Math.max(0, Math.min(studioFrames.length - 1, Number(startFrame) || 0));
+      redrawCurrentStudioFrame();
+    }
+
+    function computeStudioScale(w, h) {
+      const zoomVal = (document.getElementById('studio-led-zoom') || {}).value || 'auto';
+      if (zoomVal !== 'auto') {
+        return Math.max(2, Math.min(10, parseInt(zoomVal, 10) || 4));
+      }
+      const maxW = 480;
+      const maxH = 380;
+      return Math.max(2, Math.min(7, Math.floor(Math.min(maxW / Math.max(1, w), maxH / Math.max(1, h)))));
+    }
+
+    function redrawCurrentStudioFrame() {
+      const canvas = document.getElementById('studio-dmd-canvas');
+      if (!canvas || !studioFrames.length) return;
+      const rgba = studioFrames[studioFrameIdx];
+      if (!rgba) return;
+
+      const w = studioStreamW;
+      const h = studioStreamH;
+      const scale = computeStudioScale(w, h);
+      const cw = w * scale;
+      const ch = h * scale;
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw;
+        canvas.height = ch;
+      }
+      const ctx = canvas.getContext('2d');
+      const ledMode = (document.getElementById('studio-led-mode') || {}).value || 'smd_round';
+
+      if (ledMode === 'raw') {
+        studioOffscreenCanvas.width = w;
+        studioOffscreenCanvas.height = h;
+        const octx = studioOffscreenCanvas.getContext('2d');
+        octx.putImageData(new ImageData(rgba, w, h), 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(studioOffscreenCanvas, 0, 0, cw, ch);
+      } else if (ledMode === 'pixel_grid') {
+        // Faithful port of dmd_gif_converter dmd_led_sim.py: (scale-1)x(scale-1) cells + 1px dark pitch
+        ctx.fillStyle = '#05070a';
+        ctx.fillRect(0, 0, cw, ch);
+        const cell = Math.max(1, scale - 1);
+        for (let y = 0; y < h; y++) {
+          const py = y * scale;
+          for (let x = 0; x < w; x++) {
+            const o = (y * w + x) * 4;
+            const r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+            ctx.fillStyle = (r + g + b < 8) ? '#0c1017' : `rgb(${r},${g},${b})`;
+            ctx.fillRect(x * scale, py, cell, cell);
+          }
+        }
+      } else {
+        // SMD Round HUB75 LEDs with subtle glow bloom on bright pixels
+        ctx.fillStyle = '#040609';
+        ctx.fillRect(0, 0, cw, ch);
+        const rad = Math.max(1.0, scale * 0.41);
+        const half = scale * 0.5;
+        for (let y = 0; y < h; y++) {
+          const cy = y * scale + half;
+          for (let x = 0; x < w; x++) {
+            const cx = x * scale + half;
+            const o = (y * w + x) * 4;
+            const r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+            const lum = r + g + b;
+            if (lum < 10) {
+              ctx.fillStyle = '#0d1118';
+              ctx.beginPath();
+              ctx.arc(cx, cy, rad * 0.85, 0, Math.PI * 2);
+              ctx.fill();
+            } else {
+              if (lum > 280 && scale >= 4) {
+                ctx.fillStyle = `rgba(${r},${g},${b},0.22)`;
+                ctx.beginPath();
+                ctx.arc(cx, cy, rad * 1.32, 0, Math.PI * 2);
+                ctx.fill();
+              }
+              ctx.fillStyle = `rgb(${r},${g},${b})`;
+              ctx.beginPath();
+              ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+      }
+
+      const metaEl = document.getElementById('studio-sim-meta');
+      if (metaEl) {
+        const durTot = ((studioFrames.length * studioFrameDurMs) / 1000).toFixed(1);
+        metaEl.textContent = `${w}×${h} • ${studioStreamFps} FPS • ${durTot}s`;
+      }
+      const fLbl = document.getElementById('studio-sim-frame-lbl');
+      if (fLbl) {
+        fLbl.textContent = `Frame ${studioFrameIdx + 1} / ${studioFrames.length}`;
+      }
+      const scrub = document.getElementById('studio-scrubber');
+      if (scrub && document.activeElement !== scrub) {
+        scrub.value = String(studioFrameIdx);
+      }
+      document.querySelectorAll('#studio-chapters-bar .chapter-pill').forEach((btn, idx) => {
+        const ch = studioChapters[idx];
+        if (!ch) return;
+        const sf = Number(ch.start_frame || 0);
+        const ef = sf + Number(ch.frames || 0);
+        btn.classList.toggle('active', studioFrameIdx >= sf && studioFrameIdx < ef);
+      });
+    }
+
+    function startStudioAnimationLoop() {
+      if (studioRafId) return;
+      function tick(nowMs) {
+        const pane = document.getElementById('tab-studio');
+        if (!pane || !pane.classList.contains('active')) {
+          studioRafId = 0;
+          return;
+        }
+        if (studioPlaying && studioFrames.length > 1) {
+          if (!studioLastTickMs) studioLastTickMs = nowMs;
+          if (nowMs - studioLastTickMs >= studioFrameDurMs) {
+            studioLastTickMs = nowMs;
+            studioFrameIdx = (studioFrameIdx + 1) % studioFrames.length;
+            redrawCurrentStudioFrame();
+          }
+        }
+        studioRafId = requestAnimationFrame(tick);
+      }
+      studioRafId = requestAnimationFrame(tick);
+    }
+
+    function toggleStudioPlay() {
+      studioPlaying = !studioPlaying;
+      const btn = document.getElementById('btn-studio-play');
+      if (btn) btn.textContent = studioPlaying ? '⏸' : '▶';
+    }
+
+    function studioStepFrame(delta) {
+      if (!studioFrames.length) return;
+      studioPlaying = false;
+      const btn = document.getElementById('btn-studio-play');
+      if (btn) btn.textContent = '▶';
+      studioFrameIdx = (studioFrameIdx + delta + studioFrames.length) % studioFrames.length;
+      redrawCurrentStudioFrame();
+    }
+
+    function onStudioScrub(val) {
+      if (!studioFrames.length) return;
+      studioFrameIdx = Math.max(0, Math.min(studioFrames.length - 1, parseInt(val, 10) || 0));
+      redrawCurrentStudioFrame();
+    }
+
+    async function requestStudioCardPreviewNow() {
+      if (studioCardAbortCtrl) {
+        try { studioCardAbortCtrl.abort(); } catch (_) {}
+      }
+      const ctrl = new AbortController();
+      studioCardAbortCtrl = ctrl;
+      const payload = buildStudioCommonPayload();
+      const st = document.getElementById('studio-sim-status');
+      try {
+        const r = await apiFetch('/api/v1/studio/card-preview', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+          signal: ctrl.signal
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        let chapters = [];
+        try {
+          const chHdr = r.headers.get('X-DMD-Chapters');
+          if (chHdr) chapters = JSON.parse(chHdr);
+        } catch (_) {}
+        const buf = await r.arrayBuffer();
+        const decoded = decodeDmdsBinaryBuffer(buf);
+        if (decoded) {
+          applyDecodedStudioStream(decoded, chapters, false);
+          if (st) {
+            st.style.color = 'var(--green)';
+            st.textContent = t('msg_studio_card_ok', {f: decoded.frames.length, fps: decoded.fps});
+          }
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        if (st) {
+          st.style.color = 'var(--red)';
+          st.textContent = '⚠️ ' + (err.message || String(err));
+        }
+      }
+    }
+
+    async function runStudioFullPreview() {
+      const btn = document.getElementById('btn-studio-full-sim');
+      const st = document.getElementById('studio-sim-status');
+      const payload = buildStudioCommonPayload();
+      btn.disabled = true;
+      st.style.color = 'var(--cyan)';
+      st.textContent = t('msg_studio_full_building');
+
+      try {
+        const r = await apiFetch('/api/v1/studio/full-preview', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        if (!r.ok) {
+          const ej = await r.json().catch(() => ({}));
+          throw new Error(ej.detail || ('HTTP ' + r.status));
+        }
+        const previewId = (r.headers.get('X-DMD-Preview-Id') || '').trim();
+        let chapters = [];
+        try {
+          const chHdr = r.headers.get('X-DMD-Chapters');
+          if (chHdr) chapters = JSON.parse(chHdr);
+        } catch (_) {}
+        const buf = await r.arrayBuffer();
+        const decoded = decodeDmdsBinaryBuffer(buf);
+        if (decoded) {
+          studioFullPreviewId = previewId;
+          applyDecodedStudioStream(decoded, chapters, true);
+          st.style.color = 'var(--green)';
+          st.textContent = t('msg_studio_full_ok', {f: decoded.frames.length});
+        }
+      } catch (err) {
+        st.style.color = 'var(--red)';
+        st.textContent = '⚠️ ' + (err.message || String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function findTargetDmdMeta(dmdId) {
+      if (!dmdId) return null;
+      const cli = (lastClients || []).find(c => c && c.dmd_id === dmdId);
+      const prof = (lastDmdProfiles || []).find(p => p && p.dmd_id === dmdId);
+      if (!cli && !prof) return null;
+      return {
+        dmd_id: dmdId,
+        width: Number((prof && prof.width) || (cli && cli.width) || 128),
+        height: Number((prof && prof.height) || (cli && cli.height) || 32),
+        lang: (prof && prof.lang) || (cli && cli.lang) || 'fr',
+        config_source: (prof && prof.config_source) || (cli && cli.config_source) || 'client',
+        supports_local_card: prof ? prof.supports_local_card !== false : (cli ? cli.supports_local_card !== false : true),
+        playing_title: (cli && (cli.playing_title || cli.active_title || cli.ready_title)) || '',
+        udp_streaming: Boolean(cli && cli.udp_streaming),
+        card_style: (prof && prof.card_style) || null
+      };
+    }
+
+    function renderStudioActiveDmdBanner() {
+      const banner = document.getElementById('studio-active-dmd-banner');
+      const sel = document.getElementById('studio-target-dmd');
+      if (!banner || !sel) return;
+      const dmdId = sel.value;
+      const meta = findTargetDmdMeta(dmdId);
+      if (!meta) {
+        banner.innerHTML = esc(t('studio_opt_no_dmd'));
+        return;
+      }
+      const modeLbl = meta.config_source === 'server'
+        ? (meta.supports_local_card === false ? t('mode_badge_2b') : t('mode_badge_2a'))
+        : t('mode_badge_client');
+      const playStr = meta.playing_title
+        ? `▶ <b>${esc(meta.playing_title)}</b>`
+        : esc(t('studio_dmd_idle'));
+      let mismatchHtml = '';
+      if (meta.width !== studioWidth || meta.height !== studioHeight) {
+        mismatchHtml = `<div style="color:var(--amber);margin-top:4px;font-size:0.78rem">⚠️ ${esc(t('studio_dmd_res_mismatch', {
+          sw: studioWidth, sh: studioHeight, d: dmdId, dw: meta.width, dh: meta.height
+        }))}</div>`;
+      }
+      banner.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+        <span>${playStr}</span>
+        <span><span class="pill info">${esc(modeLbl)}</span> <code>${esc(meta.width)}×${esc(meta.height)}</code></span>
+      </div>${mismatchHtml}`;
+    }
+
+    async function onStudioTargetDmdChange() {
+      const sel = document.getElementById('studio-target-dmd');
+      const meta = sel ? findTargetDmdMeta(sel.value) : null;
+      if (meta && meta.card_style) {
+        const cs = meta.card_style;
+        if (cs.card_layout) selectStudioLayout(cs.card_layout);
+        if (cs.card_theme) document.getElementById('studio-theme').value = cs.card_theme;
+        if (cs.card_font) document.getElementById('studio-font').value = cs.card_font;
+        document.getElementById('st-inc-card').checked = cs.include_card_intro !== false;
+        document.getElementById('st-inc-poster').checked = cs.include_poster !== false;
+        document.getElementById('st-show-badge').checked = cs.show_badge !== false;
+        document.getElementById('st-show-year').checked = cs.show_year !== false;
+        document.getElementById('st-show-rating').checked = cs.show_rating !== false;
+        document.getElementById('st-inc-synopsis').checked = cs.include_synopsis !== false;
+        if (cs.card_hold_s != null) document.getElementById('st-card-hold').value = String(cs.card_hold_s);
+        if (cs.text_scroll_speed && !Number.isNaN(parseInt(cs.text_scroll_speed, 10))) {
+          document.getElementById('st-scroll-speed').value = String(cs.text_scroll_speed);
+        }
+        updateStudioSliderLabels();
+      }
+      renderStudioActiveDmdBanner();
+      await loadStudioDmdQueue();
+    }
+
+    function syncStudioResFromActiveDmd() {
+      const sel = document.getElementById('studio-target-dmd');
+      const meta = sel ? findTargetDmdMeta(sel.value) : null;
+      if (!meta) return;
+      studioWidth = meta.width;
+      studioHeight = meta.height;
+      markStudioFullDirty();
+      updateStudioResUi();
+      scheduleStudioCardPreview();
+    }
+
+    async function skipStudioTargetDmd() {
+      const dmdId = (document.getElementById('studio-target-dmd') || {}).value || '';
+      const msgEl = document.getElementById('studio-queue-action-msg');
+      if (!dmdId) {
+        if (msgEl) {
+          msgEl.style.color = 'var(--amber)';
+          msgEl.textContent = t('msg_need_target_dmd');
+        }
+        return;
+      }
+      await controlDmd(dmdId, 'skip');
+    }
+
+    async function loadStudioDmdQueue() {
+      const dmdId = (document.getElementById('studio-target-dmd') || {}).value || '';
+      const box = document.getElementById('studio-dmd-queue-list');
+      if (!box) return;
+      if (!dmdId) {
+        box.innerHTML = '';
+        return;
+      }
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/queue`, {cache: 'no-store'});
+        if (!r.ok) return;
+        const d = await r.json();
+        const items = Array.isArray(d.items) ? d.items : [];
+        if (!items.length) {
+          box.innerHTML = `<span style="color:var(--muted)">${esc(t('queue_empty'))}</span>`;
+          return;
+        }
+        const safeDmd = esc(dmdId).replace(/'/g, "\\'");
+        box.innerHTML = items.map((it, i) => {
+          const stClass = it.status === 'ready' || it.status === 'playing' ? 'ok' : 'warn';
+          const safeQid = esc(it.queue_id).replace(/'/g, "\\'");
+          const simPill = it.from_studio_sim ? ` <span class="pill ok">${esc(t('pill_sim_studio'))}</span>` : '';
+          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 10px;background:#0d121b;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+            <div>
+              <b>#${i + 1} — ${esc(it.title)}</b>
+              <span class="pill info" style="margin-left:5px">${esc((it.domain || '').toUpperCase())}</span>
+              <span class="pill ${stClass}">${esc(it.status)}</span>${simPill}
+            </div>
+            <button type="button" class="danger mini-btn" onclick="removeQueueItem('${safeDmd}', '${safeQid}')">✕</button>
+          </div>`;
+        }).join('');
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function enqueueStudioSim(mode) {
+      const dmdId = (document.getElementById('studio-target-dmd') || {}).value || '';
+      const msgEl = document.getElementById('studio-queue-action-msg');
+      if (!dmdId) {
+        msgEl.style.color = 'var(--amber)';
+        msgEl.textContent = t('msg_need_target_dmd');
+        return;
+      }
+      const p = buildStudioCommonPayload();
+      const markSeen = document.getElementById('studio-mark-seen').value === 'true';
+      const usedPreviewId = studioFullPreviewId || null;
+
+      const reqBody = {
+        preview_id: usedPreviewId,
+        candidate_id: p.candidate_id || '',
+        domain: p.domain,
+        query: p.query,
+        lang: p.lang,
+        mode: mode,
+        mark_seen: markSeen,
+        include_card_intro: p.include_card_intro,
+        card_layout: p.card_layout,
+        card_theme: p.card_theme,
+        card_font: p.card_font,
+        card_accent_color: p.card_accent_color,
+        show_badge: p.show_badge,
+        show_year: p.show_year,
+        show_rating: p.show_rating,
+        card_hold_s: p.card_hold_s,
+        include_poster: p.include_poster,
+        include_synopsis: p.include_synopsis,
+        text_scroll_speed: p.text_scroll_speed,
+        jacket_panorama: p.jacket_panorama,
+        marquee_panorama: p.marquee_panorama,
+        snapshot_panorama_count: p.snapshot_panorama_count,
+        panorama_duration_s: p.panorama_duration_s,
+        include_video: p.include_video,
+        video_max_duration_s: p.video_max_duration_s,
+        video_fps: p.video_fps,
+        video_mode: p.video_mode,
+        color_boost: p.color_boost
+      };
+
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/queue`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(reqBody)
+        });
+        if (!r.ok) {
+          const ej = await r.json().catch(() => ({}));
+          throw new Error(ej.detail || ('HTTP ' + r.status));
+        }
+        const resJson = await r.json();
+        const item = resJson.item || {};
+        msgEl.style.color = 'var(--green)';
+        if (usedPreviewId && item.status === 'ready') {
+          msgEl.textContent = t('msg_studio_sim_queued_0ms', {t: item.title || p.title, d: dmdId});
+        } else {
+          msgEl.textContent = t('msg_studio_sim_queued_bg', {
+            t: item.title || p.title,
+            d: dmdId,
+            s: item.status || 'queued'
+          });
+        }
+        await loadStudioDmdQueue();
+        await loadTargetDmdQueue();
+        loadHealthAndConfig(false);
+      } catch (err) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = '⚠️ ' + (err.message || String(err));
+      }
+    }
+
+    async function saveStudioStyleToDmdProfile() {
+      const dmdId = (document.getElementById('studio-target-dmd') || {}).value || '';
+      const msgEl = document.getElementById('studio-queue-action-msg');
+      if (!dmdId) {
+        msgEl.style.color = 'var(--amber)';
+        msgEl.textContent = t('msg_need_target_dmd');
+        return;
+      }
+      const p = buildStudioCommonPayload();
+      let prof = null;
+      try {
+        const rp = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`);
+        if (rp.ok) {
+          prof = (await rp.json()).profile;
+        }
+      } catch (_) {}
+
+      const baseMeta = findTargetDmdMeta(dmdId) || {width: studioWidth, height: studioHeight, lang: p.lang};
+      const existingPl = (prof && Array.isArray(prof.playlist) && prof.playlist.length)
+        ? prof.playlist
+        : defaultPlaylistRows(p.lang);
+
+      const updatedPl = existingPl.map(slot => Object.assign({}, slot, {
+        jacket_panorama: p.jacket_panorama,
+        marquee_panorama: p.marquee_panorama,
+        snapshot_panorama_count: p.snapshot_panorama_count,
+        panorama_duration_s: p.panorama_duration_s,
+        include_video: p.include_video,
+        video_max_duration_s: p.video_max_duration_s,
+        video_fps: p.video_fps,
+        video_mode: p.video_mode,
+        color_boost: p.color_boost
+      }));
+
+      const putPayload = {
+        dmd_id: dmdId,
+        display_name: (prof && prof.display_name) || dmdId,
+        config_source: 'server',
+        supports_local_card: false,
+        always_stream_udp: Boolean(prof && prof.always_stream_udp),
+        width: (prof && prof.width) || baseMeta.width || studioWidth,
+        height: (prof && prof.height) || baseMeta.height || studioHeight,
+        udp_ip: (prof && prof.udp_ip) || '',
+        udp_port: (prof && prof.udp_port) || 4210,
+        lang: p.lang,
+        inter_item_gap_s: (prof && prof.inter_item_gap_s != null) ? prof.inter_item_gap_s : 1.0,
+        card_style: {
+          include_card_intro: p.include_card_intro,
+          card_layout: p.card_layout,
+          card_theme: p.card_theme,
+          card_font: p.card_font,
+          card_accent_color: p.card_accent_color,
+          include_poster: p.include_poster,
+          show_badge: p.show_badge,
+          show_year: p.show_year,
+          show_rating: p.show_rating,
+          include_synopsis: p.include_synopsis,
+          text_scroll_speed: p.text_scroll_speed,
+          card_hold_s: p.card_hold_s
+        },
+        playlist: updatedPl
+      };
+
+      try {
+        const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(putPayload)
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        msgEl.style.color = 'var(--green)';
+        msgEl.textContent = t('msg_studio_2b_saved', {d: dmdId});
+        loadHealthAndConfig(false);
+      } catch (err) {
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = '⚠️ ' + (err.message || String(err));
       }
     }
 

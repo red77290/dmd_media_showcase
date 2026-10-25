@@ -39,7 +39,7 @@ jobs:
           python -m pip install --upgrade pip build
           python -m pip install ".[dev]"
 
-      - name: Run full DDD, MQTT Retain/LWT, UDP DMDF & Consume-Once test suite
+      - name: Run full Showcase, MQTT Retain/LWT, UDP DMDF & Consume-Once test suite
         run: |
           pytest
 
@@ -212,6 +212,6 @@ jobs:
           body: |
             Automated rolling snapshot built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
             - **Native Installers & Portable Packages**: **macOS Apple Silicon `.dmg`** (`DMD Media Showcase.app` Menu-Bar app), **Windows x64 `.zip`**, and **Linux x64 `.tar.gz`** (bundling Python, `ffmpeg`/`ffprobe`, `dmd_gif_converter`, `yt-dlp`, and the embedded MQTT `:1883` broker).
-            - **DDD Ports & Adapters**: 2 dedicated sources per domain (`Primary` + `Fallback`), strict `Consume-Once` (`seen_history.json`), and real-time `ffmpeg -re` UDP `DMDF` streaming.
+            - **Resilient Scraper Chains**: 2 dedicated metadata & trailer sources per domain (`Primary` + `Fallback`), strict `Consume-Once` (`seen_history.json`), and real-time `ffmpeg -re` UDP `DMDF` streaming.
           prerelease: true
           files: dist/*
