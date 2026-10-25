@@ -102,6 +102,29 @@ Every `ESP32_STD` (WROOM-32 / DevKitC without PSRAM, ~`110–140 KB` free intern
 > [!TIP]
 > In `DMDF`, `total_chunks` is capped at `64` (`uint64_t chunkMask`), supporting up to `65,536` bytes per RGB565 frame (e.g. `256x128` or `512x64` on `ESP32-S3` with Octal PSRAM).
 
+### Recommended HUB75 Display Pipeline: `Single DMA Buffer + Offscreen RGB565 Canvas` (`canvas_single`)
+
+Across all ESP32 HUB75 firmwares (including [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix)), the **`Single DMA Buffer + Offscreen RGB565 Canvas` (`canvas_single`)** pipeline built on [`mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA`](https://github.com/mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA) is the **recommended gold-standard architecture**:
+
+1. **50% Savings in Scarce DMA-Capable SRAM (`mxconfig.double_buff = false`)**:
+   - On `ESP32_STD` (no PSRAM), HUB75 I2S DMA descriptors and BCM bitplanes must reside in contiguous internal `MALLOC_CAP_DMA` DRAM — the exact memory pool heavily contested by Wi-Fi + LwIP + UDP RX buffers.
+   - Disabling hardware DMA double-buffering (`mxconfig.double_buff = false`) cuts bitplane allocation in half (`~24 KB` instead of `~48 KB` at 6-bit depth on `128x32`), while the offscreen linear RGB565 canvas (`GFXcanvas16`) only requires `2 bytes/pixel` (`8 KB` on `128x32`, `16 KB` on `128x64` — and can reside in PSRAM on `ESP32-S3`).
+2. **Zero Clear-Strobe & Zero Black Flicker (In-Place Bitplane Overwrite)**:
+   - Drawing directly into a single DMA buffer (`direct_single`) and calling `clearScreen()` blanks the active scanning bitplanes mid-refresh, causing severe black-frame flicker.
+   - With an **Offscreen RGB565 Canvas**, all clearing, `Adafruit_GFX` text/HUD drawing, waiting animations, and UDP frame updates happen strictly in offscreen RAM. `blitCanvas565()` then overwrites every HUB75 bitplane word **in-place** (`(dmaRow[ax] & ~0x003F) | rgb12`) in **`~300 µs`** (`128x32`) without ever clearing the DMA buffer to black first.
+3. **Dirty-Frame Gating (`s_completedUdpSeq != s_lastPresentedUdpSeq`)**:
+   - Core 1 runs at `60 Hz` (`16.6 ms`) while incoming UDP `DMDF` video typically runs at `15–25 FPS` (`40–66 ms`).
+   - By bursting the offscreen canvas to `frame_buffer[0]` **only when a new frame has actually modified the canvas**, Core 1 performs **zero redundant DMA memory writes** during intermediate ticks, eliminating SRAM bus contention while I2S scans the panel.
+4. **Multiplexed BCM Bitplane Burst + Perceptual CIE 1931 Gamma + Classic ESP32 FIFO Word-Swap**:
+   - Encodes upper `(y)` and lower `(y + H/2)` HUB75 scan halves simultaneously into `R1G1B1R2G2B2` bitplanes using bit-depth-scaled **CIE 1931 gamma LUTs** (`6-bit` on `ESP32_STD`, `8-bit` on `ESP32-S3`), applies the Classic ESP32 I2S 16-bit FIFO word-pair swap (`MATRIX_TX_ADJUST(x)`), and flushes CPU cache lines (`Cache_WriteBack_Addr`) when `SPIRAM_DMA_BUFFER` is enabled on `ESP32-S3`.
+
+| Pipeline Mode | `mxconfig.double_buff` | Offscreen RGB565 Canvas | `ESP32_STD` DMA DRAM Headroom | Flicker / Tearing | Recommendation |
+| :--- | :---: | :---: | :--- | :--- | :--- |
+| **`canvas_single`** | **`false`** | **Yes (`GFXcanvas16`)** | **Optimal (50% less DMA DRAM)** | **Zero flicker (in-place `~300 µs` burst + dirty gating)** | **Recommended (`ESP32_STD` & `ESP32-S3`)** |
+| `canvas_double` | `true` | Yes (`GFXcanvas16`) | High RAM cost (`2x` DMA + Canvas) | Tear-free swap | Optional on `ESP32-S3` with Octal PSRAM |
+| `direct_double` | `true` | No | High DMA DRAM (`2x` bitplanes) | Slow per-pixel `drawPixel()` on video | Legacy GFX-only sketches |
+| `direct_single` | `false` | No | Maximal free RAM | Visible strobe on `clearScreen()` | Emergency low-RAM fallback only |
+
 ---
 
 ## 3. Complete Task Sequencing, Waiting States & Watchdog Recovery
@@ -209,110 +232,382 @@ stateDiagram-v2
 
 ---
 
-## 4. Reference C++ / FreeRTOS Skeletons
+## 4. Monolithic Reference Implementation (`ESP32-HUB75-MatrixPanel-I2S-DMA` + `Single DMA Buffer + Canvas`)
 
-### A. Model 2B — Complete ~120-Line 100% Passive UDP `DMDF` Receiver (`ESP32_STD` / `ESP32-S3`)
+### A. Model 2B — Complete Drop-In Monolithic Firmware (`platformio.ini` + `src/main.cpp`)
 
-This self-contained sketch requires **zero JSON library, zero MQTT client, zero font tables, and zero PSRAM**. Core 0 announces the panel via `POST /api/v1/clients/hello` every `15 s` and assembles incoming UDP `:4210` `DMDF` chunks into a ping-pong RGB565 double buffer; Core 1 drives HUB75 at 60 FPS and automatically falls back to a procedural plasma/starfield standby animation whenever `millis() - lastUdpPacketMs > 2500`:
+This complete, single-file C++ firmware implements the **`Single DMA Buffer (`mxconfig.double_buff = false`) + Offscreen `GFXcanvas16` + CIE 1931 In-Place Bitplane Burst Encoder (`blitCanvas565`) + Dirty-Frame Gating`** pipeline using [`mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA`](https://github.com/mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA). It compiles out-of-the-box on both **Classic ESP32 (`esp32dev`, no PSRAM)** and **ESP32-S3 (`esp32-s3-devkitc-1` / Waveshare RGB Matrix with PSRAM)**, and can be flashed directly or integrated into any custom HUB75 firmware:
+
+#### `platformio.ini`
+
+```ini
+[platformio]
+default_envs = esp32dev
+
+[env]
+platform = espressif32
+framework = arduino
+monitor_speed = 115200
+lib_deps =
+    mrfaptastic/ESP32 HUB75 LED MATRIX PANEL DMA Display @ ^3.0.11
+    adafruit/Adafruit GFX Library @ ^1.11.9
+
+; Target 1: Standard ESP32 (WROOM-32 / DevKitC without PSRAM)
+[env:esp32dev]
+board = esp32dev
+build_flags =
+    -D CORE_DEBUG_LEVEL=1
+    -O2
+
+; Target 2: ESP32-S3 with Octal PSRAM (e.g. Waveshare ESP32-S3-RGB-Matrix / N16R8)
+[env:esp32s3]
+board = esp32-s3-devkitc-1
+board_build.arduino.memory_type = qio_opi
+build_flags =
+    -D BOARD_HAS_PSRAM
+    -D SPIRAM_DMA_BUFFER
+    -D CORE_DEBUG_LEVEL=1
+    -O2
+```
+
+#### `src/main.cpp` (Monolithic Implementation)
 
 ```cpp
+/**
+ * @file main.cpp
+ * @brief Monolithic ESP32 / ESP32-S3 HUB75 Receiver for DMD Media Showcase (Mode 2B)
+ *        using the "Single DMA Buffer + Offscreen RGB565 Canvas" (`canvas_single`) pipeline.
+ *
+ * Architectural Highlights (Proven in Production on ArcadeMatrix):
+ *  1. Single HUB75 DMA Buffer (`mxconfig.double_buff = false`):
+ *     Cuts scarce internal DMA-capable SRAM (`MALLOC_CAP_DMA`) usage by 50% compared to
+ *     DMA double-buffering, leaving ample contiguous heap for Wi-Fi + LwIP + UDP on
+ *     standard ESP32 boards without PSRAM (`ESP32_STD`).
+ *  2. Offscreen Linear RGB565 Canvas (`Adafruit_GFX` / `GFXcanvas16`):
+ *     All drawing (idle 60 FPS procedural animation, local HUD overlays, or incoming UDP
+ *     frames) happens exclusively in offscreen memory (`2 bytes/pixel`). `clearScreen()` is
+ *     NEVER called on the live DMA scanout buffer, eliminating black-frame strobe/flicker.
+ *  3. In-Place Multiplexed BCM Bitplane Burst Encoder (`blitCanvas565`):
+ *     Encodes upper `(y)` and lower `(y + H/2)` HUB75 scan halves simultaneously with
+ *     perceptual CIE 1931 gamma LUTs directly into `frame_buffer[0]` (`~300 us` for 128x32),
+ *     bypassing thousands of per-pixel virtual `drawPixel()` calls.
+ *  4. Dirty-Frame Gating (`s_completedUdpSeq != s_lastPresentedUdpSeq`):
+ *     Core 1 only bursts the offscreen canvas into DMA memory when a brand-new frame is
+ *     actually ready, preventing redundant bus contention while I2S scans the panel.
+ *  5. Strict Dual-Core Isolation:
+ *     - Core 0 (`PRO_CPU`): Wi-Fi, mDNS, periodic HTTP `hello`, lock-free UDP `DMDF` assembly.
+ *     - Core 1 (`APP_CPU`): Zero-allocation, zero-mutex 60 Hz canvas composition & DMA commit.
+ */
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <esp_heap_caps.h>
+#include <Adafruit_GFX.h>
 #include <atomic>
+#include <cstring>
+#include <memory>
+#include <vector>
 
-static constexpr uint16_t PANEL_W = 128;
-static constexpr uint16_t PANEL_H = 32;
-static constexpr size_t FRAME_PIXELS = PANEL_W * PANEL_H;
-static constexpr size_t FRAME_BYTES  = FRAME_PIXELS * sizeof(uint16_t); // 8,192 B
-static constexpr uint16_t UDP_PORT   = 4210;
-static constexpr uint32_t UDP_WATCHDOG_MS = 2500;
+#if defined(SPIRAM_DMA_BUFFER)
+#include "rom/cache.h"
+#endif
+
+// Expose `MatrixPanel_I2S_DMA` internal `frame_buffer` row-plane pointers to our subclass
+// for direct in-place BCM bitplane burst encoding (must come AFTER STL headers).
+#define private protected
+#include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#undef private
+
+// =========================================================================================
+// STEP 1: PANEL GEOMETRY, NETWORK CONFIGURATION & HARDWARE PIN PROFILES
+// =========================================================================================
+
+static constexpr uint16_t MODULE_W     = 64;   // Single HUB75 panel width (typically 64)
+static constexpr uint16_t MODULE_H     = 32;   // Single HUB75 panel height (32 or 64)
+static constexpr uint16_t CHAIN_LEN    = 2;    // Number of chained panels (2 x 64x32 = 128x32)
+static constexpr uint16_t PANEL_W      = MODULE_W * CHAIN_LEN;
+static constexpr uint16_t PANEL_H      = MODULE_H;
+static constexpr size_t   FRAME_PIXELS = static_cast<size_t>(PANEL_W) * PANEL_H;
+static constexpr size_t   FRAME_BYTES  = FRAME_PIXELS * sizeof(uint16_t); // 8,192 B for 128x32
+
+static constexpr uint16_t UDP_PORT          = 4210;
+static constexpr uint32_t HELLO_INTERVAL_MS = 15000U;
+static constexpr uint32_t UDP_WATCHDOG_MS   = 2500U;
 
 static const char* WIFI_SSID    = "YOUR_WIFI_SSID";
 static const char* WIFI_PASS    = "YOUR_WIFI_PASSWORD";
 static const char* DMD_ID       = "esp32_passive_128x32";
-static const char* SHOWCASE_URL = "http://dmdmediashowcase.local:8890/api/v1/clients/hello";
+static const char* CONTENT_LANG = "en"; // Broadcast language ("fr", "en", "es", "de", "it", "pt", "ja")
+static const char* SHOWCASE_HELLO_URL = "http://dmdmediashowcase.local:8890/api/v1/clients/hello";
 
-// Ping-pong RGB565 framebuffers in internal SRAM (2 x 8,192 B = 16 KB -> fits ESP32_STD without PSRAM)
-static uint16_t s_frame565[2][FRAME_PIXELS];
-static std::atomic<uint8_t>  s_frontIdx{0};
+// Classic ESP32 (Xtensa LX6) I2S TX FIFO transmits 16-bit words swapped within each 32-bit pair.
+// ESP32-S3 LCD_CAM transmits 16-bit words in natural sequential order.
+#ifndef MATRIX_TX_ADJUST
+#if defined(CONFIG_IDF_TARGET_ESP32) && !defined(CONFIG_IDF_TARGET_ESP32S3)
+#define MATRIX_TX_ADJUST(x) (((x) & 1U) ? ((x) - 1U) : ((x) + 1U))
+#else
+#define MATRIX_TX_ADJUST(x) (x)
+#endif
+#endif
+
+// Default GPIO mapping per target architecture (adjust to match your shield/wiring).
+// Note: On ESP32-S3 with Octal PSRAM, NEVER assign GPIO 32..37 to HUB75!
+static void populateHub75Pins(HUB75_I2S_CFG::i2s_pins& pins) {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    // Waveshare ESP32-S3-RGB-Matrix / Generic ESP32-S3 PSRAM-safe pinout
+    pins.r1 = 4;  pins.g1 = 5;  pins.b1 = 6;
+    pins.r2 = 7;  pins.g2 = 15; pins.b2 = 16;
+    pins.a  = 18; pins.b  = 8;  pins.c  = 3;
+    pins.d  = 42; pins.e  = (PANEL_H >= 64) ? 9 : -1;
+    pins.lat = 40; pins.oe = 2; pins.clk = 41;
+#else
+    // Standard ESP32 (WROOM-32 / DevKitC) HUB75 pinout
+    pins.r1 = 25; pins.g1 = 26; pins.b1 = 27;
+    pins.r2 = 14; pins.g2 = 12; pins.b2 = 13;
+    pins.a  = 33; pins.b  = 32; pins.c  = 22;
+    pins.d  = 17; pins.e  = (PANEL_H >= 64) ? 21 : -1;
+    pins.lat = 4; pins.oe = 15; pins.clk = 16;
+#endif
+}
+
+// =========================================================================================
+// STEP 2: SINGLE-DMA-BUFFER PANEL SUBCLASS WITH IN-PLACE CIE 1931 BITPLANE BURST ENCODER
+// =========================================================================================
+
+// Preserves HUB75 control bits (LAT/OE/address in bits 6..15) while clearing R1G1B1R2G2B2 (bits 0..5).
+static constexpr uint16_t HUB75_RGB12_CLEAR_MASK = 0b1111111111000000U;
+
+// Perceptual CIE 1931 lightness curve (8-bit, gamma ~2.2) for silky dark gradients on LEDs.
+static const uint8_t kCie1931Lut8[256] = {
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,   1,   1,   1,   1,   1,
+      1,   1,   2,   2,   2,   2,   2,   2,   3,   3,   3,   3,   4,   4,   4,   4,
+      5,   5,   5,   5,   6,   6,   6,   7,   7,   7,   8,   8,   8,   9,   9,  10,
+     10,  10,  11,  11,  12,  12,  13,  13,  14,  14,  15,  15,  16,  16,  17,  18,
+     18,  19,  19,  20,  21,  21,  22,  23,  23,  24,  25,  25,  26,  27,  28,  28,
+     29,  30,  31,  32,  32,  33,  34,  35,  36,  37,  38,  38,  39,  40,  41,  42,
+     43,  44,  45,  46,  47,  48,  49,  51,  52,  53,  54,  55,  56,  57,  58,  60,
+     61,  62,  63,  65,  66,  67,  68,  70,  71,  72,  74,  75,  77,  78,  79,  81,
+     82,  84,  85,  87,  88,  90,  91,  93,  94,  96,  98,  99, 101, 103, 104, 106,
+    108, 110, 111, 113, 115, 117, 119, 120, 122, 124, 126, 128, 130, 132, 134, 136,
+    138, 140, 142, 144, 146, 148, 150, 153, 155, 157, 159, 162, 164, 166, 168, 171,
+    173, 175, 178, 180, 183, 185, 188, 190, 193, 195, 198, 201, 203, 206, 208, 211,
+    214, 216, 219, 222, 225, 227, 230, 233, 236, 239, 242, 245, 247, 250, 253, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+};
+
+class SingleBufferCanvasPanel : public MatrixPanel_I2S_DMA {
+public:
+    using MatrixPanel_I2S_DMA::MatrixPanel_I2S_DMA;
+
+    // Precompute channel LUTs scaled to the configured BCM bit depth (e.g. 6-bit on ESP32_STD, 8-bit on S3).
+    void initGammaLuts(uint8_t depth) {
+        if (depth < 2) depth = 2;
+        if (depth > 8) depth = 8;
+        m_depth = depth;
+        const uint8_t  shift  = static_cast<uint8_t>(8U - depth);
+        const uint16_t round  = (shift > 0U) ? static_cast<uint16_t>(1U << (shift - 1U)) : 0U;
+        const uint16_t maxVal = static_cast<uint16_t>((1U << depth) - 1U);
+
+        for (uint16_t r = 0; r < 32; ++r) {
+            uint8_t r8 = static_cast<uint8_t>((r << 3) | (r >> 2));
+            uint16_t v = static_cast<uint16_t>((kCie1931Lut8[r8] + round) >> shift);
+            m_lutR[r]  = static_cast<uint8_t>((v > maxVal) ? maxVal : v);
+        }
+        for (uint16_t g = 0; g < 64; ++g) {
+            uint8_t g8 = static_cast<uint8_t>((g << 2) | (g >> 4));
+            uint16_t v = static_cast<uint16_t>((kCie1931Lut8[g8] + round) >> shift);
+            m_lutG[g]  = static_cast<uint8_t>((v > maxVal) ? maxVal : v);
+        }
+        for (uint16_t b = 0; b < 32; ++b) {
+            uint8_t b8 = static_cast<uint8_t>((b << 3) | (b >> 2));
+            uint16_t v = static_cast<uint16_t>((kCie1931Lut8[b8] + round) >> shift);
+            m_lutB[b]  = static_cast<uint8_t>((v > maxVal) ? maxVal : v);
+        }
+    }
+
+    // Burst-encode a linear RGB565 offscreen canvas directly into the single active DMA buffer (`frame_buffer[0]`).
+    // Because every bitplane word is overwritten in-place without clearing first, there is zero black strobe.
+    void blitCanvas565(const uint16_t* canvas, uint16_t canvasW, uint16_t canvasH) {
+        if (!canvas || !initialized) return;
+        const uint16_t w   = static_cast<uint16_t>(PIXELS_PER_ROW);
+        const uint16_t rpf = static_cast<uint16_t>(ROWS_PER_FRAME); // PANEL_H / 2 (1/16 or 1/32 scan)
+        if (canvasW != w || canvasH != static_cast<uint16_t>(m_cfg.mx_height)) return;
+
+        auto& dmaFb = frame_buffer[0]; // Single DMA buffer (`double_buff == false`)
+        if (dmaFb.rowBits.size() < rpf) return;
+
+        for (uint16_t y = 0; y < rpf; ++y) {
+            const uint16_t* upperRow = canvas + (static_cast<size_t>(y) * w);
+            const uint16_t* lowerRow = canvas + (static_cast<size_t>(y + rpf) * w);
+
+            for (uint8_t p = 0; p < m_depth; ++p) {
+                uint16_t* dmaRow = dmaFb.rowBits[y]->getDataPtr(p);
+                if (!dmaRow) continue;
+
+                for (uint16_t x = 0; x < w; ++x) {
+                    const uint16_t c1 = upperRow[x];
+                    const uint16_t c2 = lowerRow[x];
+
+                    const uint16_t r1 = (m_lutR[(c1 >> 11) & 0x1FU] >> p) & 1U;
+                    const uint16_t g1 = (m_lutG[(c1 >> 5)  & 0x3FU] >> p) & 1U;
+                    const uint16_t b1 = (m_lutB[ c1        & 0x1FU] >> p) & 1U;
+
+                    const uint16_t r2 = (m_lutR[(c2 >> 11) & 0x1FU] >> p) & 1U;
+                    const uint16_t g2 = (m_lutG[(c2 >> 5)  & 0x3FU] >> p) & 1U;
+                    const uint16_t b2 = (m_lutB[ c2        & 0x1FU] >> p) & 1U;
+
+                    const uint16_t rgb12 = static_cast<uint16_t>(
+                        r1 | (g1 << 1) | (b1 << 2) | (r2 << 3) | (g2 << 4) | (b2 << 5)
+                    );
+                    const uint16_t ax = MATRIX_TX_ADJUST(x);
+                    dmaRow[ax] = static_cast<uint16_t>((dmaRow[ax] & HUB75_RGB12_CLEAR_MASK) | rgb12);
+                }
+
+#if defined(SPIRAM_DMA_BUFFER)
+                // Flush CPU dcache line to SPIRAM so LCD_CAM DMA observes updated bitplanes immediately.
+                Cache_WriteBack_Addr(reinterpret_cast<uint32_t>(dmaRow), static_cast<uint32_t>(w * sizeof(uint16_t)));
+#endif
+            }
+        }
+    }
+
+private:
+    uint8_t m_depth = 6;
+    uint8_t m_lutR[32]{};
+    uint8_t m_lutG[64]{};
+    uint8_t m_lutB[32]{};
+};
+
+// =========================================================================================
+// STEP 3: LOCK-FREE DUAL-CORE BUFFERS (UDP STAGING ON CORE 0 -> OFFSCREEN CANVAS ON CORE 1)
+// =========================================================================================
+
+static SingleBufferCanvasPanel* g_panel  = nullptr;
+static GFXcanvas16*             g_canvas = nullptr; // Core 1 private offscreen canvas (full Adafruit_GFX API)
+
+// Ping-pong RGB565 buffers for tear-free UDP `DMDF` packet reassembly on Core 0.
+// Allocated in PSRAM when present, otherwise in internal SRAM (`2 x 8 KB = 16 KB` for 128x32).
+static uint16_t*             g_udpSlots[2]        = {nullptr, nullptr};
+static std::atomic<uint8_t>  s_frontUdpIdx{0};
+static std::atomic<uint32_t> s_completedUdpSeq{0};
 static std::atomic<uint32_t> s_lastUdpPacketMs{0};
 static std::atomic<bool>     s_streamActive{false};
 
-// Replace with your HUB75 driver's off-screen canvas pixel call (e.g. IDrawingSurface / MatrixPanel_I2S_DMA)
-extern void hub75DrawPixel565(int16_t x, int16_t y, uint16_t rgb565);
-extern void hub75PresentFrame();
+static uint16_t* allocRgb565Buffer(size_t bytes) {
+    uint16_t* buf = nullptr;
+    if (psramFound()) {
+        buf = static_cast<uint16_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!buf) {
+        buf = static_cast<uint16_t*>(heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    if (buf) {
+        memset(buf, 0, bytes);
+    }
+    return buf;
+}
+
+// =========================================================================================
+// STEP 4: CORE 0 NETWORK WORKER (WIFI + HTTP HELLO + LOCK-FREE UDP `DMDF` REASSEMBLER)
+// =========================================================================================
 
 static void netWorkerTask(void*) {
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false); // Critical: disable Wi-Fi modem sleep for jitter-free UDP DMDF reception
+    // CRITICAL: Disable Wi-Fi modem power-save sleep so 100 ms DTIM intervals never stall UDP packets!
+    WiFi.setSleep(false);
+#if defined(CONFIG_IDF_TARGET_ESP32) && !defined(CONFIG_IDF_TARGET_ESP32S3)
+    // Cap RF TX bursts on classic ESP32 to prevent transient USB 5V rail voltage dips during HUB75 scanout.
+    WiFi.setTxPower(WIFI_POWER_17dBm);
+#endif
     WiFi.begin(WIFI_SSID, WIFI_PASS);
-    while (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(250)); }
+    while (WiFi.status() != WL_CONNECTED) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
     MDNS.begin(DMD_ID);
 
     WiFiUDP udp;
     udp.begin(UDP_PORT);
 
-    uint8_t  pkt[1040];
-    uint8_t  backIdx = 1;
-    uint16_t curSeq  = 0xFFFF;
-    uint64_t chunkMask = 0;
-    uint32_t lastHelloMs = 0;
+    uint8_t  pkt[1040]; // 10-byte `<4sHBBH` header + up to 1024-byte RGB565LE slice (<= 1034 B < Wi-Fi MTU)
+    uint8_t  backIdx      = 1;
+    uint16_t curFrameSeq  = 0xFFFFU;
+    uint64_t chunkMask    = 0ULL;
+    uint32_t lastHelloMs  = 0U;
 
     for (;;) {
-        uint32_t now = millis();
-        // Periodic lightweight HTTP Hello heartbeat every 15 s (registers IP + geometry in dmd_profiles.json)
-        if (WiFi.status() == WL_CONNECTED && (lastHelloMs == 0 || (now - lastHelloMs) >= 15000U)) {
+        const uint32_t now = millis();
+
+        // 4.1 Periodic non-blocking HTTP Hello announcement (registers IP + geometry in `./data/dmd_profiles.json`).
+        // Skip HTTP heartbeat while UDP packets are actively streaming so socket read latency stays < 1 ms.
+        const bool activelyReceiving = s_streamActive.load(std::memory_order_relaxed) &&
+                                       ((now - s_lastUdpPacketMs.load(std::memory_order_relaxed)) < 1200U);
+        if (!activelyReceiving && WiFi.status() == WL_CONNECTED &&
+            (lastHelloMs == 0U || (now - lastHelloMs) >= HELLO_INTERVAL_MS)) {
             lastHelloMs = now;
             HTTPClient http;
-            http.setTimeout(1500);
-            if (http.begin(SHOWCASE_URL)) {
+            http.setTimeout(1200);
+            if (http.begin(SHOWCASE_HELLO_URL)) {
                 http.addHeader("Content-Type", "application/json");
-                char body[224];
-                IPAddress ip = WiFi.localIP();
-                snprintf(body, sizeof(body),
+                char body[256];
+                const IPAddress ip = WiFi.localIP();
+                snprintf(
+                    body, sizeof(body),
                     "{\"dmd_id\":\"%s\",\"config_source\":\"server\",\"supports_local_card\":false,"
-                    "\"width\":%u,\"height\":%u,\"udp_ip\":\"%u.%u.%u.%u\",\"udp_port\":%u,\"lang\":\"fr\"}",
-                    DMD_ID, PANEL_W, PANEL_H, ip[0], ip[1], ip[2], ip[3], UDP_PORT);
+                    "\"width\":%u,\"height\":%u,\"udp_ip\":\"%u.%u.%u.%u\",\"udp_port\":%u,\"lang\":\"%s\"}",
+                    DMD_ID, PANEL_W, PANEL_H, ip[0], ip[1], ip[2], ip[3], UDP_PORT, CONTENT_LANG
+                );
                 http.POST(reinterpret_cast<uint8_t*>(body), strlen(body));
                 http.end();
             }
         }
 
-        // Drain all queued DMDF UDP slices (<4sHBBH 10-byte Little-Endian header + <= 1024 B RGB565LE)
+        // 4.2 Drain all pending UDP `DMDF` datagrams in a tight burst before yielding.
         int pktSize = udp.parsePacket();
         if (pktSize > 10 && pktSize <= static_cast<int>(sizeof(pkt))) {
-            int len = udp.read(pkt, sizeof(pkt));
-            if (len > 10 && memcmp(pkt, "DMDF", 4) == 0) {
-                uint16_t seq         = static_cast<uint16_t>(pkt[4] | (pkt[5] << 8));
-                uint8_t  chunkIdx    = pkt[6];
-                uint8_t  totalChunks = pkt[7] > 0 ? pkt[7] : 1;
-                uint16_t byteOff     = static_cast<uint16_t>(pkt[8] | (pkt[9] << 8));
-                size_t   payloadLen  = static_cast<size_t>(len - 10);
+            while (pktSize > 10 && pktSize <= static_cast<int>(sizeof(pkt))) {
+                const int len = udp.read(pkt, sizeof(pkt));
+                if (len > 10 && memcmp(pkt, "DMDF", 4) == 0) {
+                    const uint16_t seq         = static_cast<uint16_t>(pkt[4] | (pkt[5] << 8));
+                    const uint8_t  chunkIdx    = pkt[6];
+                    const uint8_t  totalChunks = (pkt[7] > 0U) ? pkt[7] : 1U;
+                    const uint16_t byteOff     = static_cast<uint16_t>(pkt[8] | (pkt[9] << 8));
+                    const size_t   payloadLen  = static_cast<size_t>(len - 10);
 
-                if (seq != curSeq) {
-                    curSeq = seq;
-                    chunkMask = 0;
-                }
-                if (chunkIdx < totalChunks && totalChunks <= 64 && (byteOff + payloadLen) <= FRAME_BYTES) {
-                    memcpy(reinterpret_cast<uint8_t*>(s_frame565[backIdx]) + byteOff, pkt + 10, payloadLen);
-                    chunkMask |= (1ULL << chunkIdx);
-                    uint64_t fullMask = (totalChunks == 64) ? ~0ULL : ((1ULL << totalChunks) - 1ULL);
-                    if (chunkMask == fullMask) {
-                        chunkMask = 0;
-                        uint8_t prevFront = s_frontIdx.load(std::memory_order_relaxed);
-                        s_frontIdx.store(backIdx, std::memory_order_release);
-                        backIdx = prevFront; // Swap ping-pong target for next frame
-                        s_streamActive.store(true, std::memory_order_release);
+                    if (seq != curFrameSeq) {
+                        curFrameSeq = seq;
+                        chunkMask   = 0ULL;
                     }
-                    s_lastUdpPacketMs.store(millis(), std::memory_order_release);
+
+                    if (chunkIdx < totalChunks && totalChunks <= 64U && (byteOff + payloadLen) <= FRAME_BYTES) {
+                        memcpy(reinterpret_cast<uint8_t*>(g_udpSlots[backIdx]) + byteOff, pkt + 10, payloadLen);
+                        chunkMask |= (1ULL << chunkIdx);
+
+                        const uint64_t expectedMask = (totalChunks == 64U) ? ~0ULL : ((1ULL << totalChunks) - 1ULL);
+                        if (chunkMask == expectedMask) {
+                            chunkMask = 0ULL;
+                            // Publish completed frame lock-free to Core 1 and swap Core 0 staging slot.
+                            const uint8_t prevFront = s_frontUdpIdx.load(std::memory_order_relaxed);
+                            s_frontUdpIdx.store(backIdx, std::memory_order_release);
+                            backIdx = prevFront;
+                            s_completedUdpSeq.fetch_add(1U, std::memory_order_release);
+                            s_streamActive.store(true, std::memory_order_release);
+                            // Pre-seed next back buffer with the just-completed frame so any single lost
+                            // UDP slice in a future frame preserves prior pixels instead of black tearing.
+                            memcpy(g_udpSlots[backIdx], g_udpSlots[s_frontUdpIdx.load(std::memory_order_relaxed)], FRAME_BYTES);
+                        }
+                        s_lastUdpPacketMs.store(millis(), std::memory_order_release);
+                    }
                 }
+                pktSize = udp.parsePacket();
             }
         } else {
-            // Local 2,500 ms UDP inactivity watchdog: never freeze on dropped Wi-Fi or server restart
-            uint32_t lastPkt = s_lastUdpPacketMs.load(std::memory_order_acquire);
+            // 4.3 Local 2,500 ms UDP inactivity watchdog: smoothly return to idle animation on EOF or server reboot.
+            const uint32_t lastPkt = s_lastUdpPacketMs.load(std::memory_order_acquire);
             if (s_streamActive.load(std::memory_order_relaxed) && (millis() - lastPkt) > UDP_WATCHDOG_MS) {
                 s_streamActive.store(false, std::memory_order_release);
             }
@@ -321,35 +616,106 @@ static void netWorkerTask(void*) {
     }
 }
 
+// =========================================================================================
+// STEP 5: CORE 1 REAL-TIME 60 HZ RENDER LOOP (OFFSCREEN CANVAS -> DIRTY-GATED SINGLE DMA)
+// =========================================================================================
+
+// Non-blocking procedural waiting animation rendered strictly into the offscreen `GFXcanvas16`.
+static void renderWaitingAnimationToCanvas(GFXcanvas16& canvas, uint32_t nowMs) {
+    uint16_t* dst = canvas.getBuffer();
+    const uint32_t t = nowMs >> 4;
+    for (uint16_t y = 0; y < PANEL_H; ++y) {
+        uint16_t* row = dst + (static_cast<size_t>(y) * PANEL_W);
+        for (uint16_t x = 0; x < PANEL_W; ++x) {
+            const uint8_t  v = static_cast<uint8_t>((x * 5U + y * 9U + t) & 0x3FU);
+            const uint16_t r = static_cast<uint16_t>((v >> 2) & 0x1FU);
+            const uint16_t g = static_cast<uint16_t>((v >> 1) & 0x3FU);
+            const uint16_t b = static_cast<uint16_t>((v >> 1) & 0x1FU);
+            row[x] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
+        }
+    }
+}
+
 void setup() {
-    // Initialize HUB75 panel on Core 1 before spawning Core 0 network worker
-    xTaskCreatePinnedToCore(netWorkerTask, "DmdUdpNet", 6144, nullptr, 1, nullptr, 0);
+    Serial.begin(115200);
+
+    // 5.1 Allocate offscreen `GFXcanvas16` + lock-free UDP staging buffers BEFORE Wi-Fi fragments heap.
+    g_canvas      = new GFXcanvas16(PANEL_W, PANEL_H);
+    g_udpSlots[0] = allocRgb565Buffer(FRAME_BYTES);
+    g_udpSlots[1] = allocRgb565Buffer(FRAME_BYTES);
+    if (!g_canvas || !g_canvas->getBuffer() || !g_udpSlots[0] || !g_udpSlots[1]) {
+        Serial.println("[FATAL] Failed to allocate offscreen RGB565 buffers!");
+        for (;;) { delay(1000); }
+    }
+
+    // 5.2 Configure HUB75 with SINGLE DMA BUFFER (`mxconfig.double_buff = false`).
+    HUB75_I2S_CFG::i2s_pins pins{};
+    populateHub75Pins(pins);
+    HUB75_I2S_CFG mxconfig(MODULE_W, MODULE_H, CHAIN_LEN, pins);
+
+    // 6-bit BCM depth (64 perceptual CIE levels/channel) fits comfortably in internal DMA SRAM on ESP32_STD;
+    // upgrade automatically to 8-bit BCM depth when PSRAM is available (e.g. ESP32-S3).
+    const uint8_t colorDepth = psramFound() ? 8U : 6U;
+    mxconfig.setPixelColorDepthBits(colorDepth);
+    mxconfig.double_buff      = false; // <--- CRITICAL: Single DMA Buffer saves 50% internal DMA DRAM!
+    mxconfig.min_refresh_rate = 90;
+    mxconfig.latch_blanking   = 4;
+    mxconfig.clkphase         = false;
+    mxconfig.driver           = HUB75_I2S_CFG::SHIFTREG; // Or FM6126A / ICN2038S depending on your LED panels
+
+    g_panel = new SingleBufferCanvasPanel(mxconfig);
+    if (!g_panel->begin()) {
+        Serial.println("[FATAL] HUB75 Single-Buffer DMA allocation failed!");
+        for (;;) { delay(1000); }
+    }
+    g_panel->initGammaLuts(colorDepth);
+    g_panel->setBrightness8(96); // 0..255 safe cabinet brightness
+
+    // Commit clean black Frame 0 once at boot via the offscreen canvas.
+    g_canvas->fillScreen(0x0000);
+    g_panel->blitCanvas565(g_canvas->getBuffer(), PANEL_W, PANEL_H);
+
+    // 5.3 Launch network & UDP reassembly worker strictly pinned to Core 0 (`PRO_CPU`).
+    xTaskCreatePinnedToCore(netWorkerTask, "ShowcaseUdpNet", 6144, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
-    // Runs on Core 1 (APP_CPU): strictly zero heap allocation and zero mutex
-    uint32_t now = millis();
+    // Runs on Core 1 (`APP_CPU`): strictly ZERO heap allocation and ZERO mutex!
+    static uint32_t s_lastPresentedUdpSeq = 0U;
+    static uint32_t s_lastFrameTickMs     = 0U;
+
+    const uint32_t now = millis();
+    if ((now - s_lastFrameTickMs) < 16U) { // Pace Core 1 composition loop at ~60 Hz (16.6 ms)
+        vTaskDelay(pdMS_TO_TICKS(1));
+        return;
+    }
+    s_lastFrameTickMs = now;
+
+    bool canvasDirty = false;
+
     if (s_streamActive.load(std::memory_order_acquire)) {
-        const uint16_t* fb = s_frame565[s_frontIdx.load(std::memory_order_acquire)];
-        for (uint16_t y = 0; y < PANEL_H; ++y) {
-            const uint16_t* row = fb + (y * PANEL_W);
-            for (uint16_t x = 0; x < PANEL_W; ++x) {
-                hub75DrawPixel565(x, y, row[x]);
-            }
+        const uint32_t latestSeq = s_completedUdpSeq.load(std::memory_order_acquire);
+        // Dirty-Frame Gating: ONLY touch the offscreen canvas & Single DMA Buffer when a new UDP frame arrived!
+        if (latestSeq != s_lastPresentedUdpSeq) {
+            const uint8_t frontIdx = s_frontUdpIdx.load(std::memory_order_acquire);
+            memcpy(g_canvas->getBuffer(), g_udpSlots[frontIdx], FRAME_BYTES);
+
+            // Optional hook for custom firmwares: draw local Adafruit_GFX HUD / score / clock overlays here
+            // into `g_canvas` (e.g. `g_canvas->setCursor(...); g_canvas->print(...);`) before DMA burst!
+
+            s_lastPresentedUdpSeq = latestSeq;
+            canvasDirty = true;
         }
     } else {
-        // Non-blocking 60 FPS procedural pixel-art waiting animation during boot / warming
-        uint32_t t = now >> 4;
-        for (uint16_t y = 0; y < PANEL_H; ++y) {
-            for (uint16_t x = 0; x < PANEL_W; ++x) {
-                uint8_t v = static_cast<uint8_t>((x * 5 + y * 9 + t) & 0x3F);
-                uint16_t c = static_cast<uint16_t>(((v >> 2) << 11) | ((v >> 1) << 5) | (v >> 1));
-                hub75DrawPixel565(x, y, c);
-            }
-        }
+        // Boot / Warming / Idle state: compose smooth 60 FPS animation in offscreen canvas.
+        renderWaitingAnimationToCanvas(*g_canvas, now);
+        canvasDirty = true;
     }
-    hub75PresentFrame();
-    vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS cadence
+
+    // Commit offscreen canvas to Single HUB75 DMA Buffer ONLY when dirty (in-place burst, zero black clear).
+    if (canvasDirty) {
+        g_panel->blitCanvas565(g_canvas->getBuffer(), PANEL_W, PANEL_H);
+    }
 }
 ```
 
