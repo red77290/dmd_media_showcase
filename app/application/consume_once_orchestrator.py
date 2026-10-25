@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import copy
 from dataclasses import dataclass, field, replace as dc_replace
 import logging
 import re
@@ -47,6 +48,8 @@ from app.infrastructure.persistence.dmd_profile_store import (
     VALID_CARD_LAYOUTS,
     VALID_CARD_THEMES,
     dmd_profile_store,
+    normalize_dmd_profile,
+    normalize_domain_studio_style,
 )
 from app.infrastructure.persistence.json_seen_repository import seen_repository
 from app.infrastructure.streaming.ffmpeg_udp_streamer import udp_clock_streamer
@@ -293,6 +296,7 @@ class ConsumeOnceOrchestrator:
 
         # Per `(dmd_id, domain)` configuration, ready slot (N), standby slot (N+1), active playing slot, and prep task
         self.client_configs: Dict[Tuple[str, DomainType], Tuple[PanelGeometry, FilterCriteria]] = {}
+        self.client_raw_configs: Dict[str, Dict[str, Any]] = {}
         self.client_udp_ips: Dict[str, str] = {}
         self.client_udp_ports: Dict[str, int] = {}
         self.client_online: Dict[str, bool] = {}
@@ -668,6 +672,277 @@ class ConsumeOnceOrchestrator:
             )
         return out
 
+    def is_live_client_managed_dmd(
+        self,
+        dmd_id: str,
+        extra_http_sessions: Optional[List[Tuple[Any, str]]] = None,
+    ) -> bool:
+        """
+        Return True when `dmd_id` is currently active in Mode 1 (driven by the DMD over MQTT or HTTP)
+        and does NOT have a persisted `config_source == 'server'` profile in `dmd_profiles.json`.
+        """
+        clean_id = str(dmd_id or "").strip()
+        if not clean_id or clean_id in self._server_managed_ids:
+            return False
+        prof = self.profile_store.get_profile(clean_id)
+        if prof is not None and prof.get("config_source") == "server":
+            return False
+        if any(cid == clean_id for (cid, _dom) in self.client_configs):
+            return True
+        for sess, _ip in extra_http_sessions or []:
+            cid = str(getattr(sess.request, "client_id", None) or getattr(sess, "session_id", "")).strip()
+            if cid and cid != "webui_tester" and cid == clean_id:
+                return True
+        return False
+
+    def synthesize_live_client_profile(
+        self,
+        dmd_id: str,
+        extra_http_sessions: Optional[List[Tuple[Any, str]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build a read-only live inspector profile from the actual MQTT Retain (`dmd_showcase/clients/{id}/config`)
+        or HTTP Polling configuration sent by a Mode 1 DMD (such as `ArcadeMatrix` or `ArcadeMatrix_RPi`),
+        consolidating sibling per-domain engines running on the same physical board without ever falling
+        back to fake `default_playlist_slots()` defaults.
+        """
+        clean_id = str(dmd_id or "").strip()
+        if not clean_id:
+            return None
+
+        profiles_by_id = {p["dmd_id"]: p for p in self.profile_store.list_profiles()}
+        all_entries: List[Tuple[str, DomainType, PanelGeometry, FilterCriteria, str, str, Optional[Dict[str, Any]]]] = []
+
+        for (cid, dom), (geom, crit) in sorted(self.client_configs.items()):
+            if cid in self._server_managed_ids:
+                continue
+            p_existing = profiles_by_id.get(cid)
+            if p_existing is not None and p_existing.get("config_source") == "server":
+                continue
+            ip = self.client_udp_ips.get(cid, "")
+            tr = self.client_transports.get((cid, dom), "MQTT+UDP")
+            raw_p = self.client_raw_configs.get(cid)
+            all_entries.append((cid, dom, geom, crit, tr, ip, raw_p))
+
+        existing_pairs = {(cid, dom) for (cid, dom, *_rest) in all_entries}
+        for sess, sess_ip in extra_http_sessions or []:
+            cid = str(getattr(sess.request, "client_id", None) or getattr(sess, "session_id", "")).strip()
+            dom_raw = str(getattr(sess, "domain", "games"))
+            if not cid or cid == "webui_tester" or dom_raw not in VALID_DOMAINS:
+                continue
+            dom_http: DomainType = dom_raw  # type: ignore[assignment]
+            if (cid, dom_http) in existing_pairs:
+                continue
+            p_existing = profiles_by_id.get(cid)
+            if p_existing is not None and p_existing.get("config_source") == "server":
+                continue
+            clean_ip = sess_ip if sess_ip and sess_ip not in ("unknown", "testclient") else ""
+            geom = PanelGeometry(width=int(sess.request.width), height=int(sess.request.height))
+            raw_req = sess.request.model_dump() if hasattr(sess.request, "model_dump") else {}
+            crit = self._parse_domain_criteria(
+                dom_http, raw_req, top_lang=str(getattr(sess.request, "lang", "fr"))
+            )
+            all_entries.append((cid, dom_http, geom, crit, "HTTP", clean_ip, raw_req))
+
+        direct_matches = [e for e in all_entries if e[0] == clean_id]
+        if not direct_matches:
+            return None
+
+        _prim_cid, _prim_dom, prim_geom, prim_crit, prim_tr, prim_ip, _prim_raw = direct_matches[0]
+        clicked_ip = prim_ip or self.client_udp_ips.get(clean_id, "")
+        board_key = canonical_dmd_board_key(clean_id, clicked_ip)
+
+        domain_map: Dict[DomainType, Tuple[str, PanelGeometry, FilterCriteria, str, str, Optional[Dict[str, Any]]]] = {}
+        # First populate sibling engines sharing the same physical board key, then overlay exact `clean_id`
+        for cid, dom, geom, crit, tr, ip, raw_p in all_entries:
+            if cid != clean_id and canonical_dmd_board_key(cid, ip) == board_key:
+                domain_map[dom] = (cid, geom, crit, tr, ip, raw_p)
+        for cid, dom, geom, crit, tr, ip, raw_p in direct_matches:
+            domain_map[dom] = (cid, geom, crit, tr, ip, raw_p)
+
+        udp_ip = clicked_ip or next((v[4] for v in domain_map.values() if v[4]), "")
+        default_port = 5568 if clean_id.lower().startswith("rpi_") else 4210
+        udp_port = int(self.client_udp_ports.get(clean_id, default_port))
+
+        playlist_raw: List[Dict[str, Any]] = []
+        domain_styles_raw: Dict[str, Dict[str, Any]] = {}
+        active_engines: Dict[str, Dict[str, Any]] = {}
+        received_configs: Dict[str, Any] = {}
+
+        for dom in VALID_DOMAINS:
+            if dom in domain_map:
+                sib_id, sib_geom, sib_crit, sib_tr, sib_ip, sib_raw = domain_map[dom]
+                sib_port = int(
+                    self.client_udp_ports.get(
+                        sib_id, 5568 if sib_id.lower().startswith("rpi_") else udp_port
+                    )
+                )
+                active_engines[dom] = {
+                    "dmd_id": sib_id,
+                    "transport": sib_tr,
+                    "width": sib_geom.width,
+                    "height": sib_geom.height,
+                    "lang": sib_crit.lang,
+                    "udp_port": sib_port,
+                }
+                if sib_id not in received_configs:
+                    if isinstance(sib_raw, dict) and sib_raw:
+                        received_configs[sib_id] = copy.deepcopy(sib_raw)
+                    else:
+                        received_configs[sib_id] = {
+                            "dmd_id": sib_id,
+                            "domain": dom,
+                            "transport": sib_tr,
+                            "client_ip": sib_ip or udp_ip,
+                            "udp_port": sib_port,
+                            "width": sib_geom.width,
+                            "height": sib_geom.height,
+                            "lang": sib_crit.lang,
+                            "systems": list(sib_crit.systems) if dom == "games" else [],
+                            "genres": list(sib_crit.genres),
+                            "decades": list(sib_crit.decades),
+                            "min_rating": sib_crit.min_rating,
+                            "video_type": sib_crit.video_type,
+                            "show_poster": sib_crit.include_poster,
+                            "show_synopsis": sib_crit.include_synopsis,
+                            "text_scroll_speed": sib_crit.text_scroll_speed,
+                            "jacket_panorama": sib_crit.jacket_panorama,
+                            "marquee_panorama": sib_crit.marquee_panorama,
+                            "snapshot_panorama_count": sib_crit.snapshot_panorama_count,
+                            "panorama_duration_s": sib_crit.panorama_duration_s,
+                            "show_video": sib_crit.include_video,
+                            "video_max_duration_s": sib_crit.video_max_duration_s,
+                            "video_fps": sib_crit.video_fps,
+                            "video_mode": sib_crit.video_mode,
+                            "color_boost": sib_crit.color_boost,
+                        }
+
+                style_dict = normalize_domain_studio_style(
+                    dom,
+                    {
+                        "include_card_intro": bool(sib_crit.include_card_intro),
+                        "card_layout": str(sib_crit.card_layout),
+                        "card_theme": str(sib_crit.card_theme),
+                        "card_font": str(sib_crit.card_font),
+                        "card_accent_color": str(sib_crit.card_accent_color),
+                        "include_poster": bool(sib_crit.include_poster),
+                        "show_badge": bool(sib_crit.show_badge),
+                        "show_year": bool(sib_crit.show_year),
+                        "show_rating": bool(sib_crit.show_rating),
+                        "include_synopsis": bool(sib_crit.include_synopsis),
+                        "text_scroll_speed": str(sib_crit.text_scroll_speed),
+                        "card_hold_s": float(sib_crit.card_hold_s),
+                        "jacket_panorama": bool(sib_crit.jacket_panorama),
+                        "marquee_panorama": bool(sib_crit.marquee_panorama),
+                        "snapshot_panorama_count": int(sib_crit.snapshot_panorama_count),
+                        "panorama_duration_s": float(sib_crit.panorama_duration_s),
+                        "include_video": bool(sib_crit.include_video),
+                        "video_type": str(sib_crit.video_type or "any"),
+                        "video_max_duration_s": float(sib_crit.video_max_duration_s),
+                        "video_fps": int(sib_crit.video_fps),
+                        "video_mode": str(sib_crit.video_mode),
+                        "color_boost": str(sib_crit.color_boost),
+                    },
+                )
+                domain_styles_raw[dom] = style_dict
+                playlist_raw.append(
+                    {
+                        "enabled": True,
+                        "domain": dom,
+                        "count": 1,
+                        "lang": sib_crit.lang,
+                        "systems": list(sib_crit.systems) if dom == "games" else [],
+                        "genres": list(sib_crit.genres),
+                        "decades": list(sib_crit.decades),
+                        "min_rating": float(sib_crit.min_rating),
+                        "video_type": str(sib_crit.video_type or "any"),
+                        "include_poster": bool(sib_crit.include_poster),
+                        "include_synopsis": bool(sib_crit.include_synopsis),
+                        "text_scroll_speed": str(sib_crit.text_scroll_speed),
+                        "jacket_panorama": bool(sib_crit.jacket_panorama),
+                        "marquee_panorama": bool(sib_crit.marquee_panorama),
+                        "snapshot_panorama_count": int(sib_crit.snapshot_panorama_count),
+                        "panorama_duration_s": float(sib_crit.panorama_duration_s),
+                        "include_video": bool(sib_crit.include_video),
+                        "video_max_duration_s": float(sib_crit.video_max_duration_s),
+                        "video_fps": int(sib_crit.video_fps),
+                        "video_mode": str(sib_crit.video_mode),
+                        "color_boost": str(sib_crit.color_boost),
+                    }
+                )
+            else:
+                domain_styles_raw[dom] = normalize_domain_studio_style(dom, {})
+                playlist_raw.append(
+                    {
+                        "enabled": False,
+                        "domain": dom,
+                        "count": 1,
+                        "lang": prim_crit.lang,
+                        "systems": [],
+                        "genres": [],
+                        "decades": [],
+                        "min_rating": 6.0,
+                        "video_type": "any",
+                        "include_poster": False,
+                        "include_synopsis": False,
+                        "text_scroll_speed": "normal",
+                        "jacket_panorama": False,
+                        "marquee_panorama": False,
+                        "snapshot_panorama_count": 0,
+                        "panorama_duration_s": float(settings.panorama_duration_s),
+                        "include_video": False,
+                        "video_max_duration_s": 8.0,
+                        "video_fps": 15,
+                        "video_mode": "auto_action",
+                        "color_boost": "auto",
+                    }
+                )
+
+        profile = normalize_dmd_profile(
+            clean_id,
+            {
+                "dmd_id": clean_id,
+                "display_name": clean_id,
+                "config_source": "client",
+                "supports_local_card": not bool(prim_crit.render_card_in_stream),
+                "always_stream_udp": False,
+                "width": prim_geom.width,
+                "height": prim_geom.height,
+                "udp_ip": udp_ip,
+                "udp_port": udp_port,
+                "lang": prim_crit.lang,
+                "inter_item_gap_s": 0.0,
+                "domain_styles": domain_styles_raw,
+                "playlist": playlist_raw,
+            },
+        )
+        for slot in profile.get("playlist") or []:
+            dom_k = slot.get("domain")
+            if dom_k in domain_map:
+                slot["engine_dmd_id"] = domain_map[dom_k][0]  # type: ignore[index]
+                slot["transport"] = domain_map[dom_k][3]  # type: ignore[index]
+            else:
+                slot["engine_dmd_id"] = None
+                slot["transport"] = None
+
+        client_live_payload = {
+            "inspected_dmd_id": clean_id,
+            "board_key": board_key,
+            "config_source": "client",
+            "read_only": True,
+            "transport": prim_tr,
+            "client_ip": udp_ip,
+            "udp_port": udp_port,
+            "active_engines": active_engines,
+            "received_configs": received_configs,
+        }
+        return {
+            "persisted": False,
+            "read_only_client_managed": True,
+            "profile": profile,
+            "client_live_payload": client_live_payload,
+        }
+
     def _parse_domain_criteria(
         self, domain: DomainType, raw_cfg: Dict[str, Any], top_lang: str = "fr"
     ) -> FilterCriteria:
@@ -864,12 +1139,18 @@ class ConsumeOnceOrchestrator:
         best_ip = _select_best_udp_ip(declared_ip, self.client_udp_ips.get(dmd_id), peer_ip)
         if best_ip:
             self.client_udp_ips[dmd_id] = best_ip
+        if payload.get("udp_port"):
+            try:
+                self.client_udp_ports[dmd_id] = max(1, min(65535, int(payload["udp_port"])))
+            except (TypeError, ValueError):
+                pass
 
         # If the DMD rebooted or reconnected mid-broadcast, stop any orphaned UDP stream
         # and purge any pre-reboot consumed package that was waiting for `start_stream`.
         await self._cleanup_abandoned_active_packages(dmd_id)
 
         if payload.get("unregister"):
+            self.client_raw_configs.pop(dmd_id, None)
             for dom_key in VALID_DOMAINS:
                 self.client_configs.pop((dmd_id, dom_key), None)
                 self.client_transports.pop((dmd_id, dom_key), None)
@@ -879,6 +1160,12 @@ class ConsumeOnceOrchestrator:
                 t = self._prep_tasks.pop((dmd_id, dom_key), None)
                 self._safe_cancel_task(t)
             return
+
+        # Record a sanitized snapshot of the retained MQTT payload pushed by this Mode 1 DMD
+        # so the Admin UI Inspector can display the exact live client-driven JSON read-only.
+        self.client_raw_configs[dmd_id] = {
+            str(k): v for k, v in payload.items() if not str(k).startswith("_")
+        }
 
         # If this physical DMD (identified by its LAN `best_ip`) rotated to a sibling
         # Showcase domain (e.g. `rpi_series_128x32` -> `rpi_games_128x32`), stop any

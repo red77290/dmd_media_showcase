@@ -21,7 +21,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional, Set, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 import dmd_gif_converter
 from dmd_gif_converter import truncate_gif_bytes, truncate_rgb565_stream
@@ -372,7 +372,10 @@ async def get_admin_config() -> Dict[str, Any]:
         clients.append(
             {
                 "dmd_id": cid,
+                "display_name": cid,
                 "domain": sess.domain,
+                "config_source": "client",
+                "supports_local_card": True,
                 "transport": "HTTP",
                 "client_ip": sess_ip,
                 "width": sess.request.width,
@@ -725,47 +728,70 @@ async def announce_passive_dmd_client(
     }
 
 
+def _collect_http_sessions_with_ip() -> List[Tuple[Any, str]]:
+    """Collect active HTTP polling sessions alongside their detected peer LAN IP."""
+    out: List[Tuple[Any, str]] = []
+    for sess in batch_manager.sessions.values():
+        cid = sess.request.client_id or sess.session_id
+        meta = _session_client_meta.get((cid, sess.domain))
+        sess_ip = meta[0] if meta and meta[0] not in ("unknown", "testclient") else ""
+        out.append((sess, sess_ip))
+    return out
+
+
 @app.get("/api/v1/clients/{dmd_id}/profile", tags=["DMD Profiles & Passive Mode"])
 async def get_dmd_client_profile(dmd_id: str) -> Dict[str, Any]:
-    """Retrieve the persisted `dmd_profiles.json` configuration for `dmd_id` (or synthesize a live template if connected)."""
+    """
+    Retrieve the persisted `dmd_profiles.json` configuration for `dmd_id` (Mode 2A / 2B),
+    or synthesize a read-only live inspector profile from the actual MQTT Retain / HTTP Polling
+    configuration pushed by an active Mode 1 DMD (`ArcadeMatrix` / `ArcadeMatrix_RPi`).
+    """
     prof = dmd_profile_store.get_profile(dmd_id)
     if prof is not None:
-        return {"persisted": True, "profile": prof}
-    # Synthesize a pre-filled template if `dmd_id` is currently connected in Mode 1
-    live_matches = [
-        (dom, geom, crit)
-        for (cid, dom), (geom, crit) in consume_once_orchestrator.client_configs.items()
-        if cid == dmd_id
-    ]
-    if not live_matches:
-        raise HTTPException(status_code=404, detail=f"DMD profile '{dmd_id}' not found.")
-    _dom, geom, crit = live_matches[0]
-    from app.infrastructure.persistence.dmd_profile_store import normalize_dmd_profile
+        is_client_cfg = str(prof.get("config_source") or "server") == "client"
+        live_payload = None
+        if is_client_cfg:
+            live_syn = consume_once_orchestrator.synthesize_live_client_profile(
+                dmd_id, extra_http_sessions=_collect_http_sessions_with_ip()
+            )
+            if live_syn is not None:
+                return live_syn
+        return {
+            "persisted": True,
+            "read_only_client_managed": is_client_cfg,
+            "profile": prof,
+            "client_live_payload": live_payload,
+        }
 
-    template = normalize_dmd_profile(
-        dmd_id,
-        {
-            "dmd_id": dmd_id,
-            "display_name": dmd_id,
-            "config_source": "client",
-            "supports_local_card": True,
-            "always_stream_udp": False,
-            "width": geom.width,
-            "height": geom.height,
-            "udp_ip": consume_once_orchestrator.client_udp_ips.get(dmd_id, ""),
-            "udp_port": consume_once_orchestrator.client_udp_ports.get(dmd_id, 4210),
-            "lang": crit.lang,
-        },
+    live_syn = consume_once_orchestrator.synthesize_live_client_profile(
+        dmd_id, extra_http_sessions=_collect_http_sessions_with_ip()
     )
-    return {"persisted": False, "profile": template}
+    if live_syn is not None:
+        return live_syn
+    raise HTTPException(status_code=404, detail=f"DMD profile '{dmd_id}' not found.")
 
 
 @app.put("/api/v1/clients/{dmd_id}/profile", tags=["DMD Profiles & Passive Mode"])
 async def put_dmd_client_profile(
     dmd_id: str,
     payload: DmdProfilePayload,
+    force_override: bool = Query(
+        default=False,
+        description="Explicitly convert an active Mode 1 client-driven DMD into a server-managed profile.",
+    ),
 ) -> Dict[str, Any]:
     """Create or update a DMD profile and multi-domain playlist in `./data/dmd_profiles.json` and hot-apply immediately."""
+    if not force_override and consume_once_orchestrator.is_live_client_managed_dmd(
+        dmd_id, extra_http_sessions=_collect_http_sessions_with_ip()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"DMD '{dmd_id}' is actively driven by the DMD client over MQTT/HTTP (Mode 1, read-only). "
+                f"Inject transient items via POST /api/v1/clients/{dmd_id}/queue instead, "
+                "or pass ?force_override=true to explicitly convert it to a server-managed profile."
+            ),
+        )
     raw = payload.model_dump(exclude_none=True)
     raw["dmd_id"] = dmd_id
     saved = await consume_once_orchestrator.upsert_dmd_profile(dmd_id, raw)

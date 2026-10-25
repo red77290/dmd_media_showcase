@@ -914,3 +914,29 @@ def test_passive_rotation_tag_picker_and_studio_domain_profiles_ui_coherence():
         assert removed_legacy_cls not in html, f"Legacy duplicated input '{removed_legacy_cls}' still present in HTML"
 
 
+def test_mode1_readonly_mqtt_inspector_and_studio_save_guard_in_webui():
+    """
+    Verify WebUI renders the greyed-out Read-Only MQTT/HTTP Inspector banner & raw JSON payload viewer
+    for Mode 1 DMDs (`config_source == 'client'`), and disables Studio profile-save buttons while keeping
+    Simulation Queue injection active.
+    """
+    html = ADMIN_DASHBOARD_HTML
+    for required_token in (
+        'id="prof-readonly-banner"',
+        'id="prof-mqtt-json-wrap"',
+        'id="prof-mqtt-json-pre"',
+        'id="btn-save-prof"',
+        'id="btn-del-prof"',
+        'id="btn-st-top-save"',
+        'id="btn-st-top-save-all"',
+        'id="btn-st-sec3-save"',
+        'id="btn-st-sec3-save-all"',
+        "applyProfileEditorReadOnlyUi(",
+        "isTargetDmdClientManaged(",
+        "syncStudioSaveButtonsState(",
+        "summarizeLiveClientDomainBadges(",
+    ):
+        assert required_token in html, f"Missing Mode 1 read-only inspector token in WebUI: {required_token}"
+
+
+

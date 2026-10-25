@@ -791,6 +791,57 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       gap: 10px;
       flex-wrap: wrap;
     }
+    .readonly-inspector-banner {
+      background: rgba(0, 229, 255, 0.07);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 14px;
+    }
+    #dmd-profile-editor-card.is-readonly input:disabled,
+    #dmd-profile-editor-card.is-readonly select:disabled {
+      opacity: 0.58;
+      cursor: not-allowed;
+      background: #090d14;
+      color: #8c9bb0;
+      border-color: #1e2838;
+    }
+    #dmd-profile-editor-card.is-readonly tr.ro-dom-inactive td {
+      opacity: 0.46;
+    }
+    button:disabled {
+      opacity: 0.45 !important;
+      cursor: not-allowed !important;
+    }
+    .mqtt-json-details {
+      margin-top: 14px;
+      background: #080b11;
+      border: 1px solid #243146;
+      border-radius: 9px;
+      overflow: hidden;
+    }
+    .mqtt-json-details summary {
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.83rem;
+      color: var(--cyan);
+      user-select: none;
+    }
+    .mqtt-json-details summary:hover {
+      background: rgba(0, 229, 255, 0.06);
+    }
+    .mqtt-json-details pre {
+      margin: 0;
+      padding: 12px 14px;
+      border-top: 1px solid #1c2638;
+      font-size: 0.77rem;
+      line-height: 1.45;
+      color: #b9f6ca;
+      max-height: 320px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
 
     @media (max-width: 960px) {
       .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -918,15 +969,27 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- PERSISTENT DMD PROFILE & SERVER-MANAGED PLAYLIST EDITOR -->
+      <!-- PERSISTENT DMD PROFILE & SERVER-MANAGED PLAYLIST EDITOR / LIVE MODE 1 INSPECTOR -->
       <div class="card" id="dmd-profile-editor-card" style="display:none">
         <h2>
-          <span data-i18n="prof_editor_title">DMD Profile &amp; Server-Managed Playlist (dmd_profiles.json)</span>
+          <span id="prof-editor-title-span" data-i18n="prof_editor_title">DMD Profile &amp; Server-Managed Playlist (dmd_profiles.json)</span>
           <button class="secondary mini-btn" onclick="closeProfileEditor()" data-i18n="btn_close">✕ Close</button>
         </h2>
-        <p class="desc" data-i18n="prof_editor_desc">
+        <p class="desc" id="prof-editor-desc-p" data-i18n="prof_editor_desc">
           Configure passive ESP32 / RPi receivers directly from the Showcase server (Mode 2A Hybrid or Mode 2B 100% Passive UDP), set their broadcast content language, and curate multi-domain rotation playlists persisted in ./data/dmd_profiles.json.
         </p>
+        <div id="prof-readonly-banner" class="readonly-inspector-banner" style="display:none">
+          <div style="font-weight:700;color:#fff;font-size:0.9rem;margin-bottom:5px" data-i18n="prof_readonly_banner_title">
+            🔒 Active DMD (Mode 1) — Configuration Owned by DMD over MQTT / HTTP
+          </div>
+          <div style="font-size:0.82rem;color:var(--muted);line-height:1.45" data-i18n="prof_readonly_banner_desc">
+            This DMD pushes its own rotation and domain settings over MQTT Retain or HTTP Polling. Its profile is greyed out here so it cannot be accidentally overridden in dmd_profiles.json. To broadcast custom content transiently without altering its config, push items into its Priority Queue or Studio Simulator:
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button type="button" class="secondary mini-btn" onclick="jumpToQueueFromInspector()" data-i18n="btn_ro_jump_queue">🎯 Inject via On-Demand Queue</button>
+            <button type="button" class="mini-btn" onclick="openStudioFromInspector()" data-i18n="btn_ro_jump_studio">🎨 Simulate &amp; Push to Queue (Studio)</button>
+          </div>
+        </div>
         <div class="form-grid-3">
           <div class="field">
             <label data-i18n="lbl_prof_id">DMD Identifier (dmd_id)</label>
@@ -988,7 +1051,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
-        <div style="margin-top:16px;padding:10px 14px;background:#0d131d;border:1px solid var(--border);border-radius:9px;font-size:0.82rem;color:var(--muted)" data-i18n="prof_rotation_hint">
+        <div id="prof-rotation-hint-box" style="margin-top:16px;padding:10px 14px;background:#0d131d;border:1px solid var(--border);border-radius:9px;font-size:0.82rem;color:var(--muted)" data-i18n="prof_rotation_hint">
           💡 Select Systems, Genres &amp; Decades with visual tags (empty = All). Video duration, framing, color boost, and Mode 2B Card layout are configured per domain inside Studio — click any domain's Studio button on the right to customize it.
         </div>
 
@@ -1008,9 +1071,14 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           </table>
         </div>
 
-        <div class="form-actions">
-          <button onclick="saveDmdProfile()" data-i18n="btn_save_profile">💾 Save Profile &amp; Apply Live</button>
-          <button class="danger" onclick="deleteDmdProfile()" data-i18n="btn_delete_profile">🗑️ Delete Profile</button>
+        <details id="prof-mqtt-json-wrap" class="mqtt-json-details" style="display:none" open>
+          <summary data-i18n="prof_raw_json_summary">{ } Inspect Live MQTT / HTTP JSON Payload Received from DMD</summary>
+          <pre id="prof-mqtt-json-pre"></pre>
+        </details>
+
+        <div class="form-actions" id="prof-editor-actions">
+          <button id="btn-save-prof" onclick="saveDmdProfile()" data-i18n="btn_save_profile">💾 Save Profile &amp; Apply Live</button>
+          <button id="btn-del-prof" class="danger" onclick="deleteDmdProfile()" data-i18n="btn_delete_profile">🗑️ Delete Profile</button>
           <span id="prof-status-msg" class="toast"></span>
         </div>
       </div>
@@ -1302,10 +1370,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             </button>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <button type="button" class="mini-btn" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
+            <button type="button" id="btn-st-top-save" class="mini-btn" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
               💾 Save Domain Profile to DMD
             </button>
-            <button type="button" class="secondary mini-btn" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
+            <button type="button" id="btn-st-top-save-all" class="secondary mini-btn" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
               📋 Apply to All 4 Domains
             </button>
           </div>
@@ -1643,10 +1711,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
               <button type="button" class="secondary" onclick="enqueueStudioSim('play_now')" data-i18n="studio_btn_play_sim_now">
                 ⚡ Broadcast Simulation Now
               </button>
-              <button type="button" class="secondary" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
+              <button type="button" id="btn-st-sec3-save" class="secondary" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
                 💾 Save Domain Profile to DMD
               </button>
-              <button type="button" class="secondary" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
+              <button type="button" id="btn-st-sec3-save-all" class="secondary" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
                 📋 Apply to All 4 Domains
               </button>
             </div>
@@ -2161,7 +2229,19 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         opt_vtype_ending: "Ending Theme ED (Anime)",
         opt_vtype_pv: "Promotional Video PV",
         msg_studio_dom_saved: "✓ Saved '{dom}' Studio profile on DMD '{d}'!",
-        msg_studio_all_doms_saved: "✓ Applied Studio profile across all 4 domains on DMD '{d}'!"
+        msg_studio_all_doms_saved: "✓ Applied Studio profile across all 4 domains on DMD '{d}'!",
+        prof_readonly_title: "📡 Live DMD Configuration (MQTT / HTTP — Read-Only)",
+        prof_readonly_banner_title: "🔒 Active DMD (Mode 1) — Configuration Owned by DMD over MQTT / HTTP",
+        prof_readonly_banner_desc: "This DMD (e.g. ArcadeMatrix / ArcadeMatrix_RPi) pushes its own rotation and domain settings over MQTT Retain or HTTP Polling. Its profile is greyed out here so it cannot be accidentally overridden in dmd_profiles.json. To broadcast custom content transiently without altering its config, push items into its Priority Queue or Studio Simulator:",
+        btn_ro_jump_queue: "🎯 Inject via On-Demand Queue",
+        btn_ro_jump_studio: "🎨 Simulate & Push to Queue (Studio)",
+        prof_raw_json_summary: "{ } Inspect Live MQTT / HTTP JSON Payload Received from DMD",
+        pill_dmd_driven_turn: "DMD Rotation",
+        pill_dom_not_instantiated: "Not instantiated on DMD",
+        pill_local_card_60fps: "🃏 Local 60 FPS Card (DMD)",
+        btn_sim_dom_queue: "🎨 Sim & Queue {d} →",
+        studio_dmd_client_readonly_note: "Mode 1 (MQTT/HTTP DMD-driven): profile saving is disabled (read-only), while Simulation Queue injection is active ✓",
+        msg_studio_readonly_client: "🔒 This DMD is client-driven via MQTT/HTTP (Mode 1, read-only). Use 'Add Simulation to Active DMD Queue' or 'Broadcast Now' instead."
       },
       fr: {
         header_sub: "MQTT Retain (:1883) + UDP Temps Réel • Consume-Once • Matrices LED HUB75",
@@ -2469,7 +2549,19 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         opt_vtype_ending: "Générique Ending ED (Anime)",
         opt_vtype_pv: "Vidéo Promo PV",
         msg_studio_dom_saved: "✓ Profil Studio « {dom} » enregistré sur le DMD « {d} » !",
-        msg_studio_all_doms_saved: "✓ Profil Studio appliqué aux 4 domaines sur le DMD « {d} » !"
+        msg_studio_all_doms_saved: "✓ Profil Studio appliqué aux 4 domaines sur le DMD « {d} » !",
+        prof_readonly_title: "📡 Configuration Live Reçue du DMD (MQTT / HTTP — Lecture Seule)",
+        prof_readonly_banner_title: "🔒 DMD Actif (Mode 1) — Configuration pilotée par le DMD via MQTT / HTTP",
+        prof_readonly_banner_desc: "Ce DMD (ex : ArcadeMatrix / ArcadeMatrix_RPi) pilote lui-même sa rotation et pousse ses réglages via MQTT Retain ou HTTP Polling. Son profil est affiché ici en lecture seule (grisé) et ne peut pas être écrasé par erreur dans dmd_profiles.json. Pour diffuser ponctuellement une ressource sans altérer sa configuration, injecte-la dans sa Queue On-Demand ou depuis l'écran de Simulation Studio :",
+        btn_ro_jump_queue: "🎯 Injecter dans la Queue On-Demand",
+        btn_ro_jump_studio: "🎨 Simuler & Ajouter à la Queue (Studio)",
+        prof_raw_json_summary: "{ } Voir le payload JSON MQTT / HTTP reçu en direct du DMD",
+        pill_dmd_driven_turn: "Rotation DMD",
+        pill_dom_not_instantiated: "Non instancié sur ce DMD",
+        pill_local_card_60fps: "🃏 Card 60 FPS Locale (DMD)",
+        btn_sim_dom_queue: "🎨 Simuler en Queue ({d}) →",
+        studio_dmd_client_readonly_note: "Mode 1 (piloté par le DMD via MQTT/HTTP) : sauvegarde de profil grisée (lecture seule), injection dans la Queue active ✓",
+        msg_studio_readonly_client: "🔒 Ce DMD est piloté par MQTT/HTTP (Mode 1, lecture seule). Utilise « Ajouter cette Simulation à la Queue du DMD » ou « Diffuser Maintenant »."
       },
       es: {
         header_sub: "MQTT Retain (:1883) + UDP en Tiempo Real • Consume-Once • Matrices LED HUB75",
@@ -2777,7 +2869,19 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         opt_vtype_ending: "Ending ED (Anime)",
         opt_vtype_pv: "Vídeo Promocional PV",
         msg_studio_dom_saved: "✓ ¡Perfil Estudio '{dom}' guardado en el DMD '{d}'!",
-        msg_studio_all_doms_saved: "✓ ¡Perfil Estudio aplicado a los 4 dominios en el DMD '{d}'!"
+        msg_studio_all_doms_saved: "✓ ¡Perfil Estudio aplicado a los 4 dominios en el DMD '{d}'!",
+        prof_readonly_title: "📡 Configuración en Vivo del DMD (MQTT / HTTP — Solo Lectura)",
+        prof_readonly_banner_title: "🔒 DMD Activo (Modo 1) — Configuración dirigida por el DMD vía MQTT / HTTP",
+        prof_readonly_banner_desc: "Este DMD (ej: ArcadeMatrix / ArcadeMatrix_RPi) dirige su propia rotación y publica sus ajustes por MQTT Retain o HTTP Polling. Su perfil se muestra aquí bloqueado en solo lectura para evitar sobrescribirlo por error en dmd_profiles.json. Para emitir contenido puntual sin alterar su configuración, inyéctalo en su Cola Prioritaria o desde el Simulador Estudio:",
+        btn_ro_jump_queue: "🎯 Inyectar en Cola On-Demand",
+        btn_ro_jump_studio: "🎨 Simular y Añadir a la Cola (Estudio)",
+        prof_raw_json_summary: "{ } Ver el payload JSON MQTT / HTTP recibido en vivo del DMD",
+        pill_dmd_driven_turn: "Rotación DMD",
+        pill_dom_not_instantiated: "No instanciado en este DMD",
+        pill_local_card_60fps: "🃏 Card 60 FPS Local (DMD)",
+        btn_sim_dom_queue: "🎨 Simular en Cola ({d}) →",
+        studio_dmd_client_readonly_note: "Modo 1 (dirigido por DMD vía MQTT/HTTP): guardado de perfil desactivado (solo lectura), inyección en Cola activa ✓",
+        msg_studio_readonly_client: "🔒 Este DMD está dirigido por MQTT/HTTP (Modo 1, solo lectura). Usa 'Añadir Simulación a la Cola del DMD' o 'Emitir Ahora'."
       }
     };
 
@@ -3520,7 +3624,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       });
       (lastClients || []).forEach(c => {
         if (c && c.dmd_id && !known.has(c.dmd_id)) {
-          known.set(c.dmd_id, `${c.display_name || c.dmd_id} (${c.width}×${c.height} • ${(c.lang || 'fr').toUpperCase()})`);
+          const trTag = c.transport || 'Client';
+          known.set(c.dmd_id, `${c.display_name || c.dmd_id} (${c.width}×${c.height} • ${trTag} • ${(c.lang || 'fr').toUpperCase()})`);
         }
       });
       let html = `<option value="">${esc(t('opt_target_browser'))}</option>`;
@@ -3734,6 +3839,9 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     let editingProfileDmdId = '';
+    let editingProfileReadOnly = false;
+    let editingProfileLivePayload = null;
+    let editingProfileSupportsLocalCard = false;
     let editingProfileCardStyle = null;
     let editingProfileDomainStyles = normalizeDomainStylesObj(null, null);
     let editingProfileSlots = {};
@@ -3753,25 +3861,94 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           systems: dom === 'games' ? toUniqueTokenArray(src.systems) : [],
           genres: toUniqueTokenArray(src.genres),
           decades: toUniqueTokenArray(src.decades),
-          min_rating: Number(src.min_rating != null ? src.min_rating : 6.0)
+          min_rating: Number(src.min_rating != null ? src.min_rating : 6.0),
+          engine_dmd_id: src.engine_dmd_id || null,
+          transport: src.transport || null
         };
       });
       editingProfileSlots = nextSlots;
     }
 
+    function applyProfileEditorReadOnlyUi(isReadOnly, livePayload) {
+      editingProfileReadOnly = Boolean(isReadOnly);
+      editingProfileLivePayload = livePayload || null;
+      const card = document.getElementById('dmd-profile-editor-card');
+      if (card) card.classList.toggle('is-readonly', editingProfileReadOnly);
+
+      const titleSpan = document.getElementById('prof-editor-title-span');
+      if (titleSpan) {
+        const key = editingProfileReadOnly ? 'prof_readonly_title' : 'prof_editor_title';
+        titleSpan.setAttribute('data-i18n', key);
+        titleSpan.textContent = t(key);
+      }
+
+      const descP = document.getElementById('prof-editor-desc-p');
+      if (descP) descP.style.display = editingProfileReadOnly ? 'none' : '';
+      const hintBox = document.getElementById('prof-rotation-hint-box');
+      if (hintBox) hintBox.style.display = editingProfileReadOnly ? 'none' : '';
+      const roBanner = document.getElementById('prof-readonly-banner');
+      if (roBanner) roBanner.style.display = editingProfileReadOnly ? 'block' : 'none';
+
+      [
+        'prof-dmd-id',
+        'prof-display-name',
+        'prof-mode',
+        'prof-lang',
+        'prof-res',
+        'prof-always-udp',
+        'prof-udp-ip',
+        'prof-udp-port',
+        'prof-gap-s'
+      ].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = editingProfileReadOnly;
+      });
+
+      ['btn-save-prof', 'btn-del-prof'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+          btn.disabled = editingProfileReadOnly;
+          btn.style.display = editingProfileReadOnly ? 'none' : '';
+        }
+      });
+
+      const jsonWrap = document.getElementById('prof-mqtt-json-wrap');
+      const jsonPre = document.getElementById('prof-mqtt-json-pre');
+      if (jsonWrap && jsonPre) {
+        if (editingProfileReadOnly && editingProfileLivePayload) {
+          jsonPre.textContent = JSON.stringify(editingProfileLivePayload, null, 2);
+          jsonWrap.style.display = 'block';
+        } else {
+          jsonPre.textContent = '';
+          jsonWrap.style.display = 'none';
+        }
+      }
+    }
+
+    function jumpToQueueFromInspector() {
+      if (editingProfileDmdId) jumpToQueueStudio(editingProfileDmdId);
+    }
+
+    function openStudioFromInspector() {
+      if (editingProfileDmdId) openStudioForDmd(editingProfileDmdId);
+    }
+
     function onPlSlotToggle(dom, checked) {
+      if (editingProfileReadOnly) return;
       if (editingProfileSlots[dom]) {
         editingProfileSlots[dom].enabled = Boolean(checked);
       }
     }
 
     function onPlSlotCount(dom, val) {
+      if (editingProfileReadOnly) return;
       if (editingProfileSlots[dom]) {
         editingProfileSlots[dom].count = Math.max(1, Math.min(10, parseInt(val, 10) || 1));
       }
     }
 
     function removeSlotTag(dom, field, tagId) {
+      if (editingProfileReadOnly) return;
       const slot = editingProfileSlots[dom];
       if (!slot || !Array.isArray(slot[field])) return;
       slot[field] = slot[field].filter(x => x !== tagId);
@@ -3795,6 +3972,24 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       `;
     }
 
+    function summarizeLiveClientDomainBadges(st) {
+      const s = st || defaultStudioStyleForDomain('games');
+      const cardPill = editingProfileSupportsLocalCard
+        ? `<span class="pill info">${esc(t('pill_local_card_60fps'))}</span>`
+        : `<span class="pill info">${esc(s.card_layout || 'classic_split')}</span>`;
+      const vidTag = s.include_video !== false
+        ? `🎬 ≤${Number(s.video_max_duration_s != null ? s.video_max_duration_s : 10).toFixed(0)}s @ ${esc(s.video_fps || 15)}fps`
+        : '🎬 OFF';
+      const snapCnt = Number(s.snapshot_panorama_count || 0);
+      const snapTag = snapCnt > 0 ? `<span class="pill info">📸×${snapCnt}</span>` : '';
+      return `
+        ${cardPill}
+        <span class="pill warn">${esc(s.color_boost || 'auto')} • ${esc(s.video_mode || 'auto_action')}</span>
+        <span class="pill ok">${esc(vidTag)}</span>
+        ${snapTag}
+      `;
+    }
+
     function renderPlaylistEditorRows() {
       const tb = document.getElementById('prof-playlist-tbody');
       if (!tb) return;
@@ -3806,6 +4001,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
 
       tb.innerHTML = CANONICAL_DOMAINS.map(dom => {
         const s = editingProfileSlots[dom] || {enabled: false, domain: dom, count: 1, systems: [], genres: [], decades: []};
+        const isEnabled = s.enabled !== false;
         const isGames = dom === 'games';
         const cat = filterCatalogCache.get(`${dom}:${profLang}`);
         const sysList = isGames ? (s.systems || []) : [];
@@ -3813,7 +4009,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         const decList = s.decades || [];
 
         let sysCellHtml = '<span style="color:var(--muted);font-size:0.82rem">—</span>';
-        if (isGames) {
+        if (isGames && (!editingProfileReadOnly || isEnabled)) {
           let chips = '';
           if (!sysList.length) {
             chips = `<span class="tag-all-pill">${esc(t('tag_all_systems'))}</span>`;
@@ -3821,47 +4017,91 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             chips = sysList.slice(0, maxVisibleChips).map(id => {
               const lbl = (cat && cat.sysMap.get(id)) || id;
               const safeId = esc(id).replace(/'/g, "\\'");
-              return `<span class="tag-chip" title="${esc(id)}">${esc(lbl)}<button type="button" class="tag-chip-rm" onclick="removeSlotTag('games','systems','${safeId}')">✕</button></span>`;
+              const rmBtn = editingProfileReadOnly
+                ? ''
+                : `<button type="button" class="tag-chip-rm" onclick="removeSlotTag('games','systems','${safeId}')">✕</button>`;
+              return `<span class="tag-chip" title="${esc(id)}">${esc(lbl)}${rmBtn}</span>`;
             }).join('');
             if (sysList.length > maxVisibleChips) {
               chips += `<span class="pill info">${esc(t('tag_more_fmt', {n: sysList.length - maxVisibleChips}))}</span>`;
             }
           }
-          const btnLbl = sysList.length ? t('btn_edit_tags') : t('btn_pick_tags');
-          sysCellHtml = `<div class="tag-cell">${chips}<button type="button" class="tag-pick-btn" onclick="openTagPickerModal('games','systems')">${esc(btnLbl)}</button></div>`;
+          const pickBtn = editingProfileReadOnly
+            ? ''
+            : `<button type="button" class="tag-pick-btn" onclick="openTagPickerModal('games','systems')">${esc(sysList.length ? t('btn_edit_tags') : t('btn_pick_tags'))}</button>`;
+          sysCellHtml = `<div class="tag-cell">${chips}${pickBtn}</div>`;
         }
 
-        const combinedGenDec = [
-          ...genList.map(id => ({field: 'genres', id, isDec: false, lbl: (cat && cat.genMap.get(id)) || id})),
-          ...decList.map(id => ({field: 'decades', id, isDec: true, lbl: '📅 ' + ((cat && cat.decMap.get(id)) || id)}))
-        ];
-        let genChips = '';
-        if (!combinedGenDec.length) {
-          genChips = `<span class="tag-all-pill">${esc(t('tag_all_genres'))}</span>`;
-        } else {
-          genChips = combinedGenDec.slice(0, maxVisibleChips).map(it => {
-            const safeId = esc(it.id).replace(/'/g, "\\'");
-            const cls = it.isDec ? 'tag-chip decade' : 'tag-chip';
-            return `<span class="${cls}" title="${esc(it.id)}">${esc(it.lbl)}<button type="button" class="tag-chip-rm" onclick="removeSlotTag('${dom}','${it.field}','${safeId}')">✕</button></span>`;
-          }).join('');
-          if (combinedGenDec.length > maxVisibleChips) {
-            genChips += `<span class="pill info">${esc(t('tag_more_fmt', {n: combinedGenDec.length - maxVisibleChips}))}</span>`;
+        let genCellHtml = '<span style="color:var(--muted);font-size:0.82rem">—</span>';
+        if (!editingProfileReadOnly || isEnabled) {
+          const combinedGenDec = [
+            ...genList.map(id => ({field: 'genres', id, isDec: false, lbl: (cat && cat.genMap.get(id)) || id})),
+            ...decList.map(id => ({field: 'decades', id, isDec: true, lbl: '📅 ' + ((cat && cat.decMap.get(id)) || id)}))
+          ];
+          let genChips = '';
+          if (!combinedGenDec.length) {
+            genChips = `<span class="tag-all-pill">${esc(t('tag_all_genres'))}</span>`;
+          } else {
+            genChips = combinedGenDec.slice(0, maxVisibleChips).map(it => {
+              const safeId = esc(it.id).replace(/'/g, "\\'");
+              const cls = it.isDec ? 'tag-chip decade' : 'tag-chip';
+              const rmBtn = editingProfileReadOnly
+                ? ''
+                : `<button type="button" class="tag-chip-rm" onclick="removeSlotTag('${dom}','${it.field}','${safeId}')">✕</button>`;
+              return `<span class="${cls}" title="${esc(it.id)}">${esc(it.lbl)}${rmBtn}</span>`;
+            }).join('');
+            if (combinedGenDec.length > maxVisibleChips) {
+              genChips += `<span class="pill info">${esc(t('tag_more_fmt', {n: combinedGenDec.length - maxVisibleChips}))}</span>`;
+            }
           }
+          const genPickBtn = editingProfileReadOnly
+            ? ''
+            : `<button type="button" class="tag-pick-btn" onclick="openTagPickerModal('${dom}','genres_decades')">${esc(combinedGenDec.length ? t('btn_edit_tags') : t('btn_pick_tags'))}</button>`;
+          genCellHtml = `<div class="tag-cell">${genChips}${genPickBtn}</div>`;
         }
-        const genBtnLbl = combinedGenDec.length ? t('btn_edit_tags') : t('btn_pick_tags');
-        const genCellHtml = `<div class="tag-cell">${genChips}<button type="button" class="tag-pick-btn" onclick="openTagPickerModal('${dom}','genres_decades')">${esc(genBtnLbl)}</button></div>`;
 
         const domStyle = (editingProfileDomainStyles && editingProfileDomainStyles[dom]) || defaultStudioStyleForDomain(dom);
-        const studioBtnText = t('btn_open_dom_studio', {d: dom.toUpperCase()});
-        const studioCellHtml = `<div class="studio-link-cell">
-          <div class="studio-summary-badges">${summarizeDomainStudioStyleBadges(domStyle)}</div>
-          <button type="button" class="studio-jump-btn" onclick="openStudioForDmdDomainFromEditor('${dom}')">${esc(studioBtnText)}</button>
-        </div>`;
+        let studioCellHtml = '<span style="color:var(--muted);font-size:0.82rem">—</span>';
+        if (editingProfileReadOnly) {
+          if (isEnabled) {
+            const targetEng = esc(s.engine_dmd_id || editingProfileDmdId).replace(/'/g, "\\'");
+            const simBtnText = t('btn_sim_dom_queue', {d: dom.toUpperCase()});
+            studioCellHtml = `<div class="studio-link-cell">
+              <div class="studio-summary-badges">${summarizeLiveClientDomainBadges(domStyle)}</div>
+              <button type="button" class="studio-jump-btn" onclick="openStudioForDmdDomainFromEditor('${dom}', '${targetEng}')">${esc(simBtnText)}</button>
+            </div>`;
+          }
+        } else {
+          const studioBtnText = t('btn_open_dom_studio', {d: dom.toUpperCase()});
+          studioCellHtml = `<div class="studio-link-cell">
+            <div class="studio-summary-badges">${summarizeDomainStudioStyleBadges(domStyle)}</div>
+            <button type="button" class="studio-jump-btn" onclick="openStudioForDmdDomainFromEditor('${dom}')">${esc(studioBtnText)}</button>
+          </div>`;
+        }
 
-        return `<tr data-pl-domain="${esc(dom)}">
-          <td><input type="checkbox" class="pl-enabled" style="width:20px;height:20px" ${s.enabled !== false ? 'checked' : ''} onchange="onPlSlotToggle('${dom}', this.checked)" /></td>
-          <td><b>${esc(shortDomainDisplayName(dom))}</b></td>
-          <td><input type="number" class="pl-count" min="1" max="10" value="${esc(s.count || 1)}" style="width:70px" onchange="onPlSlotCount('${dom}', this.value)" /></td>
+        let domSubHtml = '';
+        if (editingProfileReadOnly) {
+          if (isEnabled && s.engine_dmd_id) {
+            const trPart = s.transport ? ` • ${esc(s.transport)}` : '';
+            domSubHtml = `<div style="margin-top:3px"><code style="font-size:0.72rem;color:var(--cyan)">${esc(s.engine_dmd_id)}</code><small style="color:var(--muted)">${trPart}</small></div>`;
+          } else if (!isEnabled) {
+            domSubHtml = `<div style="margin-top:3px"><span class="pill" style="background:#141b26;color:var(--muted);border:1px solid #263246">${esc(t('pill_dom_not_instantiated'))}</span></div>`;
+          }
+        }
+
+        const countCellHtml = editingProfileReadOnly
+          ? (isEnabled
+            ? `<span class="pill" style="background:#111824;color:var(--muted);border:1px solid #263246">${esc(t('pill_dmd_driven_turn'))}</span>`
+            : '<span style="color:var(--muted);font-size:0.82rem">—</span>')
+          : `<input type="number" class="pl-count" min="1" max="10" value="${esc(s.count || 1)}" style="width:70px" onchange="onPlSlotCount('${dom}', this.value)" />`;
+
+        const trCls = (editingProfileReadOnly && !isEnabled) ? ' class="ro-dom-inactive"' : '';
+        const chkDis = editingProfileReadOnly ? ' disabled' : '';
+
+        return `<tr data-pl-domain="${esc(dom)}"${trCls}>
+          <td><input type="checkbox" class="pl-enabled" style="width:20px;height:20px" ${isEnabled ? 'checked' : ''}${chkDis} onchange="onPlSlotToggle('${dom}', this.checked)" /></td>
+          <td><b>${esc(shortDomainDisplayName(dom))}</b>${domSubHtml}</td>
+          <td>${countCellHtml}</td>
           <td>${sysCellHtml}</td>
           <td>${genCellHtml}</td>
           <td>${studioCellHtml}</td>
@@ -3887,6 +4127,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     };
 
     async function openTagPickerModal(dom, mode) {
+      if (editingProfileReadOnly) return;
       const lang = (document.getElementById('prof-lang') || {}).value || 'fr';
       const cat = await ensureDomainFilterCatalog(dom, lang);
       const slot = editingProfileSlots[dom] || {systems: [], genres: [], decades: []};
@@ -4039,16 +4280,24 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('prof-status-msg').textContent = '';
 
       let prof = null;
+      let isReadOnly = false;
+      let livePayload = null;
       if (dmdId) {
         try {
           const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}/profile`);
           if (r.ok) {
             const d = await r.json();
             prof = d.profile;
+            isReadOnly = Boolean(
+              d.read_only_client_managed || (prof && prof.config_source === 'client')
+            );
+            livePayload = d.client_live_payload || null;
           }
         } catch (_) {}
       }
       if (!prof) {
+        isReadOnly = false;
+        livePayload = null;
         const defLang = (lastServerConfig && lastServerConfig.default_lang) || 'fr';
         prof = {
           dmd_id: dmdId || 'esp32_passive_1',
@@ -4067,6 +4316,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         };
       }
       editingProfileDmdId = prof.dmd_id || '';
+      editingProfileSupportsLocalCard = prof.supports_local_card !== false;
       editingProfileCardStyle = prof.card_style || null;
       editingProfileDomainStyles = normalizeDomainStylesObj(prof.domain_styles, prof.card_style);
       document.getElementById('prof-dmd-id').value = prof.dmd_id || '';
@@ -4079,13 +4329,15 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('prof-lang').value = profLang;
       const resVal = `${prof.width || 128}x${prof.height || 32}`;
       const resEl = document.getElementById('prof-res');
-      if (Array.from(resEl.options).some(o => o.value === resVal)) {
-        resEl.value = resVal;
+      if (!Array.from(resEl.options).some(o => o.value === resVal)) {
+        resEl.insertAdjacentHTML('beforeend', `<option value="${esc(resVal)}">${esc(prof.width || 128)}×${esc(prof.height || 32)}</option>`);
       }
+      resEl.value = resVal;
       document.getElementById('prof-always-udp').value = String(Boolean(prof.always_stream_udp));
       document.getElementById('prof-udp-ip').value = prof.udp_ip || '';
       document.getElementById('prof-udp-port').value = String(prof.udp_port || 4210);
       document.getElementById('prof-gap-s').value = String(prof.inter_item_gap_s != null ? prof.inter_item_gap_s : 1.0);
+      applyProfileEditorReadOnlyUi(isReadOnly, livePayload);
       hydrateEditingProfileSlots(prof.playlist || defaultPlaylistRows(profLang), profLang);
       await preloadAllDomainFilterCatalogs(profLang);
       renderPlaylistEditorRows();
@@ -4098,6 +4350,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function saveDmdProfile() {
+      if (editingProfileReadOnly) return;
       const dmdId = document.getElementById('prof-dmd-id').value.trim();
       const msgEl = document.getElementById('prof-status-msg');
       if (!dmdId) {
@@ -4175,6 +4428,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function deleteDmdProfile() {
+      if (editingProfileReadOnly) return;
       const dmdId = document.getElementById('prof-dmd-id').value.trim();
       const msgEl = document.getElementById('prof-status-msg');
       if (!dmdId) return;
@@ -4803,8 +5057,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       await selectStudioDomainProfile(dom || 'games', {skipSaveCurrent: true});
     }
 
-    async function openStudioForDmdDomainFromEditor(dom) {
-      const dmdId = (document.getElementById('prof-dmd-id') || {}).value.trim();
+    async function openStudioForDmdDomainFromEditor(dom, explicitDmdId = '') {
+      const dmdId = (explicitDmdId || (document.getElementById('prof-dmd-id') || {}).value || '').trim();
       const [ew, eh] = ((document.getElementById('prof-res') || {}).value || '128x32').split('x').map(Number);
       const edLang = (document.getElementById('prof-lang') || {}).value || 'fr';
 
@@ -4836,13 +5090,16 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         updateStudioResUi();
       }
       studioDraftDomainStyles = normalizeDomainStylesObj(editingProfileDomainStyles, editingProfileCardStyle);
+      renderStudioActiveDmdBanner();
       await selectStudioDomainProfile(dom || 'games', {skipSaveCurrent: true});
       await loadStudioDmdQueue();
     }
 
     function returnToDmdRotationEditor() {
       captureCurrentControlsIntoStudioStyle();
-      editingProfileDomainStyles = normalizeDomainStylesObj(studioDraftDomainStyles, editingProfileCardStyle);
+      if (!editingProfileReadOnly) {
+        editingProfileDomainStyles = normalizeDomainStylesObj(studioDraftDomainStyles, editingProfileCardStyle);
+      }
       switchTab('overview');
       const card = document.getElementById('dmd-profile-editor-card');
       if (card) {
@@ -5333,7 +5590,34 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       };
     }
 
+    function isTargetDmdClientManaged(dmdId) {
+      if (!dmdId) return false;
+      const prof = (lastDmdProfiles || []).find(p => p && p.dmd_id === dmdId);
+      if (prof && prof.config_source === 'server') return false;
+      if (prof && prof.config_source === 'client') return true;
+      const cli = (lastClients || []).find(c => c && c.dmd_id === dmdId);
+      if (cli && (cli.config_source || 'client') === 'client') return true;
+      if (editingProfileReadOnly && editingProfileDmdId === dmdId) return true;
+      return false;
+    }
+
+    function syncStudioSaveButtonsState() {
+      const sel = document.getElementById('studio-target-dmd');
+      const topSel = document.getElementById('studio-top-dmd-select');
+      const dmdId = (sel && sel.value) || (topSel && topSel.value) || '';
+      const ro = isTargetDmdClientManaged(dmdId);
+      const tip = ro ? t('msg_studio_readonly_client') : '';
+      ['btn-st-top-save', 'btn-st-top-save-all', 'btn-st-sec3-save', 'btn-st-sec3-save-all'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+          btn.disabled = ro;
+          btn.title = tip;
+        }
+      });
+    }
+
     function renderStudioActiveDmdBanner() {
+      syncStudioSaveButtonsState();
       const banner = document.getElementById('studio-active-dmd-banner');
       const sel = document.getElementById('studio-target-dmd');
       if (!banner || !sel) return;
@@ -5343,6 +5627,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         banner.innerHTML = esc(t('studio_opt_no_dmd'));
         return;
       }
+      const isClientRo = isTargetDmdClientManaged(dmdId);
       const modeLbl = meta.config_source === 'server'
         ? (meta.supports_local_card === false ? t('mode_badge_2b') : t('mode_badge_2a'))
         : t('mode_badge_client');
@@ -5355,10 +5640,13 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           sw: studioWidth, sh: studioHeight, d: dmdId, dw: meta.width, dh: meta.height
         }))}</div>`;
       }
+      const clientRoHtml = isClientRo
+        ? `<div style="color:var(--cyan);margin-top:5px;font-size:0.78rem">📡 ${esc(t('studio_dmd_client_readonly_note'))}</div>`
+        : '';
       banner.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
         <span>${playStr}</span>
         <span><span class="pill info">${esc(modeLbl)}</span> <code>${esc(meta.width)}×${esc(meta.height)}</code></span>
-      </div>${mismatchHtml}`;
+      </div>${mismatchHtml}${clientRoHtml}`;
     }
 
     async function loadDmdDomainStylesIntoStudio(dmdId) {
@@ -5556,6 +5844,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         || '';
       if (!dmdId) {
         setStudioSaveToast(t('msg_need_target_dmd'), 'var(--amber)');
+        return;
+      }
+      if (isTargetDmdClientManaged(dmdId)) {
+        setStudioSaveToast(t('msg_studio_readonly_client'), 'var(--amber)');
         return;
       }
       const p = buildStudioCommonPayload();
