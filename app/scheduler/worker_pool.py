@@ -114,12 +114,36 @@ class SessionBatchManager:
         self._total_job_duration_s = 0.0
         self._worker_tasks: List[asyncio.Task] = []
         self._executor: Optional[Executor] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
 
     def start(self) -> None:
-        if self._running:
+        loop = asyncio.get_running_loop()
+        if (
+            self._running
+            and self._loop is loop
+            and not loop.is_closed()
+            and self._worker_tasks
+            and any(not t.done() for t in self._worker_tasks)
+        ):
             return
+
+        stale_tasks = list(self._worker_tasks)
+        self._worker_tasks.clear()
+        for t in stale_tasks:
+            if not t.done():
+                try:
+                    t_loop = t.get_loop()
+                    if t_loop is not None and not t_loop.is_closed():
+                        t.cancel()
+                except RuntimeError:
+                    pass
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
+
         self._running = True
+        self._loop = loop
         self._queue = asyncio.PriorityQueue()
         self._active_workers = 0
         settings.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +156,6 @@ class SessionBatchManager:
         else:
             self._executor = ThreadPoolExecutor(max_workers=max_w)
 
-        loop = asyncio.get_running_loop()
         self._worker_tasks = [
             loop.create_task(self._worker_loop(idx)) for idx in range(max_w)
         ]
@@ -144,15 +167,40 @@ class SessionBatchManager:
 
     async def stop(self) -> None:
         self._running = False
-        for t in self._worker_tasks:
-            t.cancel()
-        if self._worker_tasks:
-            await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+        tasks = list(self._worker_tasks)
         self._worker_tasks.clear()
-        if self._executor:
-            self._executor.shutdown(wait=False, cancel_futures=True)
-            self._executor = None
+        self._loop = None
+        executor = self._executor
+        self._executor = None
         self._active_workers = 0
+
+        try:
+            current_loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        same_loop_tasks: List[asyncio.Task] = []
+        for t in tasks:
+            if t.done():
+                continue
+            try:
+                t_loop = t.get_loop()
+            except Exception:
+                t_loop = None
+            if t_loop is None or t_loop.is_closed():
+                continue
+            try:
+                t.cancel()
+            except RuntimeError:
+                continue
+            if current_loop is not None and t_loop is current_loop:
+                same_loop_tasks.append(t)
+
+        if same_loop_tasks:
+            await asyncio.gather(*same_loop_tasks, return_exceptions=True)
+
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     @property
     def active_workers(self) -> int:
@@ -403,15 +451,17 @@ class SessionBatchManager:
 
     async def _worker_loop(self, worker_id: int) -> None:
         loop = asyncio.get_running_loop()
-        while self._running:
+        my_queue = self._queue
+        my_executor = self._executor
+        while self._running and self._loop is loop and self._queue is my_queue:
             try:
-                job = await self._queue.get()
-            except asyncio.CancelledError:
+                job = await my_queue.get()
+            except (asyncio.CancelledError, RuntimeError):
                 break
 
             session = self.sessions.get(job.session_id)
             if session is None and job.priority != int(JobPriority.HIGH_ON_DEMAND):
-                self._queue.task_done()
+                my_queue.task_done()
                 continue
 
             self._active_workers += 1
@@ -427,7 +477,7 @@ class SessionBatchManager:
             try:
                 master_dur = max(job.req.video_max_duration_s, settings.server_master_clip_max_s)
                 res = await loop.run_in_executor(
-                    self._executor,
+                    my_executor,
                     build_video_assets_worker_task,
                     str(job.item_dir),
                     job.candidate.title,
@@ -510,7 +560,7 @@ class SessionBatchManager:
                 logger.error("[WORKER #%d] Failed video job %s: %s", worker_id, job.item.id, exc)
             finally:
                 self._active_workers = max(0, self._active_workers - 1)
-                self._queue.task_done()
+                my_queue.task_done()
 
     def _purge_batch_files(self, session_id: str, batch: BatchSlot) -> None:
         for item_key in batch.item_dirs:

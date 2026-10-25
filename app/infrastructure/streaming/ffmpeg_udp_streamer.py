@@ -74,13 +74,23 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
         self._active_meta: Dict[str, Dict[str, Any]] = {}
         self._packet_sink = packet_sink
 
+    @staticmethod
+    def _is_task_live(task: Optional[asyncio.Task[None]]) -> bool:
+        if task is None or task.done():
+            return False
+        try:
+            t_loop = task.get_loop()
+            return t_loop is not None and not t_loop.is_closed()
+        except Exception:
+            return False
+
     @property
     def active_streams_count(self) -> int:
-        return sum(1 for t in self._active_tasks.values() if not t.done())
+        return sum(1 for t in self._active_tasks.values() if self._is_task_live(t))
 
     def get_active_stream(self, dmd_id: str) -> Optional[Dict[str, Any]]:
         task = self._active_tasks.get(dmd_id)
-        if task is None or task.done():
+        if not self._is_task_live(task):
             return None
         return self._active_meta.get(dmd_id)
 
@@ -88,7 +98,7 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
         return {
             dmd_id: dict(meta)
             for dmd_id, meta in self._active_meta.items()
-            if (task := self._active_tasks.get(dmd_id)) is not None and not task.done()
+            if self._is_task_live(self._active_tasks.get(dmd_id))
         }
 
     async def stop_stream(self, dmd_id: str) -> None:
@@ -101,11 +111,24 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 pass
         task = self._active_tasks.pop(dmd_id, None)
         if task is not None and not task.done():
-            task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                t_loop = task.get_loop()
+            except Exception:
+                t_loop = None
+            if t_loop is not None and not t_loop.is_closed():
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    return
+                try:
+                    current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+                if current_loop is not None and t_loop is current_loop:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
     async def start_udp_clock_stream(
         self,

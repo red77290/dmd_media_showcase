@@ -260,6 +260,34 @@ class ConsumeOnceOrchestrator:
         if ip and ip not in ("0.0.0.0", "unknown", "testclient"):
             self.client_udp_ips.setdefault(dmd_id, ip)
 
+    @staticmethod
+    def _is_task_live(
+        task: Optional[asyncio.Task[Any]],
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> bool:
+        if task is None or task.done():
+            return False
+        try:
+            t_loop = task.get_loop()
+        except Exception:
+            return False
+        if t_loop is None or t_loop.is_closed():
+            return False
+        if loop is not None and t_loop is not loop:
+            return False
+        return True
+
+    @staticmethod
+    def _safe_cancel_task(task: Optional[asyncio.Task[Any]]) -> None:
+        if task is None or task.done():
+            return
+        try:
+            t_loop = task.get_loop()
+            if t_loop is not None and not t_loop.is_closed():
+                task.cancel()
+        except RuntimeError:
+            pass
+
     def _get_transcode_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._transcode_sem is None or self._transcode_sem_loop is not loop:
@@ -329,7 +357,7 @@ class ConsumeOnceOrchestrator:
                     "udp_streaming": is_domain_streaming,
                     "ready_title": ready_pkg.card.title if ready_pkg else None,
                     "standby_title": standby_pkg.card.title if standby_pkg else None,
-                    "preparing": bool(prep_task and not prep_task.done()),
+                    "preparing": self._is_task_live(prep_task),
                     "last_seen_ago_s": int(max(0.0, now - last_seen)) if last_seen else None,
                 }
             )
@@ -449,8 +477,7 @@ class ConsumeOnceOrchestrator:
                 self.last_played_titles.pop((dmd_id, dom_key), None)
                 self.last_claimed_until.pop((dmd_id, dom_key), None)
                 t = self._prep_tasks.pop((dmd_id, dom_key), None)
-                if t and not t.done():
-                    t.cancel()
+                self._safe_cancel_task(t)
             return
 
         # If this physical DMD (identified by its LAN `best_ip`) rotated to a sibling
@@ -531,8 +558,7 @@ class ConsumeOnceOrchestrator:
                 criteria.text_scroll_speed,
             )
             old_task = self._prep_tasks.pop(key, None)
-            if old_task and not old_task.done():
-                old_task.cancel()
+            self._safe_cancel_task(old_task)
             stale_standby = self.standby_packages.pop(key, None)
             if stale_standby is not None:
                 self.active_packages.pop(stale_standby.item_id, None)
@@ -578,7 +604,7 @@ class ConsumeOnceOrchestrator:
             )
 
         if (key not in self.ready_packages or key not in self.standby_packages) and (
-            key not in self._prep_tasks or self._prep_tasks[key].done()
+            not self._is_task_live(self._prep_tasks.get(key))
         ):
             if old_pair is None:
                 logger.info(
@@ -599,10 +625,11 @@ class ConsumeOnceOrchestrator:
         key = (dmd_id, domain)
         if key in self.ready_packages and key in self.standby_packages:
             return
-        existing = self._prep_tasks.get(key)
-        if existing and not existing.done():
-            return
         loop = asyncio.get_running_loop()
+        existing = self._prep_tasks.get(key)
+        if self._is_task_live(existing, loop):
+            return
+        self._safe_cancel_task(existing)
         self._prep_tasks[key] = loop.create_task(self._prepare_slot_task(dmd_id, domain))
 
     async def _prepare_slot_task(self, dmd_id: str, domain: DomainType) -> None:
@@ -618,8 +645,7 @@ class ConsumeOnceOrchestrator:
                     sibling_missing_ready = any(
                         other_k != key
                         and other_k not in self.ready_packages
-                        and (t := self._prep_tasks.get(other_k)) is not None
-                        and not t.done()
+                        and self._is_task_live(self._prep_tasks.get(other_k))
                         for other_k in list(self.client_configs.keys())
                     )
                     if sibling_missing_ready:

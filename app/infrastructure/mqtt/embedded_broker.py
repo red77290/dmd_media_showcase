@@ -127,14 +127,26 @@ class EmbeddedMqttBroker:
     async def stop(self) -> None:
         for sess in list(self.clients.values()):
             try:
-                sess.writer.close()
+                if sess.writer is not None:
+                    sess.writer.close()
             except Exception:
                 pass
         self.clients.clear()
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        server = self._server
+        self._server = None
+        if server is not None:
+            try:
+                s_loop = server.get_loop()
+            except Exception:
+                s_loop = None
+            if s_loop is not None and not s_loop.is_closed():
+                server.close()
+                try:
+                    current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+                if current_loop is not None and s_loop is current_loop:
+                    await server.wait_closed()
 
     def subscribe_internal(self, topic_filter: str, callback: MessageCallback) -> None:
         self._internal_callbacks.append((topic_filter, callback))
