@@ -16,13 +16,15 @@ Coordinates:
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from dataclasses import replace as dc_replace
 import logging
 import re
 import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from app.application.source_chain_service import DomainSourceChainService, source_chain_service
 from app.config import settings
@@ -142,6 +144,56 @@ def _select_best_udp_ip(
     return "127.0.0.1"
 
 
+class _DynamicAsyncLimiter:
+    """
+    Loop-bound concurrency gate supporting instant live resizing (`set_limit`) without
+    aborting in-flight transcodes or stranding queued coroutines.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, int(limit))
+        self._in_use = 0
+        self._waiters: Deque[asyncio.Future[None]] = deque()
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    def set_limit(self, new_limit: int) -> None:
+        self._limit = max(1, int(new_limit))
+        self._wake_up()
+
+    def _wake_up(self) -> None:
+        while self._in_use < self._limit and self._waiters:
+            fut = self._waiters.popleft()
+            if not fut.done():
+                self._in_use += 1
+                fut.set_result(None)
+
+    async def acquire(self) -> None:
+        if self._in_use < self._limit and not self._waiters:
+            self._in_use += 1
+            return
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiters.append(fut)
+        try:
+            await fut
+        except BaseException:
+            if not fut.done():
+                try:
+                    self._waiters.remove(fut)
+                except ValueError:
+                    pass
+            else:
+                self._in_use = max(0, self._in_use - 1)
+                self._wake_up()
+            raise
+
+    def release(self) -> None:
+        self._in_use = max(0, self._in_use - 1)
+        self._wake_up()
+
+
 class ConsumeOnceOrchestrator:
     """
     Stateless Consume-Once orchestrator managing per-DMD, per-domain prepared slots.
@@ -172,7 +224,7 @@ class ConsumeOnceOrchestrator:
         self.standby_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
         self.active_packages: Dict[str, PreparedShowcasePackage] = {}
         self._prep_tasks: Dict[Tuple[str, DomainType], asyncio.Task[None]] = {}
-        self._transcode_sem: Optional[asyncio.Semaphore] = None
+        self._transcode_sem: Optional[_DynamicAsyncLimiter] = None
         self._transcode_sem_loop: Optional[asyncio.AbstractEventLoop] = None
         self._active_workers: int = 0
         self._queued_jobs: int = 0
@@ -288,12 +340,94 @@ class ConsumeOnceOrchestrator:
         except RuntimeError:
             pass
 
-    def _get_transcode_semaphore(self) -> asyncio.Semaphore:
+    def _get_transcode_semaphore(self) -> _DynamicAsyncLimiter:
         loop = asyncio.get_running_loop()
+        target = max(1, settings.effective_max_workers)
         if self._transcode_sem is None or self._transcode_sem_loop is not loop:
-            self._transcode_sem = asyncio.Semaphore(max(1, settings.effective_max_workers))
+            self._transcode_sem = _DynamicAsyncLimiter(target)
             self._transcode_sem_loop = loop
+        elif self._transcode_sem.limit != target:
+            self._transcode_sem.set_limit(target)
         return self._transcode_sem
+
+    def reconfigure_concurrency(self, max_workers: Optional[int] = None) -> int:
+        """Resize the live Consume-Once transcode concurrency gate in-place without dropping queued tasks."""
+        target = max(1, int(max_workers if max_workers is not None else settings.effective_max_workers))
+        if (
+            self._transcode_sem is not None
+            and self._transcode_sem_loop is not None
+            and not self._transcode_sem_loop.is_closed()
+        ):
+            self._transcode_sem.set_limit(target)
+        return target
+
+    async def apply_runtime_limits(self) -> int:
+        """
+        Enforce updated server-wide `video_max_duration_limit_s` and `video_max_fps_limit` across all
+        registered DMD slots in real time, invalidating oversized unconsumed N / N+1 packages while
+        letting any currently playing (`consumed=True`) broadcast complete without interruption.
+        """
+        max_dur_ceiling = max(1.5, float(settings.video_max_duration_limit_s))
+        max_fps_ceiling = max(6, int(settings.video_max_fps_limit))
+        invalidated = 0
+
+        for key, (geom, crit) in list(self.client_configs.items()):
+            dmd_id, domain = key
+            clamped_dur = max(1.5, min(max_dur_ceiling, float(crit.video_max_duration_s)))
+            clamped_fps = max(6, min(max_fps_ceiling, int(crit.video_fps)))
+            crit_changed = (
+                abs(clamped_dur - float(crit.video_max_duration_s)) > 1e-6
+                or clamped_fps != int(crit.video_fps)
+            )
+            ready_pkg = self.ready_packages.get(key)
+            standby_pkg = self.standby_packages.get(key)
+            ready_exceeds = bool(
+                ready_pkg is not None
+                and ready_pkg.card.has_video
+                and (
+                    ready_pkg.card.stream_fps > max_fps_ceiling
+                    or ready_pkg.card.stream_duration_s > max_dur_ceiling + 16.0
+                )
+            )
+            standby_exceeds = bool(
+                standby_pkg is not None
+                and standby_pkg.card.has_video
+                and (
+                    standby_pkg.card.stream_fps > max_fps_ceiling
+                    or standby_pkg.card.stream_duration_s > max_dur_ceiling + 16.0
+                )
+            )
+            if not (crit_changed or ready_exceeds or standby_exceeds):
+                continue
+
+            invalidated += 1
+            new_crit = dc_replace(
+                crit,
+                video_max_duration_s=clamped_dur,
+                video_fps=clamped_fps,
+            )
+            self.client_configs[key] = (geom, new_crit)
+            old_task = self._prep_tasks.pop(key, None)
+            self._safe_cancel_task(old_task)
+
+            stale_standby = self.standby_packages.pop(key, None)
+            if stale_standby is not None and not stale_standby.consumed:
+                self.active_packages.pop(stale_standby.item_id, None)
+                shutil.rmtree(stale_standby.item_dir, ignore_errors=True)
+
+            stale_ready = self.ready_packages.pop(key, None)
+            if stale_ready is not None and not stale_ready.consumed:
+                self.active_packages.pop(stale_ready.item_id, None)
+                shutil.rmtree(stale_ready.item_dir, ignore_errors=True)
+
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
+                {"ready": False, "item_id": "", "domain": domain, "status": "reconfiguring"},
+                retain=True,
+            )
+            self._schedule_preparation(dmd_id, domain)
+
+        return invalidated
 
     def describe_connected_clients(self) -> List[Dict[str, Any]]:
         """Return a summary of currently registered DMD clients and their prepared queue slots."""
@@ -347,6 +481,8 @@ class ConsumeOnceOrchestrator:
                     "lang": crit.lang,
                     "video_mode": crit.video_mode,
                     "color_boost": crit.color_boost,
+                    "video_max_duration_s": crit.video_max_duration_s,
+                    "video_fps": crit.video_fps,
                     "systems": list(crit.systems),
                     "genres": list(crit.genres),
                     "decades": list(crit.decades),
@@ -414,19 +550,42 @@ class ConsumeOnceOrchestrator:
         if speed not in VALID_SCROLL_SPEEDS:
             speed = "normal"
 
-        raw_cb = raw_cfg.get("color_boost", "auto")
-        if isinstance(raw_cb, bool):
+        default_cb = str(settings.default_color_boost or "auto").strip().lower()
+        if default_cb not in ("auto", "pixel_art", "anime", "cinema"):
+            default_cb = "auto"
+        raw_cb = raw_cfg.get("color_boost")
+        if raw_cb is None:
+            color_boost_val = default_cb
+        elif isinstance(raw_cb, bool):
             color_boost_val = "auto" if raw_cb else "cinema"
         else:
-            cb_str = str(raw_cb or "auto").strip().lower()
-            if cb_str in ("true", "1", "yes", "on", "auto", ""):
+            cb_str = str(raw_cb).strip().lower()
+            if cb_str == "":
+                color_boost_val = default_cb
+            elif cb_str in ("true", "1", "yes", "on", "auto"):
                 color_boost_val = "auto"
             elif cb_str in ("false", "0", "no", "off", "none"):
                 color_boost_val = "cinema"
             elif cb_str in ("pixel_art", "anime", "cinema"):
                 color_boost_val = cb_str
             else:
-                color_boost_val = "auto"
+                color_boost_val = default_cb
+
+        default_vm = str(settings.default_video_mode or "auto_action").strip().lower()
+        if default_vm not in ("auto_action", "panorama", "center_crop"):
+            default_vm = "auto_action"
+        vm_raw = str(raw_cfg.get("video_mode") or "").strip().lower()
+        video_mode_val = (
+            vm_raw if vm_raw in ("auto_action", "panorama", "center_crop") else default_vm
+        )
+
+        max_dur_ceiling = max(1.5, float(settings.video_max_duration_limit_s))
+        req_dur = float(raw_cfg.get("video_max_duration_s") or 8.0)
+        eff_video_dur = max(1.5, min(max_dur_ceiling, req_dur))
+
+        max_fps_ceiling = max(6, int(settings.video_max_fps_limit))
+        req_fps = int(raw_cfg.get("video_fps") or 15)
+        eff_video_fps = max(6, min(max_fps_ceiling, req_fps))
 
         return FilterCriteria(
             domain=domain,
@@ -443,9 +602,9 @@ class ConsumeOnceOrchestrator:
             marquee_panorama=bool(raw_cfg.get("marquee_panorama", False)),
             snapshot_panorama_count=int(raw_cfg.get("snapshot_panorama_count", 0)),
             include_video=bool(raw_cfg.get("show_video", raw_cfg.get("include_video", True))),
-            video_max_duration_s=float(raw_cfg.get("video_max_duration_s") or 8.0),
-            video_fps=int(raw_cfg.get("video_fps") or 15),
-            video_mode=str(raw_cfg.get("video_mode") or "auto_action"),
+            video_max_duration_s=eff_video_dur,
+            video_fps=eff_video_fps,
+            video_mode=video_mode_val,
             color_boost=color_boost_val,
         )
 

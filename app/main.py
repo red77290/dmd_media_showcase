@@ -100,8 +100,20 @@ OPENAPI_TAGS = [
 ]
 
 
+def _apply_live_log_level(level_name: str) -> str:
+    resolved_name = str(level_name or "INFO").strip().upper()
+    lvl = getattr(logging, resolved_name, logging.INFO)
+    logging.getLogger().setLevel(lvl)
+    for name, lg in list(logging.Logger.manager.loggerDict.items()):
+        if isinstance(lg, logging.Logger) and name.startswith("dmd_showcase"):
+            lg.setLevel(lvl)
+    return logging.getLevelName(lvl)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    server_config_store.apply_to_settings()
+    _apply_live_log_level(settings.log_level)
     logger.info(
         "[STARTUP] Starting DMD Media Showcase Server v%s (dmd_gif_converter v%s, max_workers=%d)",
         __version__,
@@ -308,6 +320,9 @@ async def get_health() -> HealthResponse:
         standby_slots=standby_slots,
         active_udp_streams=active_udp,
         active_broadcasts=active_broadcasts,
+        video_max_duration_limit_s=settings.video_max_duration_limit_s,
+        video_max_fps_limit=settings.video_max_fps_limit,
+        use_process_pool=settings.use_process_pool,
         seen_history_counts=_normalized_seen_stats(),
     )
 
@@ -344,6 +359,14 @@ async def get_admin_config() -> Dict[str, Any]:
                 "lang": sess.request.lang,
                 "video_mode": sess.request.video_mode,
                 "color_boost": str(sess.request.color_boost),
+                "video_max_duration_s": min(
+                    float(sess.request.video_max_duration_s),
+                    float(settings.video_max_duration_limit_s),
+                ),
+                "video_fps": min(
+                    int(sess.request.video_fps),
+                    int(settings.video_max_fps_limit),
+                ),
                 "systems": list(sess.request.systems),
                 "genres": list(sess.request.genres),
                 "decades": list(sess.request.decades),
@@ -368,14 +391,98 @@ async def get_admin_config() -> Dict[str, Any]:
     }
 
 
+async def _apply_runtime_config_live(
+    prev_cfg: Dict[str, Any],
+    new_cfg: Dict[str, Any],
+    touched_keys: Set[str],
+) -> Dict[str, Any]:
+    """
+    Hot-apply runtime configuration changes immediately across all active services
+    (worker pool, Consume-Once concurrency & slot limits, logger levels, MQTT broker, and mDNS)
+    with zero server restart required.
+    """
+    applied_log_level = _apply_live_log_level(settings.log_level)
+
+    if "cache_dir" in touched_keys:
+        settings.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    worker_changed = bool(
+        touched_keys & {"max_concurrent_jobs", "use_process_pool", "cache_dir"}
+        or prev_cfg.get("max_concurrent_jobs") != new_cfg.get("max_concurrent_jobs")
+        or prev_cfg.get("use_process_pool") != new_cfg.get("use_process_pool")
+    )
+    if worker_changed and (batch_manager._running or batch_manager._worker_tasks):
+        effective_workers = await batch_manager.reconfigure_workers()
+    else:
+        effective_workers = settings.effective_max_workers
+    consume_once_orchestrator.reconfigure_concurrency(effective_workers)
+
+    invalidated_slots = 0
+    if touched_keys & {"video_max_duration_limit_s", "video_max_fps_limit"}:
+        invalidated_slots = await consume_once_orchestrator.apply_runtime_limits()
+
+    expired_sessions = 0
+    if "session_ttl_seconds" in touched_keys:
+        expired_sessions = batch_manager.cleanup_expired_sessions()
+
+    mqtt_reloaded = False
+    mqtt_changed = any(
+        prev_cfg.get(k) != new_cfg.get(k)
+        for k in ("mqtt_mode", "mqtt_port", "mqtt_external_url")
+    )
+    if mqtt_changed and showcase_mqtt_gateway._running:
+        await showcase_mqtt_gateway.stop()
+        await showcase_mqtt_gateway.start()
+        mqtt_reloaded = True
+    elif (
+        prev_cfg.get("default_lang") != new_cfg.get("default_lang")
+        and showcase_mqtt_gateway._running
+    ):
+        await showcase_mqtt_gateway.publish_catalog_referentials(
+            lang=str(new_cfg.get("default_lang") or "fr")
+        )
+
+    mdns_reloaded = False
+    mdns_changed = any(
+        prev_cfg.get(k) != new_cfg.get(k) for k in ("mdns_enabled", "mdns_hostname")
+    )
+    if mdns_changed and (
+        showcase_mdns_responder._transport is not None or showcase_mqtt_gateway._running
+    ):
+        await showcase_mdns_responder.stop()
+        if settings.mdns_enabled:
+            showcase_mdns_responder.hostname = settings.mdns_hostname
+            await showcase_mdns_responder.start(port=settings.port)
+        mdns_reloaded = True
+
+    return {
+        "effective_max_workers": effective_workers,
+        "use_process_pool": settings.use_process_pool,
+        "video_max_duration_limit_s": settings.video_max_duration_limit_s,
+        "video_max_fps_limit": settings.video_max_fps_limit,
+        "log_level": applied_log_level,
+        "invalidated_slots": invalidated_slots,
+        "expired_sessions": expired_sessions,
+        "mqtt_reloaded": mqtt_reloaded,
+        "mdns_reloaded": mdns_reloaded,
+    }
+
+
 @app.post("/api/v1/admin/config", tags=["System & Admin"])
 async def update_admin_config(payload: AdminServerConfigPayload) -> Dict[str, Any]:
-    """Update centralized user scraper credentials and MQTT settings in `./data/server_config.json`."""
+    """
+    Update and immediately hot-apply centralized runtime settings, worker pool concurrency,
+    video duration/FPS ceilings, MQTT/mDNS settings, and scraper credentials in `./data/server_config.json`.
+    """
+    prev_cfg = server_config_store.get_all()
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     updated = server_config_store.update(updates)
+    new_cfg = server_config_store.get_all()
+    applied_live = await _apply_runtime_config_live(prev_cfg, new_cfg, set(updates.keys()))
     return {
         "status": "saved",
         "config": updated,
+        "applied_live": applied_live,
         "vault_status": server_config_store.get_vault_status(),
         "providers": scraper_registry.describe_chains_detailed(),
         "providers_summary": scraper_registry.describe_active_chains(),
@@ -679,8 +786,8 @@ async def get_domain_random(
     image_count: Optional[int] = Query(default=None, ge=0, le=5),
     primary_source: str = Query(default="auto"),
     include_video: bool = Query(default=True),
-    video_max_duration_s: float = Query(default=6.0, ge=1.5, le=60.0),
-    video_fps: int = Query(default=15, ge=6, le=30),
+    video_max_duration_s: float = Query(default=6.0, ge=1.5, le=120.0),
+    video_fps: int = Query(default=15, ge=6, le=60),
     systems: Optional[str] = Query(default=None),
     genres: Optional[str] = Query(default=None),
     decade: Optional[str] = Query(default=None),
@@ -748,7 +855,7 @@ async def stream_media_asset(
     item_key: str,
     filename: str,
     request: Request,
-    max_duration_s: Optional[float] = Query(default=None, ge=0.5, le=60.0),
+    max_duration_s: Optional[float] = Query(default=None, ge=0.5, le=120.0),
 ) -> Response:
     asset_path: Optional[Path] = batch_manager.resolve_asset_path(item_key, filename)
     if asset_path is None:
@@ -762,10 +869,17 @@ async def stream_media_asset(
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     }
 
+    is_video_asset = "trailer" in filename or "video" in filename
+    eff_max_dur: Optional[float] = None
+    if max_duration_s is not None:
+        eff_max_dur = min(float(max_duration_s), float(settings.video_max_duration_limit_s))
+    elif is_video_asset:
+        eff_max_dur = float(settings.video_max_duration_limit_s)
+
     if filename.endswith(".rgb565.stream"):
         raw_bytes = (
-            truncate_rgb565_stream(asset_path, max_duration_s)
-            if max_duration_s is not None
+            truncate_rgb565_stream(asset_path, eff_max_dur)
+            if eff_max_dur is not None
             else asset_path.read_bytes()
         )
         headers["Content-Length"] = str(len(raw_bytes))
@@ -777,8 +891,8 @@ async def stream_media_asset(
 
     if filename.endswith(".gif"):
         raw_bytes = (
-            truncate_gif_bytes(asset_path, max_duration_s)
-            if max_duration_s is not None
+            truncate_gif_bytes(asset_path, eff_max_dur)
+            if eff_max_dur is not None
             else asset_path.read_bytes()
         )
         headers["Content-Length"] = str(len(raw_bytes))

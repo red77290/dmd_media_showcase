@@ -38,6 +38,48 @@ USER_PERSISTED_KEYS = (
     "mqtt_external_url",
     "default_lang",
     "showcase_api_key",
+    "max_concurrent_jobs",
+    "use_process_pool",
+    "ffmpeg_threads_per_job",
+    "worker_nice_increment",
+    "max_queue_size",
+    "video_max_duration_limit_s",
+    "server_master_clip_max_s",
+    "video_max_fps_limit",
+    "panorama_duration_s",
+    "ytdlp_max_filesize_mb",
+    "default_video_mode",
+    "default_color_boost",
+    "session_ttl_seconds",
+    "batch_ttl_seconds",
+    "cache_dir",
+    "log_level",
+    "mdns_enabled",
+    "mdns_hostname",
+    "trust_proxy_headers",
+)
+
+RUNTIME_SETTINGS_KEYS = (
+    "default_lang",
+    "max_concurrent_jobs",
+    "use_process_pool",
+    "ffmpeg_threads_per_job",
+    "worker_nice_increment",
+    "max_queue_size",
+    "video_max_duration_limit_s",
+    "server_master_clip_max_s",
+    "video_max_fps_limit",
+    "panorama_duration_s",
+    "ytdlp_max_filesize_mb",
+    "default_video_mode",
+    "default_color_boost",
+    "session_ttl_seconds",
+    "batch_ttl_seconds",
+    "cache_dir",
+    "log_level",
+    "mdns_enabled",
+    "mdns_hostname",
+    "trust_proxy_headers",
 )
 
 _ENV_VAR_NAMES = {
@@ -97,6 +139,40 @@ class ServerConfigStore:
         self._user_overrides = loaded
         self._loaded_from = path
 
+    def apply_to_settings(self) -> None:
+        """
+        Mirror persisted runtime tuning overrides from `server_config.json` onto `app.config.settings`
+        so worker pools, video limits, cache paths, TTLs, mDNS, and logging honor WebUI changes live.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            for key in RUNTIME_SETTINGS_KEYS:
+                if key not in self._user_overrides or self._user_overrides[key] is None:
+                    continue
+                val = self._user_overrides[key]
+                if key == "cache_dir":
+                    raw_dir = str(val).strip()
+                    if raw_dir:
+                        new_dir = Path(raw_dir).expanduser()
+                        new_dir.mkdir(parents=True, exist_ok=True)
+                        settings.cache_dir = new_dir
+                elif key == "mdns_hostname":
+                    raw_host = str(val).strip().removesuffix(".local").strip(".")
+                    if raw_host:
+                        settings.mdns_hostname = raw_host
+                elif key == "log_level":
+                    lvl_name = str(val).strip().upper()
+                    if lvl_name in ("DEBUG", "INFO", "WARNING", "ERROR"):
+                        settings.log_level = lvl_name
+                elif isinstance(getattr(settings, key, None), bool):
+                    setattr(settings, key, bool(val))
+                elif isinstance(getattr(settings, key, None), int):
+                    setattr(settings, key, int(val))
+                elif isinstance(getattr(settings, key, None), float):
+                    setattr(settings, key, float(val))
+                else:
+                    setattr(settings, key, str(val))
+
     def get_all(self) -> Dict[str, Any]:
         """
         Return effective runtime configuration for internal server components & scrapers.
@@ -113,6 +189,9 @@ class ServerConfigStore:
                 if "showcase_api_key" in self._user_overrides
                 else self._resolve_env_or_prod_vault("showcase_api_key")
             ).strip()
+
+            def _eff(k: str, fallback: Any) -> Any:
+                return self._user_overrides[k] if k in self._user_overrides and self._user_overrides[k] is not None else fallback
 
             return {
                 "tmdb_api_key": user_tmdb or self._resolve_env_or_prod_vault("tmdb_api_key"),
@@ -136,6 +215,29 @@ class ServerConfigStore:
                     self._user_overrides.get("default_lang") or settings.default_lang or "fr"
                 ),
                 "showcase_api_key": user_showcase_key,
+                "max_concurrent_jobs": int(_eff("max_concurrent_jobs", settings.max_concurrent_jobs)),
+                "use_process_pool": bool(_eff("use_process_pool", settings.use_process_pool)),
+                "ffmpeg_threads_per_job": int(_eff("ffmpeg_threads_per_job", settings.ffmpeg_threads_per_job)),
+                "worker_nice_increment": int(_eff("worker_nice_increment", settings.worker_nice_increment)),
+                "max_queue_size": int(_eff("max_queue_size", settings.max_queue_size)),
+                "video_max_duration_limit_s": float(
+                    _eff("video_max_duration_limit_s", settings.video_max_duration_limit_s)
+                ),
+                "server_master_clip_max_s": float(
+                    _eff("server_master_clip_max_s", settings.server_master_clip_max_s)
+                ),
+                "video_max_fps_limit": int(_eff("video_max_fps_limit", settings.video_max_fps_limit)),
+                "panorama_duration_s": float(_eff("panorama_duration_s", settings.panorama_duration_s)),
+                "ytdlp_max_filesize_mb": int(_eff("ytdlp_max_filesize_mb", settings.ytdlp_max_filesize_mb)),
+                "default_video_mode": str(_eff("default_video_mode", settings.default_video_mode)),
+                "default_color_boost": str(_eff("default_color_boost", settings.default_color_boost)),
+                "session_ttl_seconds": int(_eff("session_ttl_seconds", settings.session_ttl_seconds)),
+                "batch_ttl_seconds": int(_eff("batch_ttl_seconds", settings.batch_ttl_seconds)),
+                "cache_dir": str(_eff("cache_dir", str(settings.cache_dir))),
+                "log_level": str(_eff("log_level", settings.log_level)).upper(),
+                "mdns_enabled": bool(_eff("mdns_enabled", settings.mdns_enabled)),
+                "mdns_hostname": str(_eff("mdns_hostname", settings.mdns_hostname)),
+                "trust_proxy_headers": bool(_eff("trust_proxy_headers", settings.trust_proxy_headers)),
             }
 
     def get_vault_status(self) -> Dict[str, bool]:
@@ -194,11 +296,36 @@ class ServerConfigStore:
                 "mqtt_external_url": effective["mqtt_external_url"],
                 "default_lang": effective["default_lang"],
                 "showcase_api_key": "••••••••" if user_showcase_key else "",
+                "max_concurrent_jobs": effective["max_concurrent_jobs"],
+                "effective_max_workers": (
+                    max(1, min(16, int(effective["max_concurrent_jobs"])))
+                    if int(effective["max_concurrent_jobs"]) > 0
+                    else settings.effective_max_workers
+                ),
+                "detected_cpu_cores": settings.detected_cpu_cores,
+                "use_process_pool": effective["use_process_pool"],
+                "ffmpeg_threads_per_job": effective["ffmpeg_threads_per_job"],
+                "worker_nice_increment": effective["worker_nice_increment"],
+                "max_queue_size": effective["max_queue_size"],
+                "video_max_duration_limit_s": effective["video_max_duration_limit_s"],
+                "server_master_clip_max_s": effective["server_master_clip_max_s"],
+                "video_max_fps_limit": effective["video_max_fps_limit"],
+                "panorama_duration_s": effective["panorama_duration_s"],
+                "ytdlp_max_filesize_mb": effective["ytdlp_max_filesize_mb"],
+                "default_video_mode": effective["default_video_mode"],
+                "default_color_boost": effective["default_color_boost"],
+                "session_ttl_seconds": effective["session_ttl_seconds"],
+                "batch_ttl_seconds": effective["batch_ttl_seconds"],
+                "cache_dir": effective["cache_dir"],
+                "log_level": effective["log_level"],
+                "mdns_enabled": effective["mdns_enabled"],
+                "mdns_hostname": effective["mdns_hostname"],
+                "trust_proxy_headers": effective["trust_proxy_headers"],
             }
 
     def update(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Persist user-editable settings into `./data/server_config.json`.
+        Persist user-editable settings into `./data/server_config.json` and apply live to `settings`.
         Developer keys (`screenscraper_dev_id`, `screenscraper_dev_pass`) are never written to disk.
         """
         with self._lock:
@@ -209,10 +336,16 @@ class ServerConfigStore:
                 val = updates[key]
                 if isinstance(val, str) and val.strip() in MASKED_SECRET_PLACEHOLDERS:
                     continue
+                if key == "cache_dir" and not str(val).strip():
+                    continue
+                if key == "mdns_hostname" and not str(val).strip():
+                    continue
                 self._user_overrides[key] = val
 
             if "showcase_api_key" in updates and updates["showcase_api_key"] == "":
                 settings.showcase_api_key = ""
+
+            self.apply_to_settings()
 
             path = self.file_path
             path.parent.mkdir(parents=True, exist_ok=True)

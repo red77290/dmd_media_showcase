@@ -338,14 +338,17 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="tab-btn active" onclick="switchTab('overview')" data-i18n="tab_overview">
         1. Overview &amp; DMD Matrices
       </button>
+      <button class="tab-btn" onclick="switchTab('runtime')" data-i18n="tab_runtime">
+        2. Runtime, Workers &amp; Video Limits
+      </button>
       <button class="tab-btn" onclick="switchTab('tester')" data-i18n="tab_tester">
-        2. Live Showcase Tester
+        3. Live Showcase Tester
       </button>
       <button class="tab-btn" onclick="switchTab('keys')" data-i18n="tab_keys">
-        3. API Keys &amp; Encrypted Vault
+        4. API Keys &amp; Encrypted Vault
       </button>
       <button class="tab-btn" onclick="switchTab('network')" data-i18n="tab_network">
-        4. Network, MQTT &amp; Maintenance
+        5. Network, MQTT &amp; Maintenance
       </button>
     </div>
 
@@ -413,7 +416,139 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- TAB 2: LIVE SHOWCASE TESTER -->
+    <!-- TAB 2: RUNTIME, WORKERS & VIDEO LIMITS (REAL-TIME HOT RELOAD) -->
+    <div id="tab-runtime" class="tab-pane">
+      <div class="card">
+        <h2>
+          <span data-i18n="rt_workers_title">Workers, Concurrency &amp; CPU Protection</span>
+          <span id="rt-live-workers-pill" class="pill info">⚡ Auto</span>
+        </h2>
+        <p class="desc" data-i18n="rt_workers_desc">
+          Adjust background transcoding workers, executor isolation, FFmpeg threads, queue capacity, and live log verbosity in real time with zero server restart and zero interruption to active DMD streams.
+        </p>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_max_workers">Concurrent Transcode Workers (max_concurrent_jobs)</label>
+            <select id="max_concurrent_jobs">
+              <option value="0" id="opt-workers-auto" data-i18n="opt_workers_auto">Auto (CPU-bounded — Recommended)</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+              <option value="11">11</option>
+              <option value="12">12</option>
+              <option value="13">13</option>
+              <option value="14">14</option>
+              <option value="15">15</option>
+              <option value="16">16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_pool_mode">Worker Executor Mode (use_process_pool)</label>
+            <select id="use_process_pool">
+              <option value="true" data-i18n="opt_pool_process">ProcessPoolExecutor (Multi-Core Isolation)</option>
+              <option value="false" data-i18n="opt_pool_thread">ThreadPoolExecutor (Shared Memory)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_ffmpeg_threads">FFmpeg / OpenCV Threads per Job (1..8)</label>
+            <input type="number" id="ffmpeg_threads_per_job" min="1" max="8" step="1" value="1" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_worker_nice">Worker OS CPU Nice Increment (0..19)</label>
+            <input type="number" id="worker_nice_increment" min="0" max="19" step="1" value="10" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_max_queue">Max Pending Job Queue Size (10..1000)</label>
+            <input type="number" id="max_queue_size" min="10" max="1000" step="10" value="128" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_log_level">Live Server Log Level (log_level)</label>
+            <select id="log_level">
+              <option value="DEBUG">DEBUG</option>
+              <option value="INFO">INFO</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>
+          <span data-i18n="rt_video_title">Video Ceiling, Panoramas, Cache &amp; Session Limits</span>
+          <span id="rt-live-video-pill" class="pill ok">🎬 ≤ 30.0s @ 30 FPS</span>
+        </h2>
+        <p class="desc" data-i18n="rt_video_desc">
+          Enforce global server ceilings on video trailer duration, frame rate, source download size, panorama scroll duration, default AI framing/colorimetry, and cache TTLs. Lowering video ceilings automatically refreshes oversized standby slots.
+        </p>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_video_max_dur">Hard Max Video Duration Ceiling (s — 1.5..120)</label>
+            <input type="number" id="video_max_duration_limit_s" min="1.5" max="120" step="0.5" value="30.0" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_master_clip_max">Master Pre-Encode Clip Target (s — 1.5..120)</label>
+            <input type="number" id="server_master_clip_max_s" min="1.5" max="120" step="0.5" value="30.0" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_video_max_fps">Hard Max Video Frame Rate (FPS — 6..60)</label>
+            <input type="number" id="video_max_fps_limit" min="6" max="60" step="1" value="30" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_panorama_dur">Panorama Vertical Scroll Duration (s — 1.5..15)</label>
+            <input type="number" id="panorama_duration_s" min="1.5" max="15" step="0.5" value="4.0" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_ytdlp_max_mb">Max Trailer Source Download Size (MB — 10..250)</label>
+            <input type="number" id="ytdlp_max_filesize_mb" min="10" max="250" step="5" value="60" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_default_vmode">Default Video Framing (default_video_mode)</label>
+            <select id="default_video_mode">
+              <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
+              <option value="panorama" data-i18n="opt_vmode_panorama">Panorama (Top-Bottom Scan)</option>
+              <option value="center_crop" data-i18n="opt_vmode_crop">Static Center Crop</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_default_cboost">Default LED Color Boost (default_color_boost)</label>
+            <select id="default_color_boost">
+              <option value="auto" data-i18n="opt_cboost_auto">Auto (Let Me Handle It AI)</option>
+              <option value="pixel_art" data-i18n="opt_cboost_pixel">Pixel Art (Crisp Retro)</option>
+              <option value="anime" data-i18n="opt_cboost_anime">Anime (Vibrant Cel-Shaded)</option>
+              <option value="cinema" data-i18n="opt_cboost_cinema">Cinema (Balanced Contrast &amp; Shadows)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_session_ttl">Inactive HTTP Session TTL (s — 60..86400)</label>
+            <input type="number" id="session_ttl_seconds" min="60" max="86400" step="60" value="3600" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_batch_ttl">Prepared Batch Cache TTL (s — 30..7200)</label>
+            <input type="number" id="batch_ttl_seconds" min="30" max="7200" step="30" value="1800" />
+          </div>
+        </div>
+        <div class="form-grid-2" style="margin-top:14px">
+          <div class="field span-2">
+            <label data-i18n="lbl_cache_dir">Transcoded Media Cache Directory (cache_dir)</label>
+            <input type="text" id="cache_dir" placeholder="/tmp/dmd_showcase_cache" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button onclick="saveConfig()" data-i18n="btn_save_live">Save &amp; Apply in Real Time</button>
+          <span id="status-msg-runtime" class="toast"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: LIVE SHOWCASE TESTER -->
     <div id="tab-tester" class="tab-pane">
       <div class="card">
         <h2 data-i18n="tester_title">Live Showcase Tester &amp; Preview</h2>
@@ -571,10 +706,10 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- TAB 4: NETWORK, MQTT & MAINTENANCE -->
+    <!-- TAB 5: NETWORK, MQTT & MAINTENANCE -->
     <div id="tab-network" class="tab-pane">
       <div class="card">
-        <h2 data-i18n="net_title">Language, MQTT Broker &amp; Security Settings</h2>
+        <h2 data-i18n="net_title">Language, MQTT Broker, mDNS &amp; Security Settings</h2>
         <div class="form-grid-2">
           <div class="field">
             <label data-i18n="lbl_default_lang">Default Metadata &amp; Synopsis Language</label>
@@ -595,8 +730,30 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             </select>
           </div>
           <div class="field">
+            <label data-i18n="lbl_mqtt_port">Embedded MQTT Broker TCP Port (mqtt_port)</label>
+            <input type="number" id="mqtt_port" min="1" max="65535" step="1" value="1883" />
+          </div>
+          <div class="field">
             <label data-i18n="lbl_mqtt_url">External MQTT Broker URL (when mode = external)</label>
             <input type="text" id="mqtt_external_url" data-i18n-placeholder="ph_mqtt_url" placeholder="mqtt://192.168.1.50:1883" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mdns_enabled">LAN mDNS Auto-Discovery (:5353 .local)</label>
+            <select id="mdns_enabled" onchange="syncMdnsUi()">
+              <option value="true" data-i18n="opt_bool_enabled">Enabled</option>
+              <option value="false" data-i18n="opt_bool_disabled">Disabled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mdns_hostname">mDNS Hostname (.local)</label>
+            <input type="text" id="mdns_hostname" placeholder="dmdmediashowcase" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_trust_proxy">Trust Reverse Proxy Headers (X-Forwarded-Proto/For)</label>
+            <select id="trust_proxy_headers">
+              <option value="true" data-i18n="opt_bool_enabled">Enabled</option>
+              <option value="false" data-i18n="opt_bool_disabled">Disabled</option>
+            </select>
           </div>
           <div class="field">
             <label data-i18n="lbl_showcase_key">Optional HTTP/Cloud Access Key (X-Showcase-Key — empty = open LAN)</label>
@@ -608,7 +765,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
         <div class="form-actions">
-          <button onclick="saveConfig()" data-i18n="btn_save">Save Server Configuration</button>
+          <button onclick="saveConfig()" data-i18n="btn_save_live">Save &amp; Apply in Real Time</button>
           <span id="status-msg-net" class="toast"></span>
         </div>
       </div>
@@ -651,9 +808,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         status_online: "● Online",
         status_offline: "● Unreachable",
         tab_overview: "1. Overview & DMD Matrices",
-        tab_tester: "2. Live Showcase Tester",
-        tab_keys: "3. API Keys & Encrypted Vault",
-        tab_network: "4. Network, MQTT & Maintenance",
+        tab_runtime: "2. Runtime, Workers & Video Limits",
+        tab_tester: "3. Live Showcase Tester",
+        tab_keys: "4. API Keys & Encrypted Vault",
+        tab_network: "5. Network, MQTT & Maintenance",
+        rt_workers_title: "Workers, Concurrency & CPU Protection",
+        rt_workers_desc: "Adjust background transcoding workers, executor isolation, FFmpeg threads, queue capacity, and live log verbosity in real time with zero server restart and zero interruption to active DMD streams.",
+        rt_workers_pill_fmt: "⚡ Active: {w} workers • {c} CPU cores • {p}",
+        lbl_max_workers: "Concurrent Transcode Workers (max_concurrent_jobs)",
+        opt_workers_auto: "Auto (CPU-bounded — Recommended)",
+        opt_workers_auto_fmt: "Auto ({w} workers / {c} CPU cores — Recommended)",
+        lbl_pool_mode: "Worker Executor Mode (use_process_pool)",
+        opt_pool_process: "ProcessPoolExecutor (Multi-Core Isolation)",
+        opt_pool_thread: "ThreadPoolExecutor (Shared Memory)",
+        lbl_ffmpeg_threads: "FFmpeg / OpenCV Threads per Job (1..8)",
+        lbl_worker_nice: "Worker OS CPU Nice Increment (0..19)",
+        lbl_max_queue: "Max Pending Job Queue Size (10..1000)",
+        lbl_log_level: "Live Server Log Level (log_level)",
+        rt_video_title: "Video Ceiling, Panoramas, Cache & Session Limits",
+        rt_video_desc: "Enforce global server ceilings on video trailer duration, frame rate, source download size, panorama scroll duration, default AI framing/colorimetry, and cache TTLs. Lowering video ceilings automatically refreshes oversized standby slots.",
+        rt_video_pill_fmt: "🎬 ≤ {d}s @ {f} FPS",
+        lbl_video_max_dur: "Hard Max Video Duration Ceiling (s — 1.5..120)",
+        lbl_master_clip_max: "Master Pre-Encode Clip Target (s — 1.5..120)",
+        lbl_video_max_fps: "Hard Max Video Frame Rate (FPS — 6..60)",
+        lbl_panorama_dur: "Panorama Vertical Scroll Duration (s — 1.5..15)",
+        lbl_ytdlp_max_mb: "Max Trailer Source Download Size (MB — 10..250)",
+        lbl_default_vmode: "Default Video Framing (default_video_mode)",
+        lbl_default_cboost: "Default LED Color Boost (default_color_boost)",
+        lbl_session_ttl: "Inactive HTTP Session TTL (s — 60..86400)",
+        lbl_batch_ttl: "Prepared Batch Cache TTL (s — 30..7200)",
+        lbl_cache_dir: "Transcoded Media Cache Directory (cache_dir)",
+        lbl_mqtt_port: "Embedded MQTT Broker TCP Port (mqtt_port)",
+        lbl_mdns_enabled: "LAN mDNS Auto-Discovery (:5353 .local)",
+        lbl_mdns_hostname: "mDNS Hostname (.local)",
+        lbl_trust_proxy: "Trust Reverse Proxy Headers (X-Forwarded-Proto/For)",
+        opt_bool_enabled: "Enabled",
+        opt_bool_disabled: "Disabled",
+        btn_save_live: "Save & Apply in Real Time",
+        msg_saved_live: "✓ Applied live ({w} workers • ≤{d}s @ {f}fps)",
         kpi_workers: "Workers & Transcode Queue",
         kpi_queue_fmt: "Queue: {q}",
         kpi_queue_udp_fmt: "Queue: {q} • UDP Live: {u}",
@@ -763,9 +955,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         status_online: "● En ligne",
         status_offline: "● Injoignable",
         tab_overview: "1. Vue d'ensemble & Matrices DMD",
-        tab_tester: "2. Testeur & Aperçu Showcase",
-        tab_keys: "3. Clés API & Coffre Chiffré",
-        tab_network: "4. Réseau, MQTT & Maintenance",
+        tab_runtime: "2. Runtime, Workers & Limites Vidéo",
+        tab_tester: "3. Testeur & Aperçu Showcase",
+        tab_keys: "4. Clés API & Coffre Chiffré",
+        tab_network: "5. Réseau, MQTT & Maintenance",
+        rt_workers_title: "Workers, Parallélisme & Protection CPU",
+        rt_workers_desc: "Modifie à chaud le nombre de workers de transcodage, le mode d'exécution, les threads FFmpeg, la file d'attente et le niveau de log sans redémarrer le serveur ni couper les flux DMD actifs.",
+        rt_workers_pill_fmt: "⚡ Actifs : {w} workers • {c} cœurs CPU • {p}",
+        lbl_max_workers: "Workers de Transcodage Simultanés (max_concurrent_jobs)",
+        opt_workers_auto: "Auto (Borné CPU — Recommandé)",
+        opt_workers_auto_fmt: "Auto ({w} workers / {c} cœurs CPU — Recommandé)",
+        lbl_pool_mode: "Mode d'Exécuteur Worker (use_process_pool)",
+        opt_pool_process: "ProcessPoolExecutor (Isolation Multi-Cœurs)",
+        opt_pool_thread: "ThreadPoolExecutor (Mémoire Partagée)",
+        lbl_ffmpeg_threads: "Threads FFmpeg / OpenCV par Job (1..8)",
+        lbl_worker_nice: "Priorité OS Nice des Workers (0..19)",
+        lbl_max_queue: "Taille Max de la File de Jobs (10..1000)",
+        lbl_log_level: "Niveau de Log Serveur en Direct (log_level)",
+        rt_video_title: "Plafonds Vidéo, Panoramas, Cache & Sessions",
+        rt_video_desc: "Applique en temps réel les plafonds serveur sur la durée maximale des vidéos, les FPS, le poids source, le défilement des panoramas, les réglages IA par défaut et les TTL de cache. Abaisser une limite vidéo recalcule automatiquement les slots en attente.",
+        rt_video_pill_fmt: "🎬 ≤ {d}s @ {f} FPS",
+        lbl_video_max_dur: "Durée Vidéo Maximale Autorisée (s — 1.5..120)",
+        lbl_master_clip_max: "Durée Cible Clip Master Pré-encodé (s — 1.5..120)",
+        lbl_video_max_fps: "Fréquence Vidéo Maximale (FPS — 6..60)",
+        lbl_panorama_dur: "Durée de Balayage Vertical Panorama (s — 1.5..15)",
+        lbl_ytdlp_max_mb: "Poids Max Téléchargement Bande-Annonce (Mo — 10..250)",
+        lbl_default_vmode: "Cadrage Vidéo par Défaut (default_video_mode)",
+        lbl_default_cboost: "Boost Couleur LED par Défaut (default_color_boost)",
+        lbl_session_ttl: "TTL Session HTTP Inactive (s — 60..86400)",
+        lbl_batch_ttl: "TTL Cache Batch Préparé (s — 30..7200)",
+        lbl_cache_dir: "Répertoire de Cache Média Transcodé (cache_dir)",
+        lbl_mqtt_port: "Port TCP du Broker MQTT Embarqué (mqtt_port)",
+        lbl_mdns_enabled: "Découverte Auto LAN mDNS (:5353 .local)",
+        lbl_mdns_hostname: "Nom d'Hôte mDNS (.local)",
+        lbl_trust_proxy: "Confiance Reverse Proxy (X-Forwarded-Proto/For)",
+        opt_bool_enabled: "Activé",
+        opt_bool_disabled: "Désactivé",
+        btn_save_live: "Enregistrer & Appliquer en Temps Réel",
+        msg_saved_live: "✓ Appliqué à chaud ({w} workers • ≤{d}s @ {f}fps)",
         kpi_workers: "Workers & File de Transcodage",
         kpi_queue_fmt: "File d'attente : {q}",
         kpi_queue_udp_fmt: "File : {q} • Flux UDP : {u}",
@@ -875,9 +1102,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         status_online: "● En línea",
         status_offline: "● Sin conexión",
         tab_overview: "1. Vista General y Matrices DMD",
-        tab_tester: "2. Probador Showcase en Vivo",
-        tab_keys: "3. Claves API y Bóveda Cifrada",
-        tab_network: "4. Red, MQTT y Mantenimiento",
+        tab_runtime: "2. Runtime, Workers y Límites de Vídeo",
+        tab_tester: "3. Probador Showcase en Vivo",
+        tab_keys: "4. Claves API y Bóveda Cifrada",
+        tab_network: "5. Red, MQTT y Mantenimiento",
+        rt_workers_title: "Workers, Concurrencia y Protección CPU",
+        rt_workers_desc: "Ajusta en caliente los workers de transcodificación, el modo de ejecutor, hilos FFmpeg, cola máxima y nivel de registro sin reiniciar el servidor ni interrumpir emisiones DMD activas.",
+        rt_workers_pill_fmt: "⚡ Activos: {w} workers • {c} núcleos CPU • {p}",
+        lbl_max_workers: "Workers de Transcodificación Simultáneos (max_concurrent_jobs)",
+        opt_workers_auto: "Auto (Limitado por CPU — Recomendado)",
+        opt_workers_auto_fmt: "Auto ({w} workers / {c} núcleos CPU — Recomendado)",
+        lbl_pool_mode: "Modo de Ejecutor Worker (use_process_pool)",
+        opt_pool_process: "ProcessPoolExecutor (Aislamiento Multinúcleo)",
+        opt_pool_thread: "ThreadPoolExecutor (Memoria Compartida)",
+        lbl_ffmpeg_threads: "Hilos FFmpeg / OpenCV por Trabajo (1..8)",
+        lbl_worker_nice: "Prioridad OS Nice de Workers (0..19)",
+        lbl_max_queue: "Tamaño Máximo de Cola de Trabajos (10..1000)",
+        lbl_log_level: "Nivel de Registro en Vivo (log_level)",
+        rt_video_title: "Techos de Vídeo, Panoramas, Caché y Sesiones",
+        rt_video_desc: "Aplica en tiempo real límites globales de duración máxima de vídeo, FPS, tamaño de descarga, barrido de panoramas, ajustes IA por defecto y TTLs de caché. Reducir límites regenera automáticamente ranuras en espera.",
+        rt_video_pill_fmt: "🎬 ≤ {d}s @ {f} FPS",
+        lbl_video_max_dur: "Duración Máxima de Vídeo Permitida (s — 1.5..120)",
+        lbl_master_clip_max: "Objetivo de Clip Maestro Precodificado (s — 1.5..120)",
+        lbl_video_max_fps: "Frecuencia Máxima de Vídeo (FPS — 6..60)",
+        lbl_panorama_dur: "Duración de Barrido Vertical Panorama (s — 1.5..15)",
+        lbl_ytdlp_max_mb: "Tamaño Máximo de Descarga de Tráiler (MB — 10..250)",
+        lbl_default_vmode: "Encuadre de Vídeo por Defecto (default_video_mode)",
+        lbl_default_cboost: "Realce LED por Defecto (default_color_boost)",
+        lbl_session_ttl: "TTL de Sesión HTTP Inactiva (s — 60..86400)",
+        lbl_batch_ttl: "TTL de Caché de Lotes Preparados (s — 30..7200)",
+        lbl_cache_dir: "Directorio de Caché Multimedia (cache_dir)",
+        lbl_mqtt_port: "Puerto TCP del Broker MQTT Integrado (mqtt_port)",
+        lbl_mdns_enabled: "Autodescubrimiento LAN mDNS (:5353 .local)",
+        lbl_mdns_hostname: "Nombre de Host mDNS (.local)",
+        lbl_trust_proxy: "Confiar en Cabeceras Proxy (X-Forwarded-Proto/For)",
+        opt_bool_enabled: "Activado",
+        opt_bool_disabled: "Desactivado",
+        btn_save_live: "Guardar y Aplicar en Tiempo Real",
+        msg_saved_live: "✓ Aplicado en vivo ({w} workers • ≤{d}s @ {f}fps)",
         kpi_workers: "Workers y Cola de Transcodificación",
         kpi_queue_fmt: "Cola: {q}",
         kpi_queue_udp_fmt: "Cola: {q} • UDP Activo: {u}",
@@ -1036,6 +1298,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     let lastClients = [];
     let lastSeenStats = {};
     let lastHealth = null;
+    let lastServerConfig = {};
 
     function esc(val) {
       return String(val == null ? '' : val)
@@ -1058,10 +1321,52 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     function syncMqttModeUi() {
       const modeEl = document.getElementById('mqtt_mode');
       const urlEl = document.getElementById('mqtt_external_url');
+      const portEl = document.getElementById('mqtt_port');
       if (!modeEl || !urlEl) return;
       const isExt = modeEl.value === 'external';
       urlEl.disabled = !isExt;
       urlEl.placeholder = isExt ? t('ph_mqtt_url') : t('ph_mqtt_embedded');
+      if (portEl) portEl.disabled = isExt;
+    }
+
+    function syncMdnsUi() {
+      const mdnsEl = document.getElementById('mdns_enabled');
+      const hostEl = document.getElementById('mdns_hostname');
+      if (!mdnsEl || !hostEl) return;
+      hostEl.disabled = mdnsEl.value === 'false';
+    }
+
+    function renderRuntimeSummary(cfg, h) {
+      const c = cfg || lastServerConfig || {};
+      const health = h || lastHealth || {};
+      const effW = Number(health.max_workers || c.effective_max_workers || 2);
+      const cpuCores = Number(c.detected_cpu_cores || 2);
+      const autoWorkers = Math.max(1, Math.min(4, Math.max(1, cpuCores - 1)));
+      const useProc = health.use_process_pool != null ? Boolean(health.use_process_pool) : (c.use_process_pool !== false);
+      const poolShort = useProc ? 'ProcessPool' : 'ThreadPool';
+      const maxDur = Number(
+        health.video_max_duration_limit_s != null
+          ? health.video_max_duration_limit_s
+          : (c.video_max_duration_limit_s != null ? c.video_max_duration_limit_s : 30.0)
+      ).toFixed(1);
+      const maxFps = Number(
+        health.video_max_fps_limit != null
+          ? health.video_max_fps_limit
+          : (c.video_max_fps_limit != null ? c.video_max_fps_limit : 30)
+      );
+
+      const wPill = document.getElementById('rt-live-workers-pill');
+      if (wPill) {
+        wPill.textContent = t('rt_workers_pill_fmt', {w: effW, c: cpuCores, p: poolShort});
+      }
+      const vPill = document.getElementById('rt-live-video-pill');
+      if (vPill) {
+        vPill.textContent = t('rt_video_pill_fmt', {d: maxDur, f: maxFps});
+      }
+      const autoOpt = document.getElementById('opt-workers-auto');
+      if (autoOpt) {
+        autoOpt.textContent = t('opt_workers_auto_fmt', {w: autoWorkers, c: cpuCores});
+      }
     }
 
     function setUiLang(lang) {
@@ -1081,6 +1386,8 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         if (I18N[lang][k] || I18N.en[k]) el.placeholder = t(k);
       });
       syncMqttModeUi();
+      syncMdnsUi();
+      renderRuntimeSummary(lastServerConfig, lastHealth);
       renderVaultStatus(lastVaultStatus);
       renderProviders(lastProviders);
       renderClients(lastClients);
@@ -1093,7 +1400,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.getElementById('tab-' + name).classList.add('active');
-      const idx = {overview: 0, tester: 1, keys: 2, network: 3}[name] || 0;
+      const idx = {overview: 0, runtime: 1, tester: 2, keys: 3, network: 4}[name] || 0;
       document.querySelectorAll('.tab-btn')[idx].classList.add('active');
     }
 
@@ -1215,7 +1522,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             <td><b>${esc(c.dmd_id)}</b><br/><small style="color:var(--muted)">${ipInfo}</small></td>
             <td><span class="pill info">${esc((c.domain || '').toUpperCase())}</span></td>
             <td><code>${esc(c.width)}×${esc(c.height)}</code></td>
-            <td><code>${esc(c.video_mode)}</code> • <code>${esc(c.color_boost)}</code></td>
+            <td><code>${esc(c.video_mode)}</code> • <code>${esc(c.color_boost)}</code>${c.video_max_duration_s != null ? `<br/><small style="color:var(--muted)">≤${esc(Number(c.video_max_duration_s).toFixed(1))}s @ ${esc(c.video_fps || 15)}fps</small>` : ''}</td>
             <td>${playingCell}</td>
             <td>${readyCell}</td>
             <td>${standbyCell}</td>
@@ -1306,10 +1613,13 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
           renderProviders(fallbackProviders);
         }
       }
+      renderRuntimeSummary(lastServerConfig, h);
     }
 
     function hydrateConfigInputs(cfg, force) {
       if (!cfg) return;
+      lastServerConfig = cfg;
+      renderRuntimeSummary(cfg, lastHealth);
       if (configHydrated && !force) return;
       const fields = {
         tmdb_api_key: cfg.tmdb_api_key || '',
@@ -1317,9 +1627,29 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         screenscraper_user: cfg.screenscraper_user || '',
         screenscraper_pass: cfg.screenscraper_pass || '',
         mqtt_mode: cfg.mqtt_mode || 'embedded',
+        mqtt_port: String(cfg.mqtt_port != null ? cfg.mqtt_port : 1883),
         mqtt_external_url: cfg.mqtt_external_url || '',
         default_lang: cfg.default_lang || 'fr',
-        showcase_api_key: cfg.showcase_api_key || ''
+        showcase_api_key: cfg.showcase_api_key || '',
+        max_concurrent_jobs: String(cfg.max_concurrent_jobs != null ? cfg.max_concurrent_jobs : 0),
+        use_process_pool: String(cfg.use_process_pool !== false),
+        ffmpeg_threads_per_job: String(cfg.ffmpeg_threads_per_job != null ? cfg.ffmpeg_threads_per_job : 1),
+        worker_nice_increment: String(cfg.worker_nice_increment != null ? cfg.worker_nice_increment : 10),
+        max_queue_size: String(cfg.max_queue_size != null ? cfg.max_queue_size : 128),
+        video_max_duration_limit_s: String(cfg.video_max_duration_limit_s != null ? cfg.video_max_duration_limit_s : 30.0),
+        server_master_clip_max_s: String(cfg.server_master_clip_max_s != null ? cfg.server_master_clip_max_s : 30.0),
+        video_max_fps_limit: String(cfg.video_max_fps_limit != null ? cfg.video_max_fps_limit : 30),
+        panorama_duration_s: String(cfg.panorama_duration_s != null ? cfg.panorama_duration_s : 4.0),
+        ytdlp_max_filesize_mb: String(cfg.ytdlp_max_filesize_mb != null ? cfg.ytdlp_max_filesize_mb : 60),
+        default_video_mode: cfg.default_video_mode || 'auto_action',
+        default_color_boost: cfg.default_color_boost || 'auto',
+        session_ttl_seconds: String(cfg.session_ttl_seconds != null ? cfg.session_ttl_seconds : 3600),
+        batch_ttl_seconds: String(cfg.batch_ttl_seconds != null ? cfg.batch_ttl_seconds : 1800),
+        cache_dir: cfg.cache_dir || '/tmp/dmd_showcase_cache',
+        log_level: String(cfg.log_level || 'INFO').toUpperCase(),
+        mdns_enabled: String(cfg.mdns_enabled !== false),
+        mdns_hostname: cfg.mdns_hostname || 'dmdmediashowcase',
+        trust_proxy_headers: String(cfg.trust_proxy_headers !== false)
       };
       Object.entries(fields).forEach(([id, val]) => {
         const el = document.getElementById(id);
@@ -1328,6 +1658,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         }
       });
       syncMqttModeUi();
+      syncMdnsUi();
       configHydrated = true;
     }
 
@@ -1474,6 +1805,30 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function clampIntInput(id, minVal, maxVal, fallback) {
+      const raw = parseInt(document.getElementById(id).value, 10);
+      if (Number.isNaN(raw)) return fallback;
+      return Math.max(minVal, Math.min(maxVal, raw));
+    }
+
+    function clampFloatInput(id, minVal, maxVal, fallback) {
+      const raw = parseFloat(document.getElementById(id).value);
+      if (Number.isNaN(raw)) return fallback;
+      return Math.max(minVal, Math.min(maxVal, raw));
+    }
+
+    function showConfigToast(msg, isError = false) {
+      ['status-msg-runtime', 'status-msg-keys', 'status-msg-net'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.color = isError ? 'var(--red)' : 'var(--green)';
+        el.textContent = msg;
+        setTimeout(() => {
+          if (el.textContent === msg) el.textContent = '';
+        }, 4000);
+      });
+    }
+
     async function saveConfig() {
       const payload = {
         tmdb_api_key: document.getElementById('tmdb_api_key').value.trim(),
@@ -1481,14 +1836,44 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         screenscraper_user: document.getElementById('screenscraper_user').value.trim(),
         screenscraper_pass: document.getElementById('screenscraper_pass').value.trim(),
         mqtt_mode: document.getElementById('mqtt_mode').value,
+        mqtt_port: clampIntInput('mqtt_port', 1, 65535, 1883),
         mqtt_external_url: document.getElementById('mqtt_external_url').value.trim(),
         default_lang: document.getElementById('default_lang').value,
-        showcase_api_key: document.getElementById('showcase_api_key').value.trim()
+        showcase_api_key: document.getElementById('showcase_api_key').value.trim(),
+        max_concurrent_jobs: clampIntInput('max_concurrent_jobs', 0, 16, 0),
+        use_process_pool: document.getElementById('use_process_pool').value === 'true',
+        ffmpeg_threads_per_job: clampIntInput('ffmpeg_threads_per_job', 1, 8, 1),
+        worker_nice_increment: clampIntInput('worker_nice_increment', 0, 19, 10),
+        max_queue_size: clampIntInput('max_queue_size', 10, 1000, 128),
+        video_max_duration_limit_s: clampFloatInput('video_max_duration_limit_s', 1.5, 120.0, 30.0),
+        server_master_clip_max_s: clampFloatInput('server_master_clip_max_s', 1.5, 120.0, 30.0),
+        video_max_fps_limit: clampIntInput('video_max_fps_limit', 6, 60, 30),
+        panorama_duration_s: clampFloatInput('panorama_duration_s', 1.5, 15.0, 4.0),
+        ytdlp_max_filesize_mb: clampIntInput('ytdlp_max_filesize_mb', 10, 250, 60),
+        default_video_mode: document.getElementById('default_video_mode').value,
+        default_color_boost: document.getElementById('default_color_boost').value,
+        session_ttl_seconds: clampIntInput('session_ttl_seconds', 60, 86400, 3600),
+        batch_ttl_seconds: clampIntInput('batch_ttl_seconds', 30, 7200, 1800),
+        cache_dir: document.getElementById('cache_dir').value.trim() || '/tmp/dmd_showcase_cache',
+        log_level: document.getElementById('log_level').value,
+        mdns_enabled: document.getElementById('mdns_enabled').value === 'true',
+        mdns_hostname: document.getElementById('mdns_hostname').value.trim() || 'dmdmediashowcase',
+        trust_proxy_headers: document.getElementById('trust_proxy_headers').value === 'true'
       };
-      const r = await apiFetch('/api/v1/admin/config', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
-      });
-      if (r.ok) {
+      try {
+        const r = await apiFetch('/api/v1/admin/config', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        });
+        if (!r.ok) {
+          let errDetail = 'HTTP ' + r.status;
+          try {
+            const errJson = await r.json();
+            errDetail = typeof errJson.detail === 'string' ? errJson.detail : JSON.stringify(errJson.detail || errJson);
+          } catch (_) {}
+          showConfigToast('⚠️ ' + errDetail, true);
+          return;
+        }
+        const resData = await r.json();
         try {
           if (payload.showcase_api_key === '') {
             localStorage.removeItem('dmd_showcase_api_key');
@@ -1496,12 +1881,14 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
             localStorage.setItem('dmd_showcase_api_key', payload.showcase_api_key);
           }
         } catch (_) {}
-        ['status-msg-keys', 'status-msg-net'].forEach(id => {
-          const el = document.getElementById(id);
-          el.textContent = t('msg_saved');
-          setTimeout(() => { el.textContent = ''; }, 3000);
-        });
+        const applied = resData.applied_live || {};
+        const effW = applied.effective_max_workers != null ? applied.effective_max_workers : payload.max_concurrent_jobs;
+        const maxD = Number(applied.video_max_duration_limit_s != null ? applied.video_max_duration_limit_s : payload.video_max_duration_limit_s).toFixed(1);
+        const maxF = applied.video_max_fps_limit != null ? applied.video_max_fps_limit : payload.video_max_fps_limit;
+        showConfigToast(t('msg_saved_live', {w: effW, d: maxD, f: maxF}), false);
         loadHealthAndConfig(true);
+      } catch (err) {
+        showConfigToast('⚠️ ' + (err.message || String(err)), true);
       }
     }
 

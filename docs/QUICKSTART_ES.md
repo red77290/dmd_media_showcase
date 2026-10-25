@@ -72,6 +72,7 @@ docker run -d \
 ## 2. Panel Web de Administración (`http://dmdmediashowcase.local:8890/`)
 
 Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en su navegador para:
+- **Ajustar en caliente Runtime, Workers y Límites de Vídeo en Tiempo Real** (`2. Runtime, Workers y Límites de Vídeo`, guardado en `./data/server_config.json` sin reiniciar el servidor): número de workers concurrentes (`max_concurrent_jobs`), modo de ejecutor (`ProcessPoolExecutor` / `ThreadPoolExecutor`), hilos FFmpeg, prioridad CPU `nice`, duración máxima de vídeo (`video_max_duration_limit_s`), FPS máximos (`video_max_fps_limit`), duración de panoramas (`panorama_duration_s`), tamaño máximo de descarga, caché, TTLs, puerto MQTT, mDNS y nivel de log en vivo.
 - Configurar credenciales **opcionales** de scrapers primarios (`ScreenScraper`, `TMDB`). Sin credenciales, los adaptadores sin clave (`ArcadeItalia`, `Libretro+Wikidata`, `iTunes`, `TVMaze`, `Jikan+AnimeThemes`, `AniList`) funcionan automáticamente.
 - Elegir entre el **Broker MQTT Integrado** (`:1883`) o un **Broker MQTT Externo**.
 - Ver y restablecer el historial **`seen_history.json`** por dominio o globalmente.
