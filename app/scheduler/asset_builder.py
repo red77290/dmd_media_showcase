@@ -14,10 +14,12 @@ Rules enforced:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
@@ -25,7 +27,7 @@ from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 from app.infrastructure.scrapers.youtube_resolver import (
     extract_hd_youtube_clip_ytdlp,
@@ -547,6 +549,564 @@ def build_static_assets_sync(
         "panorama_streams_rgb565": panorama_streams,
         "snapshots_pan_rgb565": snapshots_rgb565,
     }
+
+
+def _parse_hex_rgb(hex_color: str, fallback: Tuple[int, int, int] = (230, 74, 25)) -> Tuple[int, int, int]:
+    raw = str(hex_color or "").strip().lstrip("#")
+    if len(raw) == 6:
+        try:
+            return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+        except ValueError:
+            pass
+    return fallback
+
+
+def _sanitize_card_text(text: str) -> str:
+    if not text:
+        return ""
+    replacements = {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+        "\u0153": "oe",
+        "\u0152": "OE",
+        "\u00a0": " ",
+        "\n": " ",
+        "\r": " ",
+    }
+    cleaned = str(text)
+    for k, v in replacements.items():
+        cleaned = cleaned.replace(k, v)
+    return " ".join(cleaned.split())
+
+
+def _load_card_font(
+    text_sample: str,
+    size: int = 10,
+    font_style: str = "arcade_pixel",
+) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    needs_unicode = any(ord(ch) > 255 for ch in text_sample)
+    style = str(font_style or "arcade_pixel").strip().lower()
+    if needs_unicode:
+        candidates: Tuple[str, ...] = (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        )
+    elif style == "clean_sans":
+        candidates = (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+        )
+    else:
+        return ImageFont.load_default()
+
+    for fp in candidates:
+        if os.path.exists(fp):
+            try:
+                return ImageFont.truetype(fp, size=size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+
+def _resolve_scroll_px_per_sec(speed: str) -> float:
+    raw = str(speed or "normal").strip().lower()
+    named = {"slow": 22.0, "normal": 34.0, "fast": 48.0, "turbo": 64.0}
+    if raw in named:
+        return named[raw]
+    try:
+        lvl = max(1, min(10, int(raw)))
+        return 16.0 + lvl * 5.0
+    except ValueError:
+        return 34.0
+
+
+def _apply_amber_dmd_palette(arr: np.ndarray) -> np.ndarray:
+    """Map an RGB888 frame to classic Williams/Bally/Stern #FF7300 plasma dot-matrix amber."""
+    f = arr.astype(np.float32)
+    lum = 0.299 * f[:, :, 0] + 0.587 * f[:, :, 1] + 0.114 * f[:, :, 2]
+    out = np.empty_like(arr, dtype=np.uint8)
+    out[:, :, 0] = np.clip(lum * 1.08, 0, 255).astype(np.uint8)
+    out[:, :, 1] = np.clip(lum * 0.46, 0, 255).astype(np.uint8)
+    out[:, :, 2] = np.clip(lum * 0.04, 0, 255).astype(np.uint8)
+    return out
+
+
+def build_card_stream_sync(
+    item_dir: str,
+    width: int = 128,
+    height: int = 32,
+    fps: int = 15,
+    title: str = "",
+    year: str = "",
+    badge: str = "",
+    badge_color: str = "#FF6D00",
+    subtitle: str = "",
+    rating: str = "",
+    synopsis: str = "",
+    poster_png_name: str = "",
+    include_poster: bool = True,
+    include_synopsis: bool = True,
+    text_scroll_speed: str = "normal",
+    include_card_intro: bool = True,
+    card_layout: str = "classic_split",
+    card_theme: str = "tinted",
+    card_font: str = "arcade_pixel",
+    card_accent_color: str = "auto",
+    show_badge: bool = True,
+    show_year: bool = True,
+    show_rating: bool = True,
+    card_hold_s: float = 0.9,
+) -> str:
+    """
+    Render the Phase 1 Info Card directly into a `DMDS` `.rgb565.stream` file
+    (`card_intro_{W}x{H}.rgb565.stream`) for Mode 2B passive UDP receivers and Studio previews.
+    Supports 5 pixel-perfect layouts (with automatic YOKO & TATE reflow), 5 themes (including
+    `amber_dmd` pinball plasma), crisp bitmap / CJK typography, and custom hold/scroll speeds.
+    """
+    if not include_card_intro:
+        return ""
+
+    out_dir = Path(item_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    eff_fps = max(8, min(60, int(fps)))
+
+    layout = str(card_layout or "classic_split").strip().lower()
+    if layout not in ("classic_split", "poster_right", "badge_header", "hero_banner", "minimal_arcade"):
+        layout = "classic_split"
+    theme = str(card_theme or "tinted").strip().lower()
+    if theme not in ("tinted", "pure_black", "neon_border", "poster_wash", "amber_dmd"):
+        theme = "tinted"
+    font_style = str(card_font or "arcade_pixel").strip().lower()
+
+    accent_hex = (
+        card_accent_color
+        if (card_accent_color and str(card_accent_color).strip().lower() not in ("auto", ""))
+        else badge_color
+    )
+    accent = _parse_hex_rgb(accent_hex)
+    if theme == "amber_dmd":
+        accent = (255, 115, 0)
+
+    clean_title = _sanitize_card_text(title) or "SHOWCASE"
+    if layout == "minimal_arcade":
+        clean_title = clean_title.upper()
+    clean_badge = (_sanitize_card_text(badge) or "DMD").upper()[:10] if show_badge else ""
+    clean_year = _sanitize_card_text(year)[:6] if show_year else ""
+    clean_rating = _sanitize_card_text(rating)[:5] if show_rating else ""
+
+    if layout == "minimal_arcade" or not include_synopsis:
+        clean_body = ""
+    else:
+        clean_body = _sanitize_card_text(synopsis or subtitle)
+
+    font_px_size = 9 if height < 48 else (11 if height >= 64 else 10)
+    font = _load_card_font(f"{clean_title} {clean_body}", size=font_px_size, font_style=font_style)
+    if not isinstance(font, ImageFont.FreeTypeFont):
+        clean_title = clean_title.encode("latin-1", "replace").decode("latin-1")
+        clean_badge = clean_badge.encode("latin-1", "replace").decode("latin-1")
+        clean_body = clean_body.encode("latin-1", "replace").decode("latin-1")
+
+    raw_poster_img: Optional[Image.Image] = None
+    if poster_png_name:
+        p_path = out_dir / poster_png_name
+        if p_path.exists():
+            try:
+                with Image.open(p_path) as raw_p:
+                    raw_poster_img = raw_p.convert("RGB")
+            except Exception:
+                raw_poster_img = None
+
+    poster_img: Optional[Image.Image] = raw_poster_img.copy() if (include_poster and raw_poster_img is not None) else None
+    is_tate = height > width
+
+    # Prepare base panel background (`tinted`, `pure_black`, `poster_wash`, `hero_banner`, `amber_dmd`)
+    if theme == "pure_black":
+        bg_tint = (0, 0, 0)
+    elif theme == "amber_dmd":
+        bg_tint = (10, 4, 0)
+    else:
+        bg_tint = (max(4, accent[0] // 14), max(4, accent[1] // 14), max(6, accent[2] // 14))
+
+    base_bg = Image.new("RGB", (width, height), bg_tint)
+    if raw_poster_img is not None and (
+        theme == "poster_wash" or (layout == "hero_banner" and theme != "pure_black" and include_poster)
+    ):
+        fitted_wash = ImageOps.fit(raw_poster_img, (width, height), method=Image.Resampling.BILINEAR)
+        wash_arr = (np.asarray(fitted_wash, dtype=np.uint16) * 22 // 100).astype(np.uint8)
+        base_bg = Image.fromarray(wash_arr, mode="RGB")
+
+    # Compute layout coordinates for YOKO & TATE across all 5 presets
+    header_bar_h = 0
+    sep_line: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None
+    poster_x, poster_y = 0, 0
+
+    if layout == "hero_banner":
+        poster_img = None
+        text_x = 3
+        text_w = max(16, width - 6)
+        if is_tate:
+            top_y = 4
+            title_y = 18
+            body_y = 33
+        elif height >= 64:
+            top_y = 5
+            title_y = 22
+            body_y = 41
+        else:
+            top_y = 1
+            title_y = 11
+            body_y = 21
+    elif layout == "badge_header":
+        header_bar_h = 12 if height >= 64 else 10
+        if poster_img is not None:
+            avail_h = max(14, height - header_bar_h - 2)
+            side = min(avail_h, max(16, width // 3))
+            poster_img = poster_img.resize((side, side), Image.Resampling.BILINEAR)
+            if is_tate:
+                poster_x = (width - side) // 2
+                poster_y = header_bar_h + 2
+                text_x = 2
+                text_w = max(16, width - 4)
+                top_y = -100  # Rendered in top header bar
+                title_y = poster_y + side + 3
+                body_y = title_y + 12
+            else:
+                poster_x = 1
+                poster_y = header_bar_h + max(0, (height - header_bar_h - side) // 2)
+                text_x = side + 4
+                text_w = max(16, width - text_x - 2)
+                top_y = -100
+                title_y = header_bar_h + (6 if height >= 64 else 1)
+                body_y = header_bar_h + (24 if height >= 64 else 11)
+        else:
+            text_x = 3
+            text_w = max(16, width - 6)
+            top_y = -100
+            title_y = header_bar_h + (6 if height >= 64 else 1)
+            body_y = header_bar_h + (24 if height >= 64 else 11)
+    elif is_tate:
+        text_x = 2
+        text_w = max(16, width - 4)
+        if poster_img is not None:
+            max_side = 40 if width >= 64 else 22
+            if poster_img.width > max_side or poster_img.height > max_side:
+                poster_img = poster_img.resize((max_side, max_side), Image.Resampling.BILINEAR)
+            poster_x = (width - poster_img.width) // 2
+            if layout == "poster_right":
+                poster_y = max(2, height - poster_img.height - 2)
+                sep_y = max(1, poster_y - 2)
+                sep_line = ((2, sep_y), (width - 3, sep_y))
+                top_y = 3
+                title_y = 16
+                body_y = 29 if layout != "minimal_arcade" else -100
+            else:
+                poster_y = 2
+                sep_y = poster_y + poster_img.height + 1
+                sep_line = ((2, sep_y), (width - 3, sep_y))
+                top_y = poster_img.height + 4
+                title_y = top_y + 13
+                body_y = title_y + 13 if layout != "minimal_arcade" else -100
+        else:
+            top_y = 4
+            title_y = 18
+            body_y = 32 if layout != "minimal_arcade" else -100
+    else:
+        # Landscape YOKO: `classic_split`, `poster_right`, `minimal_arcade`
+        if poster_img is not None:
+            if width <= 64 and (poster_img.width > 22 or poster_img.height > 22):
+                poster_img = poster_img.resize((22, 22), Image.Resampling.BILINEAR)
+            poster_y = (height - poster_img.height) // 2
+            if layout == "poster_right":
+                poster_x = width - poster_img.width
+                sep_x = max(0, poster_x - 2)
+                sep_line = ((sep_x, 0), (sep_x, height - 1))
+                text_x = 3
+                text_w = max(16, poster_x - 5)
+            else:
+                poster_x = 0
+                sep_x = min(width - 1, poster_img.width + 1)
+                sep_line = ((sep_x, 0), (sep_x, height - 1))
+                text_x = poster_img.width + 3
+                text_w = max(16, width - text_x - 2)
+        else:
+            text_x = 3
+            text_w = max(16, width - 6)
+
+        if layout == "minimal_arcade":
+            top_y = 6 if height >= 64 else 3
+            title_y = 30 if height >= 64 else 17
+            body_y = -100
+        elif height >= 64:
+            top_y = 4
+            title_y = 21
+            body_y = 39
+        else:
+            top_y = 1
+            title_y = 11
+            body_y = 21
+
+    dummy_draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+    if font_style == "arcade_pixel":
+        dummy_draw.fontmode = "1"
+
+    def _measure_w(txt: str) -> int:
+        if not txt:
+            return 0
+        try:
+            bbox = dummy_draw.textbbox((0, 0), txt, font=font)
+            return max(0, int(bbox[2] - bbox[0]))
+        except Exception:
+            return len(txt) * 6
+
+    title_px = _measure_w(clean_title)
+    body_px = _measure_w(clean_body)
+    px_per_sec = _resolve_scroll_px_per_sec(text_scroll_speed)
+    px_per_frame = max(0.75, px_per_sec / float(eff_fps))
+
+    scroll_dist = max(
+        0,
+        (title_px - text_w + 16) if title_px > text_w else 0,
+        (body_px + text_w // 2) if (clean_body and body_y >= 0 and body_px > 0) else 0,
+    )
+    eff_hold_s = max(0.2, min(5.0, float(card_hold_s)))
+    hold_intro_frames = max(3, int(round(eff_fps * eff_hold_s)))
+    hold_outro_frames = max(4, int(round(eff_fps * 0.5)))
+    scroll_frames = int(scroll_dist / px_per_frame) if scroll_dist > 0 else int(eff_fps * 2.0)
+    total_frames = max(
+        int(eff_fps * max(2.2, eff_hold_s + 1.4)),
+        min(int(eff_fps * 16.0), hold_intro_frames + scroll_frames + hold_outro_frames),
+    )
+
+    meta_bits = " ".join(b for b in (clean_year, f"*{clean_rating}" if clean_rating else "") if b)
+    frames_np: List[np.ndarray] = []
+
+    for idx in range(total_frames):
+        canvas = base_bg.copy()
+        draw = ImageDraw.Draw(canvas)
+        if font_style == "arcade_pixel":
+            draw.fontmode = "1"
+
+        scroll_px = 0
+        if idx > hold_intro_frames:
+            scroll_px = int(round((idx - hold_intro_frames) * px_per_frame))
+
+        # Full-width top header bar for `badge_header` layout
+        if header_bar_h > 0:
+            draw.rectangle(
+                [0, 0, width - 1, header_bar_h - 1],
+                fill=(max(12, accent[0] // 3), max(12, accent[1] // 3), max(14, accent[2] // 3)),
+            )
+            hx = 2
+            if clean_badge:
+                bw = min(width - 4, _measure_w(clean_badge) + 6)
+                draw.rectangle([0, 0, bw, header_bar_h - 1], fill=accent)
+                draw.text((3, 0 if header_bar_h <= 10 else 1), clean_badge, fill=(255, 255, 255), font=font)
+                hx = bw + 4
+            if meta_bits:
+                mw = _measure_w(meta_bits)
+                mx = max(hx, width - mw - 3)
+                if mx < width - 4:
+                    draw.text((mx, 0 if header_bar_h <= 10 else 1), meta_bits, fill=(255, 214, 102), font=font)
+
+        # Render text region on a clipped sub-strip preserving any poster_wash background underneath
+        strip = canvas.crop((text_x, 0, text_x + text_w, height))
+        sdraw = ImageDraw.Draw(strip)
+        if font_style == "arcade_pixel":
+            sdraw.fontmode = "1"
+
+        if top_y >= 0:
+            mx_offset = 0
+            if clean_badge:
+                badge_w = min(text_w - 2, _measure_w(clean_badge) + 6)
+                sdraw.rectangle([0, top_y, badge_w, top_y + 9], fill=accent)
+                sdraw.text((3, top_y - 1), clean_badge, fill=(255, 255, 255), font=font)
+                mx_offset = badge_w + 4
+            if meta_bits and mx_offset < text_w - 4:
+                sdraw.text((mx_offset, top_y - 1), meta_bits, fill=(255, 214, 102), font=font)
+
+        # Title line (static if fits, smooth horizontal scroll otherwise)
+        if title_y >= 0 and title_y + 7 <= height:
+            if title_px <= text_w:
+                tx = 0
+            else:
+                max_t_shift = title_px - text_w + 10
+                tx = -min(max_t_shift, scroll_px)
+            sdraw.text((tx, title_y), clean_title, fill=(255, 255, 255), font=font)
+
+        # Localized Synopsis / Subtitle ticker
+        if clean_body and body_y >= 0 and body_y + 7 <= height:
+            if body_px <= text_w:
+                bx = 0
+            else:
+                bx = max(8, text_w // 3) - scroll_px
+            sdraw.text((bx, body_y), clean_body, fill=(190, 225, 255), font=font)
+
+        canvas.paste(strip, (text_x, 0))
+
+        if poster_img is not None:
+            canvas.paste(poster_img, (poster_x, poster_y))
+        if sep_line is not None:
+            draw.line(
+                [sep_line[0], sep_line[1]],
+                fill=accent if layout == "minimal_arcade" else (accent[0] // 2, accent[1] // 2, accent[2] // 2),
+            )
+        if theme == "neon_border":
+            draw.rectangle([0, 0, width - 1, height - 1], outline=accent)
+
+        arr = np.asarray(canvas, dtype=np.uint8)
+        if theme == "amber_dmd":
+            arr = _apply_amber_dmd_palette(arr)
+        frames_np.append(arr)
+
+    out_stream = out_dir / f"card_intro_{width}x{height}.rgb565.stream"
+    write_rgb565_stream(frames_np, out_stream, fps=eff_fps)
+    logger.info(
+        "[CONVERTER] Built server-side Info Card stream '%s' (%dx%d, layout=%s, theme=%s, %d frames @ %dfps)",
+        out_stream.name,
+        width,
+        height,
+        layout,
+        theme,
+        len(frames_np),
+        eff_fps,
+    )
+    return out_stream.name
+
+
+def build_fast_studio_card_preview_sync(
+    cache_root: str,
+    width: int = 128,
+    height: int = 32,
+    fps: int = 20,
+    title: str = "Super Street Fighter II Turbo",
+    year: str = "1994",
+    badge: str = "CPS2",
+    badge_color: str = "#FF6D00",
+    subtitle: str = "Capcom • Arcade Fighting",
+    rating: str = "9.2",
+    synopsis: str = "",
+    poster_url: Optional[str] = None,
+    poster_w: int = 32,
+    poster_h: int = 32,
+    include_card_intro: bool = True,
+    card_layout: str = "classic_split",
+    card_theme: str = "tinted",
+    card_font: str = "arcade_pixel",
+    card_accent_color: str = "auto",
+    include_poster: bool = True,
+    show_badge: bool = True,
+    show_year: bool = True,
+    show_rating: bool = True,
+    include_synopsis: bool = True,
+    text_scroll_speed: str = "normal",
+    card_hold_s: float = 0.9,
+    color_boost: Union[str, bool] = "auto",
+) -> Tuple[bytes, int, int, float]:
+    """
+    Fast (< 100 ms) Card-only `DMDS` preview builder for the WebUI Studio:
+    Caches raw downloaded `poster_url` bytes on disk so subsequent layout/theme/TATE/speed
+    tweaks execute in pure in-memory Pillow/NumPy with zero network or FFmpeg latency.
+    Returns `(dmds_bytes, frame_count, eff_fps, duration_s)`.
+    """
+    eff_fps = max(8, min(60, int(fps)))
+    palette = _parse_hex_rgb(
+        card_accent_color
+        if (card_accent_color and str(card_accent_color).strip().lower() not in ("auto", ""))
+        else badge_color
+    )
+    color_boost_bool = not (
+        color_boost is False
+        or str(color_boost).strip().lower() in ("false", "0", "no", "off", "none")
+    )
+
+    poster_cache_dir = Path(cache_root) / "studio_posters"
+    poster_cache_dir.mkdir(parents=True, exist_ok=True)
+    raw_bytes: Optional[bytes] = None
+    if poster_url and poster_url.startswith(("http://", "https://")):
+        url_key = hashlib.sha1(poster_url.encode("utf-8")).hexdigest()[:20]
+        cached_file = poster_cache_dir / f"{url_key}.bin"
+        if cached_file.exists():
+            try:
+                raw_bytes = cached_file.read_bytes()
+            except Exception:
+                raw_bytes = None
+        else:
+            raw_bytes = _download_bytes(poster_url, timeout=3.5)
+            if raw_bytes:
+                try:
+                    cached_file.write_bytes(raw_bytes)
+                except Exception:
+                    pass
+
+    with tempfile.TemporaryDirectory(prefix="studio_card_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        poster_png_name = f"poster_{poster_w}x{poster_h}.png"
+        poster_img: Optional[Image.Image] = None
+        if raw_bytes:
+            try:
+                with Image.open(io.BytesIO(raw_bytes)) as src_p:
+                    poster_img = _fit_poster_preserving_cover(
+                        src_p, poster_w, poster_h, palette, color_boost=color_boost_bool
+                    )
+            except Exception:
+                poster_img = None
+        if poster_img is None:
+            _generate_fallback_artwork(
+                tmp_path / poster_png_name, poster_w, poster_h, title or "DMD", badge or "DMD", palette
+            )
+        else:
+            poster_img.save(tmp_path / poster_png_name, format="PNG")
+
+        if not include_card_intro:
+            # Render a minimal 1-second dark placeholder frame when Card Intro is toggled OFF in Card-only mode
+            blank = np.zeros((height, width, 3), dtype=np.uint8)
+            out_stream = tmp_path / f"card_disabled_{width}x{height}.rgb565.stream"
+            write_rgb565_stream([blank] * eff_fps, out_stream, fps=eff_fps)
+            return out_stream.read_bytes(), eff_fps, eff_fps, 1.0
+
+        stream_name = build_card_stream_sync(
+            item_dir=str(tmp_path),
+            width=width,
+            height=height,
+            fps=eff_fps,
+            title=title,
+            year=year,
+            badge=badge,
+            badge_color=badge_color,
+            subtitle=subtitle,
+            rating=rating,
+            synopsis=synopsis,
+            poster_png_name=poster_png_name,
+            include_poster=include_poster,
+            include_synopsis=include_synopsis,
+            text_scroll_speed=text_scroll_speed,
+            include_card_intro=True,
+            card_layout=card_layout,
+            card_theme=card_theme,
+            card_font=card_font,
+            card_accent_color=card_accent_color,
+            show_badge=show_badge,
+            show_year=show_year,
+            show_rating=show_rating,
+            card_hold_s=card_hold_s,
+        )
+        stream_path = tmp_path / stream_name
+        dmds_bytes = stream_path.read_bytes()
+        frame_bytes = max(2, width * height * 2)
+        n_frames = max(1, (len(dmds_bytes) - 16) // frame_bytes)
+        return dmds_bytes, n_frames, eff_fps, round(n_frames / float(eff_fps), 2)
 
 
 def build_video_assets_worker_task(

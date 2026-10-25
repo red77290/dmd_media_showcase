@@ -207,8 +207,18 @@ def _extract_node_text(node: Any) -> str:
 
 
 def _region_priority_order(short_lang: str) -> List[str]:
-    """Return ordered region preference list for a target language code (`fr`, `en`, `es`, `de`, `it`)."""
-    base = [short_lang, "eu", "wor", "ss", "us", "jp", "br", "au", "kr"]
+    """Return ordered region preference list for a target language code (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)."""
+    lang_code = (short_lang or "fr").strip().lower()
+    if lang_code == "ja":
+        base = ["jp", "ja", "wor", "ss", "us", "eu", "kr", "br", "au"]
+    elif lang_code == "pt":
+        base = ["pt", "br", "eu", "wor", "ss", "us", "jp", "au", "kr"]
+    elif lang_code == "es":
+        base = ["es", "sp", "eu", "wor", "ss", "us", "jp", "br", "au", "kr"]
+    elif lang_code == "en":
+        base = ["en", "us", "uk", "wor", "eu", "ss", "au", "jp", "br", "kr"]
+    else:
+        base = [lang_code, "eu", "wor", "ss", "us", "jp", "br", "au", "kr"]
     return list(dict.fromkeys(r for r in base if r))
 
 
@@ -709,8 +719,10 @@ class ScreenScraperAdapter(IScraperSource):
                         synopsis_by_lang[s_lang] = cleaned
                     if not first_synopsis:
                         first_synopsis = cleaned
+        alt_lang = "jp" if short_lang == "ja" else ("sp" if short_lang == "es" else "")
         synopsis = (
             synopsis_by_lang.get(short_lang)
+            or (synopsis_by_lang.get(alt_lang) if alt_lang else None)
             or synopsis_by_lang.get("en")
             or synopsis_by_lang.get("fr")
             or first_synopsis
@@ -1014,33 +1026,139 @@ class ScreenScraperAdapter(IScraperSource):
 
         return results[:count]
 
-    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        if not self.is_configured() or not query.strip():
-            return None
+    async def search_candidates(
+        self,
+        query: str,
+        criteria: FilterCriteria,
+        limit: int = 8,
+    ) -> List[MediaCandidate]:
+        q_clean = (query or "").strip()
+        if not self.is_configured() or not q_clean or limit <= 0:
+            return []
+
+        target_limit = max(1, int(limit))
         creds = self._credentials()
-        params: Dict[str, str] = {
-            "softname": "dmd-media-showcase",
-            "output": "json",
-            "recherche": query.strip(),
-        }
-        if creds["devid"]:
-            params["devid"] = creds["devid"]
-            params["devpassword"] = creds["devpass"]
-        if creds["user"]:
-            params["ssid"] = creds["user"]
-            params["sspassword"] = creds["pass"]
+        valid_systems = [
+            resolve_canonical_system(s)
+            for s in (criteria.systems or [])
+            if s and s.strip().lower() != "all" and resolve_canonical_system(s) in SYSTEM_METADATA
+        ]
+
+        results: List[MediaCandidate] = []
+        seen_keys: Set[str] = set()
+
+        def _base_params(system_id: Optional[str] = None) -> Dict[str, str]:
+            p: Dict[str, str] = {
+                "softname": "dmd-media-showcase",
+                "output": "json",
+                "recherche": q_clean,
+            }
+            if system_id:
+                p["systemeid"] = system_id
+            if creds["devid"]:
+                p["devid"] = creds["devid"]
+                p["devpassword"] = creds["devpass"]
+            if creds["user"]:
+                p["ssid"] = creds["user"]
+                p["sspassword"] = creds["pass"]
+            return p
+
+        def _resolve_hint_sys(jeu: Dict[str, Any], default_sys: str) -> str:
+            if default_sys:
+                return default_sys
+            if not valid_systems:
+                return ""
+            sys_node = jeu.get("systeme")
+            if isinstance(sys_node, dict):
+                sid = str(sys_node.get("id") or "").strip()
+                stxt = str(sys_node.get("text") or sys_node.get("nom") or "").strip().lower()
+            else:
+                sid = ""
+                stxt = str(sys_node or "").strip().lower()
+            for strict_sys in ("cps1", "cps2", "cps3", "neogeo"):
+                if strict_sys in valid_systems:
+                    tokens = _STRICT_HARDWARE_SS_IDS[strict_sys]
+                    if sid == tokens[0] or (sid in ("", "75") and any(t in stxt for t in tokens[1:])):
+                        return strict_sys
+            return ""
+
+        def _ingest_jeux(jeux: List[Dict[str, Any]], default_sys: str) -> None:
+            # Stable sort: keep ScreenScraper relevance order while prioritizing parent ROMs (cloneof == 0)
+            ordered = sorted(
+                jeux,
+                key=lambda j: 0 if _extract_node_text(j.get("cloneof")) in ("", "0") else 1,
+            )
+            for jeu in ordered:
+                if len(results) >= target_limit:
+                    break
+                raw_gid = str(jeu.get("id") or "").strip()
+                if raw_gid and f"games_ss_{raw_gid}" in seen_keys:
+                    continue
+                clone_parent = _extract_node_text(jeu.get("cloneof"))
+                if clone_parent not in ("", "0") and f"games_ss_{clone_parent}" in seen_keys:
+                    continue
+
+                hint_sys = _resolve_hint_sys(jeu, default_sys)
+                cand = self._parse_game_node(jeu, hint_sys, criteria.lang, criteria=criteria)
+                if not cand:
+                    continue
+
+                cand_sys = str((cand.extra_meta or {}).get("system") or hint_sys or "arcade")
+                fp_key = build_game_fingerprint(cand_sys, cand.title)
+                dedup_keys = {cand.id}
+                if fp_key:
+                    dedup_keys.add(fp_key)
+                if clone_parent not in ("", "0"):
+                    dedup_keys.add(f"games_ss_{clone_parent}")
+
+                if dedup_keys & seen_keys:
+                    continue
+                seen_keys.update(dedup_keys)
+                results.append(cand)
+
         try:
             async with create_async_http_client(timeout=6.0) as client:
-                resp = await client.get(
-                    "https://api.screenscraper.fr/api2/jeuRecherche.php",
-                    params=params,
-                )
-                if resp.status_code == 200:
-                    jeux = self._extract_jeux_from_response(resp)
-                    for jeu in jeux:
-                        cand = self._parse_game_node(jeu, "", lang)
-                        if cand:
-                            return cand
-        except Exception:
-            pass
-        return None
+                if len(valid_systems) == 1:
+                    only_sys = valid_systems[0]
+                    ss_id = str(SYSTEM_METADATA[only_sys]["ss_id"])
+                    resp = await client.get(
+                        "https://api.screenscraper.fr/api2/jeuRecherche.php",
+                        params=_base_params(system_id=ss_id),
+                    )
+                    if resp.status_code == 200:
+                        _ingest_jeux(self._extract_jeux_from_response(resp), only_sys)
+                else:
+                    resp = await client.get(
+                        "https://api.screenscraper.fr/api2/jeuRecherche.php",
+                        params=_base_params(),
+                    )
+                    if resp.status_code == 200:
+                        _ingest_jeux(self._extract_jeux_from_response(resp), "")
+
+                    if valid_systems and len(results) < target_limit:
+                        queried_ss_ids: Set[str] = set()
+                        for sys_key in valid_systems:
+                            if len(results) >= target_limit or len(queried_ss_ids) >= 3:
+                                break
+                            ss_id = str(SYSTEM_METADATA[sys_key]["ss_id"])
+                            if ss_id in queried_ss_ids:
+                                continue
+                            queried_ss_ids.add(ss_id)
+                            sub_resp = await client.get(
+                                "https://api.screenscraper.fr/api2/jeuRecherche.php",
+                                params=_base_params(system_id=ss_id),
+                            )
+                            if sub_resp.status_code == 200:
+                                _ingest_jeux(self._extract_jeux_from_response(sub_resp), sys_key)
+        except Exception as exc:
+            logger.debug("[ScreenScraper] Search error for '%s': %s", q_clean, exc)
+
+        return results[:target_limit]
+
+    async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
+        cands = await self.search_candidates(
+            query=query,
+            criteria=FilterCriteria(domain="games", systems=[], genres=[], decades=[], lang=lang),
+            limit=1,
+        )
+        return cands[0] if cands else None

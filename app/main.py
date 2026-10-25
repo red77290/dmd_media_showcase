@@ -15,6 +15,7 @@ from app.portable_env import enforce_hermetic_environment
 # Lock down portable environment before any media/subprocess imports
 enforce_hermetic_environment()
 
+import json
 import logging
 import sys
 import time
@@ -35,12 +36,13 @@ from app.application.consume_once_orchestrator import (
     consume_once_orchestrator,
     strip_mqtt_gen_suffix,
 )
+from app.application.source_chain_service import source_chain_service
 from app.asyncapi_spec import ASYNCAPI_YAML
 from app.config import settings
-from app.domain.entities import PanelGeometry
+from app.domain.entities import MediaCandidate, PanelGeometry
 from app.infrastructure.mdns_responder import showcase_mdns_responder
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
-from app.infrastructure.persistence import seen_repository, server_config_store
+from app.infrastructure.persistence import dmd_profile_store, seen_repository, server_config_store
 from app.infrastructure.scrapers.http_utils import create_async_http_client
 from app.infrastructure.scrapers.referential_store import (
     anilist_referential_strategy,
@@ -54,12 +56,21 @@ from app.infrastructure.web_admin import ADMIN_DASHBOARD_HTML
 from app.models import (
     AdminServerConfigPayload,
     BatchStatusResponse,
+    ClientControlRequest,
+    ClientHelloPayload,
+    DmdProfilePayload,
     DomainType,
     HealthResponse,
     MediaShowcaseItem,
     OnDemandRequest,
+    QueueAddRequest,
+    SearchCandidateModel,
+    SearchCandidatesResponse,
+    SearchRequestPayload,
     SessionRegisterRequest,
     SessionRegisterResponse,
+    StudioCardPreviewRequest,
+    StudioFullPreviewRequest,
 )
 from app.scheduler.worker_pool import batch_manager
 
@@ -79,7 +90,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Discovery",
-        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` DDD scraper sources.",
+        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` metadata scraper sources.",
     },
     {
         "name": "Consume-Once Protocol",
@@ -90,8 +101,16 @@ OPENAPI_TAGS = [
         "description": "Proactive session/batch polling endpoints (`/session`, `/batch`, `/random`) for HTTP polling clients.",
     },
     {
+        "name": "DMD Profiles & Passive Mode",
+        "description": "Persistent DMD profiles (`dmd_profiles.json`), server-managed playlists (Modes 2A & 2B), `hello` announcements, and live playback controls.",
+    },
+    {
         "name": "On-Demand & Voice Assistant",
-        "description": "Priority queue endpoint (`POST /on-demand`) for voice assistants and webhooks.",
+        "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants.",
+    },
+    {
+        "name": "Card Studio & Simulator",
+        "description": "Interactive Mode 2B Card Customizer, Full Sequence Builder, HUB75 LED Simulator (`DMDS` binary streams), and zero-retranscode promotion (`preview_id`) into active DMD queues.",
     },
     {
         "name": "Assets & Streaming",
@@ -122,12 +141,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     batch_manager.start()
     await showcase_mqtt_gateway.start()
+    await consume_once_orchestrator.start_server_managed_profiles()
     if settings.mdns_enabled:
         showcase_mdns_responder.hostname = settings.mdns_hostname
         await showcase_mdns_responder.start(port=settings.port)
     try:
         yield
     finally:
+        await consume_once_orchestrator.stop_server_managed_profiles()
         await showcase_mdns_responder.stop()
         await showcase_mqtt_gateway.stop()
         await batch_manager.stop()
@@ -135,12 +156,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="DMD Media Showcase Server API",
-    summary="DDD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 DMDs",
+    summary="DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
     description=(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
         "### Architecture Highlights\n"
-        "- **DDD Ports & Adapters (`IScraperSource`)**: 2 dedicated sources per domain (`Primary` + `Fallback`).\n"
+        "- **Resilient Scraper Chains (`Primary` + `Fallback`)**: 2 dedicated metadata & video sources per domain.\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
         "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming "
         "(`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at "
@@ -240,7 +261,7 @@ def _normalized_seen_stats() -> Dict[str, int]:
 @app.get("/health", response_model=HealthResponse, include_in_schema=False)
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["System & Admin"])
 async def get_health() -> HealthResponse:
-    """Return server health, worker pool saturation, MQTT broker mode, and DDD scraper chains."""
+    """Return server health, worker pool saturation, MQTT broker mode, and active scraper chains."""
     batch_manager.start()
     srv_cfg = server_config_store.get_all()
     mqtt_port = (
@@ -388,6 +409,7 @@ async def get_admin_config() -> Dict[str, Any]:
         "providers_summary": scraper_registry.describe_active_chains(),
         "seen_history": _normalized_seen_stats(),
         "clients": clients,
+        "dmd_profiles": dmd_profile_store.list_profiles(),
     }
 
 
@@ -527,19 +549,360 @@ async def sync_live_referentials() -> Dict[str, Any]:
 @app.get("/api/v1/{domain}/referential", tags=["Discovery"])
 async def get_domain_filters(
     domain: DomainType,
-    lang: str = Query(default="fr", description="Preferred UI language (`fr`, `en`, `es`, `de`, `it`, `ja`)"),
+    lang: str = Query(default="fr", description="Preferred UI/content language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)"),
 ) -> Dict[str, object]:
-    """Return consolidated localized filter categories, relational system capabilities, genres, decades, and DDD sources."""
+    """Return consolidated localized filter categories, relational system capabilities, genres, decades, and metadata sources."""
     filters = scraper_registry.available_filters(domain=domain, lang=lang)
     return {
         "domain": domain,
-        "languages": ["fr", "en", "es", "de", "it", "ja"],
+        "languages": ["fr", "en", "es", "de", "it", "pt", "ja"],
         "text_scroll_speeds": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "slow", "normal", "fast", "turbo"],
         "video_modes": ["auto_action", "panorama", "center_crop"],
         "color_boost_modes": ["auto", "pixel_art", "anime", "cinema"],
         "video_types": ["any", "opening", "ending", "pv", "trailer"],
+        "card_layouts": ["classic_split", "poster_right", "badge_header", "hero_banner", "minimal_arcade"],
+        "card_themes": ["tinted", "pure_black", "neon_border", "poster_wash", "amber_dmd"],
+        "card_fonts": ["arcade_pixel", "clean_sans"],
         **filters,
     }
+
+
+def _candidate_to_search_model(cand: MediaCandidate, fallback_lang: str) -> SearchCandidateModel:
+    return SearchCandidateModel(
+        candidate_id=cand.id,
+        id=cand.id,
+        domain=cand.domain,
+        title=cand.title,
+        year=cand.year,
+        badge=cand.badge,
+        badge_color=cand.badge_color,
+        subtitle=cand.subtitle,
+        rating=cand.rating,
+        synopsis=cand.synopsis,
+        lang=cand.lang or fallback_lang,
+        source_id=cand.source_id,
+        poster_url=cand.resolved_jacket_url(),
+        marquee_url=cand.marquee_url or cand.backdrop_url,
+        snapshot_count=len(cand.snapshot_urls),
+        has_video=bool(cand.video_url or cand.youtube_url),
+    )
+
+
+async def _execute_domain_search(
+    domain: DomainType,
+    query: str,
+    lang: str,
+    systems: list[str],
+    genres: list[str],
+    decades: list[str],
+    video_type: str,
+    limit: int,
+) -> SearchCandidatesResponse:
+    criteria = consume_once_orchestrator._parse_domain_criteria(
+        domain,
+        {
+            "lang": lang,
+            "systems": systems,
+            "genres": genres,
+            "decades": decades,
+            "video_type": video_type,
+        },
+        top_lang=lang,
+    )
+    found = await source_chain_service.search_candidates(
+        criteria=criteria,
+        query=query,
+        limit=limit,
+    )
+    items = [_candidate_to_search_model(c, criteria.lang) for c in found]
+    return SearchCandidatesResponse(
+        domain=domain,
+        query=query,
+        lang=criteria.lang,
+        count=len(items),
+        items=items,
+    )
+
+
+@app.get(
+    "/api/v1/{domain}/search",
+    response_model=SearchCandidatesResponse,
+    tags=["Discovery", "On-Demand & Voice Assistant"],
+)
+async def search_domain_candidates_get(
+    domain: DomainType,
+    q: str = Query(default="", description="Optional text query (title, ROM name, franchise). Empty returns filtered browse candidates."),
+    query: Optional[str] = Query(default=None, description="Optional alias for `q`."),
+    lang: str = Query(default="fr", description="Content broadcast language (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)."),
+    systems: Optional[str] = Query(default=None, description="Comma-separated canonical systems (for `games`)."),
+    genres: Optional[str] = Query(default=None, description="Comma-separated canonical genres."),
+    decades: Optional[str] = Query(default=None, description="Comma-separated decades (e.g. `1990s,2000s`)."),
+    video_type: str = Query(default="any", description="Preferred video type (`any`, `opening`, `ending`, `pv`, `trailer`)."),
+    limit: int = Query(default=8, ge=1, le=20, description="Maximum number of candidates to return (`1..20`)."),
+) -> SearchCandidatesResponse:
+    """
+    Search or browse multiple localized media candidates honoring `domain`, `lang`, `systems`, `genres`, `decades`,
+    and optional text `q`. Returned candidates are staged in memory so selecting any `candidate_id` via
+    `POST /api/v1/clients/{dmd_id}/queue` starts transcoding immediately without re-scraping.
+    """
+    eff_q = (query if query is not None else q).strip()
+    sys_list = [s.strip() for s in systems.split(",") if s.strip()] if systems else []
+    gen_list = [g.strip() for g in genres.split(",") if g.strip()] if genres else []
+    dec_list = [d.strip() for d in decades.split(",") if d.strip()] if decades else []
+    return await _execute_domain_search(
+        domain=domain,
+        query=eff_q,
+        lang=lang,
+        systems=sys_list,
+        genres=gen_list,
+        decades=dec_list,
+        video_type=video_type,
+        limit=limit,
+    )
+
+
+@app.post(
+    "/api/v1/{domain}/search",
+    response_model=SearchCandidatesResponse,
+    tags=["Discovery", "On-Demand & Voice Assistant"],
+)
+async def search_domain_candidates_post(
+    domain: DomainType,
+    payload: SearchRequestPayload,
+) -> SearchCandidatesResponse:
+    """POST variant of `/api/v1/{domain}/search` accepting JSON filter arrays and content `lang`."""
+    eff_q = (payload.query if payload.query is not None else payload.q).strip()
+    return await _execute_domain_search(
+        domain=domain,
+        query=eff_q,
+        lang=payload.lang,
+        systems=list(payload.systems),
+        genres=list(payload.genres),
+        decades=list(payload.decades),
+        video_type=payload.video_type,
+        limit=payload.limit,
+    )
+
+
+@app.get("/api/v1/clients", tags=["DMD Profiles & Passive Mode"])
+async def list_dmd_clients() -> Dict[str, Any]:
+    """
+    Return the consolidated list of all connected DMD clients, persisted `dmd_profiles.json` profiles,
+    their active operating mode (`client` vs `server` 2A/2B), broadcast `lang`, and On-Demand queue depth.
+    """
+    admin_view = await get_admin_config()
+    return {
+        "clients": admin_view["clients"],
+        "profiles": dmd_profile_store.list_profiles(),
+        "queues": {
+            dmd_id: consume_once_orchestrator.list_queue(dmd_id)
+            for dmd_id in sorted(consume_once_orchestrator.priority_queues.keys())
+            if consume_once_orchestrator.list_queue(dmd_id)
+        },
+    }
+
+
+@app.post("/api/v1/clients/hello", tags=["DMD Profiles & Passive Mode"])
+async def announce_passive_dmd_client(
+    payload: ClientHelloPayload,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Lightweight HTTP registration/heartbeat endpoint for passive ESP32/RPi receivers without MQTT.
+    Auto-creates or updates hardware geometry and LAN IP in `dmd_profiles.json` without overwriting playlists.
+    """
+    peer_ip = request.client.host if request.client else ""
+    prof = await consume_once_orchestrator.handle_client_hello(
+        payload.dmd_id,
+        payload.model_dump(),
+        detected_ip=peer_ip,
+    )
+    return {
+        "status": "ok",
+        "dmd_id": payload.dmd_id,
+        "profile": prof,
+        "queue": consume_once_orchestrator.list_queue(payload.dmd_id),
+    }
+
+
+@app.get("/api/v1/clients/{dmd_id}/profile", tags=["DMD Profiles & Passive Mode"])
+async def get_dmd_client_profile(dmd_id: str) -> Dict[str, Any]:
+    """Retrieve the persisted `dmd_profiles.json` configuration for `dmd_id` (or synthesize a live template if connected)."""
+    prof = dmd_profile_store.get_profile(dmd_id)
+    if prof is not None:
+        return {"persisted": True, "profile": prof}
+    # Synthesize a pre-filled template if `dmd_id` is currently connected in Mode 1
+    live_matches = [
+        (dom, geom, crit)
+        for (cid, dom), (geom, crit) in consume_once_orchestrator.client_configs.items()
+        if cid == dmd_id
+    ]
+    if not live_matches:
+        raise HTTPException(status_code=404, detail=f"DMD profile '{dmd_id}' not found.")
+    _dom, geom, crit = live_matches[0]
+    from app.infrastructure.persistence.dmd_profile_store import normalize_dmd_profile
+
+    template = normalize_dmd_profile(
+        dmd_id,
+        {
+            "dmd_id": dmd_id,
+            "display_name": dmd_id,
+            "config_source": "client",
+            "supports_local_card": True,
+            "always_stream_udp": False,
+            "width": geom.width,
+            "height": geom.height,
+            "udp_ip": consume_once_orchestrator.client_udp_ips.get(dmd_id, ""),
+            "udp_port": consume_once_orchestrator.client_udp_ports.get(dmd_id, 4210),
+            "lang": crit.lang,
+        },
+    )
+    return {"persisted": False, "profile": template}
+
+
+@app.put("/api/v1/clients/{dmd_id}/profile", tags=["DMD Profiles & Passive Mode"])
+async def put_dmd_client_profile(
+    dmd_id: str,
+    payload: DmdProfilePayload,
+) -> Dict[str, Any]:
+    """Create or update a DMD profile and multi-domain playlist in `./data/dmd_profiles.json` and hot-apply immediately."""
+    raw = payload.model_dump(exclude_none=True)
+    raw["dmd_id"] = dmd_id
+    saved = await consume_once_orchestrator.upsert_dmd_profile(dmd_id, raw)
+    return {"status": "saved", "dmd_id": dmd_id, "profile": saved}
+
+
+@app.delete("/api/v1/clients/{dmd_id}/profile", tags=["DMD Profiles & Passive Mode"])
+async def delete_dmd_client_profile(dmd_id: str) -> Dict[str, Any]:
+    """Delete a persisted DMD profile from `./data/dmd_profiles.json` and stop any associated passive loop."""
+    deleted = await consume_once_orchestrator.delete_dmd_profile(dmd_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"DMD profile '{dmd_id}' not found.")
+    return {"status": "deleted", "dmd_id": dmd_id}
+
+
+@app.get("/api/v1/clients/{dmd_id}/queue", tags=["On-Demand & Voice Assistant"])
+async def get_dmd_priority_queue(dmd_id: str) -> Dict[str, Any]:
+    """Inspect the active On-Demand priority queue (`queued`, `preparing`, `ready`, `playing`) for `dmd_id`."""
+    items = consume_once_orchestrator.list_queue(dmd_id)
+    return {"dmd_id": dmd_id, "count": len(items), "items": items}
+
+
+@app.post("/api/v1/clients/{dmd_id}/queue", tags=["On-Demand & Voice Assistant"])
+async def add_to_dmd_priority_queue(
+    dmd_id: str,
+    req: QueueAddRequest,
+) -> Dict[str, Any]:
+    """
+    Add a media item to `dmd_id`'s On-Demand priority queue (`mode='enqueue_next'`) or play it immediately
+    (`mode='play_now'`). Supports both:
+    - Exact selection via `candidate_id` from `/api/v1/{domain}/search`, and
+    - Direct 1-shot lookup via `{domain, query, systems, lang, mark_seen}` (ready for `FrontendSync` & webhooks).
+    """
+    try:
+        item = await consume_once_orchestrator.enqueue_on_demand(dmd_id, req)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "status": "queued",
+        "dmd_id": dmd_id,
+        "item": item,
+        "queue": consume_once_orchestrator.list_queue(dmd_id),
+    }
+
+
+@app.delete("/api/v1/clients/{dmd_id}/queue/{queue_id}", tags=["On-Demand & Voice Assistant"])
+async def remove_from_dmd_priority_queue(
+    dmd_id: str,
+    queue_id: str,
+) -> Dict[str, Any]:
+    """Remove an item from `dmd_id`'s On-Demand priority queue and purge any unconsumed temporary files."""
+    removed = await consume_once_orchestrator.remove_queue_item(dmd_id, queue_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Queue item '{queue_id}' not found on '{dmd_id}'.")
+    return {
+        "status": "removed",
+        "dmd_id": dmd_id,
+        "queue_id": queue_id,
+        "queue": consume_once_orchestrator.list_queue(dmd_id),
+    }
+
+
+@app.post("/api/v1/clients/{dmd_id}/control", tags=["DMD Profiles & Passive Mode"])
+async def control_dmd_client(
+    dmd_id: str,
+    req: ClientControlRequest,
+) -> Dict[str, Any]:
+    """Send a real-time playback control (`skip`, `pause`, `resume`, `stop`) to `dmd_id`."""
+    res = await consume_once_orchestrator.control_client(dmd_id, req.action)
+    return {"status": "ok", **res}
+
+
+@app.post(
+    "/api/v1/studio/card-preview",
+    tags=["Card Studio & Simulator"],
+    responses={
+        200: {
+            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Fast (< 100 ms) binary `DMDS` RGB565LE stream of the customized Mode 2B Info Card.",
+        }
+    },
+)
+async def build_studio_card_preview_endpoint(
+    payload: StudioCardPreviewRequest,
+) -> Response:
+    """
+    Render an ultra-fast (`< 100 ms`) binary `DMDS` (`<4sBBHHHHH` + RGB565LE frames) preview of the
+    Mode 2B Info Card honoring `width` x `height` (YOKO & TATE), `card_layout`, `card_theme`, `card_font`,
+    `text_scroll_speed`, and `card_hold_s`. Runs outside the heavy video transcoding semaphore and
+    caches poster downloads on disk so UI slider tweaks respond instantaneously.
+    """
+    dmds_bytes, chapters = await consume_once_orchestrator.build_studio_card_preview(payload)
+    return Response(
+        content=dmds_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(dmds_bytes)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DMD-Chapters": json.dumps(chapters),
+            "Access-Control-Expose-Headers": "X-DMD-Chapters",
+        },
+    )
+
+
+@app.post(
+    "/api/v1/studio/full-preview",
+    tags=["Card Studio & Simulator"],
+    responses={
+        200: {
+            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Full customized binary `DMDS` stream (`Card + Panoramas + Snapshots + Video`) with `X-DMD-Preview-Id` and `X-DMD-Chapters` headers.",
+        }
+    },
+)
+async def build_studio_full_preview_endpoint(
+    payload: StudioFullPreviewRequest,
+) -> Response:
+    """
+    Assemble the complete Mode 2B `DMDS` sequence (`Card Intro + Jacket/Marquee Panoramas + 0..5 Snapshots + Video`)
+    for interactive playback in the WebUI HUB75 LED Simulator.
+
+    Returns `X-DMD-Preview-Id` (`sim_...`) in response headers so clicking **Add Simulation to Active DMD Queue**
+    (`POST /api/v1/clients/{dmd_id}/queue` with `preview_id`) promotes the rendered stream into the live DMD queue
+    in `0 ms` with zero re-transcoding when panel dimensions match.
+    """
+    dmds_bytes, preview_id, chapters = await consume_once_orchestrator.build_studio_full_preview(payload)
+    return Response(
+        content=dmds_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(dmds_bytes)),
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DMD-Preview-Id": preview_id,
+            "X-DMD-Chapters": json.dumps(chapters),
+            "Access-Control-Expose-Headers": "X-DMD-Preview-Id, X-DMD-Chapters",
+        },
+    )
 
 
 @app.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])

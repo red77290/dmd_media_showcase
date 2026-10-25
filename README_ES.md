@@ -26,6 +26,9 @@
 - **Protocolo Consume-Once Estricto y Pipelining `N+1` en Segundo Plano**:
   - Registra cada título mostrado en `./data/seen_history.json` (cero repeticiones hasta agotar el catálogo).
   - Prepara el elemento `N+1` en segundo plano en cuanto el elemento `N` muestra su ficha (`start_card`) y elimina del disco los archivos consumidos al recibir `stream_eof`.
+- **Perfiles ESP32 Pasivos Gestionados en el Servidor (`dmd_profiles.json`) y Cola Bajo Demanda**:
+  - Soporta tanto DMDs multimotores completos (`ArcadeMatrix`) **como** receptores pasivos UDP `:4210` ultramínimos (~180 líneas C++, cero UI, cero PSRAM en `ESP32_STD`, `supports_local_card: false` donde incluso la Ficha Informativa de la Fase 1 se renderiza en el stream RGB565) configurados en `./data/dmd_profiles.json`.
+  - Búsqueda de catálogo localizada (`GET /api/v1/{domain}/search`), cola prioritaria por DMD (`enqueue_next` / `play_now`), controles en vivo `Skip` / `Pause` / `Resume` / `Stop` e integración **`FrontendSync`** (`mark_seen: false` para Batocera / RetroBat / LaunchBox / Playnite).
 - **Impulsado por `dmd_gif_converter`**: Encuadre de vídeo ortogonal (`auto_action` IA Let Me Handle It, `panorama` barrido vertical, `center_crop`) y colorimetría LED HUB75 (`auto` Smart Color Boost IA, `pixel_art`, `anime`, `cinema`), reescalado Lanczos + `unsharp` y panoramas verticales fluidos (`Carátula`, `Marquee`, `Capturas`) en todas las geometrías Horizontal (`128x32`, `128x64`, `256x64`), Cuadrada (`64x64`) y TATE (`64x128`, `32x128`).
 
 ---
@@ -58,15 +61,16 @@ services:
       - "1883:1883"
       - "5353:5353/udp"
     volumes:
-      - ./data:/app/data
+      - ${DMD_DATA_PATH:-./data}:/app/data
     tmpfs:
       - /tmp/dmd_media_showcase_cache:size=256m,mode=1777
 ```
 </details>
 
-#### B. Comando `docker run` Directo
+#### B. Comando `docker run` Directo (Bind Mount del Host o Volumen con Nombre en Portainer)
 
 ```bash
+# Opción B1: Montaje de carpeta del host (./data — inmune a `docker compose down -v`)
 docker run -d \
   --name dmd-media-showcase \
   --restart unless-stopped \
@@ -76,7 +80,20 @@ docker run -d \
   -v ./data:/app/data \
   --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
   ghcr.io/red77290/dmd_media_showcase:latest
+
+# Opción B2: Volumen con nombre de Docker (`dmd_showcase_data` — ideal para Portainer / despliegues autónomos)
+docker run -d \
+  --name dmd-media-showcase \
+  --restart unless-stopped \
+  -p 8890:8890 \
+  -p 1883:1883 \
+  -p 5353:5353/udp \
+  -v dmd_showcase_data:/app/data \
+  --tmpfs /tmp/dmd_media_showcase_cache:size=256m,mode=1777 \
+  ghcr.io/red77290/dmd_media_showcase:latest
 ```
+
+> **Persistencia de Datos (`/app/data`)**: Almacena `server_config.json`, `dmd_profiles.json` (perfiles DMD gestionados en el servidor e idioma de emisión), `seen_history.json` y `referentials/`. El montaje `${DMD_DATA_PATH:-./data}:/app/data` apunta a un directorio del host (personalizable mediante `DMD_DATA_PATH` en `.env`) **protegido frente a `docker compose down -v`**, mientras que `-v dmd_showcase_data:/app/data` utiliza un volumen gestionado por Docker ideal para Portainer.
 
 - **Panel Web de Administración**: `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`)
 - **Swagger UI Interactivo**: `http://dmdmediashowcase.local:8890/docs`
@@ -107,7 +124,8 @@ curl -s "http://localhost:8890/api/v1/games/filters?lang=es" | jq '.systems[0], 
 | Documento | 🇬🇧 English | 🇫🇷 Français | 🇪🇸 Español |
 | :--- | :--- | :--- | :--- |
 | **Guía de Inicio Rápido (QuickStart)** | [docs/QUICKSTART.md](docs/QUICKSTART.md) | [docs/QUICKSTART_FR.md](docs/QUICKSTART_FR.md) | [docs/QUICKSTART_ES.md](docs/QUICKSTART_ES.md) |
-| **Arquitectura DDD y Pipeline de Streaming** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE_FR.md](docs/ARCHITECTURE_FR.md) | [docs/ARCHITECTURE_ES.md](docs/ARCHITECTURE_ES.md) |
+| **Guía de Integración ESP32 y Receptor Pasivo** | [docs/ESP32_INTEGRATION.md](docs/ESP32_INTEGRATION.md) | [docs/ESP32_INTEGRATION_FR.md](docs/ESP32_INTEGRATION_FR.md) | [docs/ESP32_INTEGRATION_ES.md](docs/ESP32_INTEGRATION_ES.md) |
+| **Arquitectura del Sistema y Pipeline de Streaming** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE_FR.md](docs/ARCHITECTURE_FR.md) | [docs/ARCHITECTURE_ES.md](docs/ARCHITECTURE_ES.md) |
 | **Guía para Desarrolladores y Scrapers** | [docs/DEVELOPER.md](docs/DEVELOPER.md) | [docs/DEVELOPER_FR.md](docs/DEVELOPER_FR.md) | [docs/DEVELOPER_ES.md](docs/DEVELOPER_ES.md) |
 | **Especificación REST OpenAPI 3.1** | [docs/openapi.yaml](docs/openapi.yaml) / [docs/openapi.json](docs/openapi.json) | — | — |
 | **Especificación MQTT y UDP AsyncAPI 2.6** | [docs/asyncapi.yaml](docs/asyncapi.yaml) | — | — |
