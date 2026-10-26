@@ -1,0 +1,177 @@
+"""
+Video Clip Extraction & `dmd_gif_converter` Transcoding Worker (`app/infrastructure/rendering/video_pipeline.py`).
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+from typing import Dict, Optional, Tuple, Union
+
+from app.infrastructure.rendering.imaging_primitives import (
+    apply_worker_nice,
+    resolve_active_downloader,
+    resolve_framing_and_color_params,
+)
+from app.infrastructure.scrapers.youtube_resolver import (
+    extract_hd_youtube_clip_ytdlp,
+    slice_hd_remote_video_ffmpeg,
+)
+from dmd_gif_converter import DmdClipConfig, DmdMediaProcessor
+
+logger = logging.getLogger("dmd_showcase.converter")
+
+
+def build_video_assets_worker_task(
+    item_dir: str,
+    title: str,
+    badge: str,
+    palette: Tuple[int, int, int],
+    video_url: Optional[str],
+    youtube_url: Optional[str] = None,
+    width: int = 128,
+    height: int = 32,
+    fps: int = 15,
+    max_duration_s: float = 8.0,
+    video_mode: str = "auto_action",
+    color_boost: Union[str, bool] = "auto",
+    nice_inc: int = 10,
+    ffmpeg_threads: int = 1,
+    ytdlp_max_filesize_mb: int = 60,
+) -> Dict[str, object]:
+    """
+    Top-level worker function executed in `ProcessPoolExecutor` / `ThreadPoolExecutor`:
+    1. Slices remote `.webm`/`.m4v`/Archive.org/AnimeThemes/iTunes streams over HTTP via FFmpeg.
+    2. Otherwise downloads `video_url` directly, or extracts `youtube_url` via `yt-dlp --force-ipv4`.
+    3. Returns `has_video=False` cleanly if no real video exists (never generates synthetic placeholders).
+    """
+    apply_worker_nice(nice_inc, ffmpeg_threads=ffmpeg_threads)
+    download_fn = resolve_active_downloader()
+    out_dir = Path(item_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    src_video_path = out_dir / "src_trailer.mp4"
+
+    have_real_video = False
+    if video_url:
+        if (
+            video_url.endswith((".webm", ".m4v"))
+            or "animethemes.moe" in video_url
+            or "itunes.apple.com" in video_url
+            or "mzstatic.com" in video_url
+            or "archive.org/download/" in video_url
+        ):
+            if "archive.org/download/" in video_url:
+                offset_s = 4.0
+            elif (
+                "itunes.apple.com" in video_url
+                or "mzstatic.com" in video_url
+                or video_url.endswith(".m4v")
+            ):
+                offset_s = 8.0
+            else:
+                offset_s = 12.0
+            have_real_video = slice_hd_remote_video_ffmpeg(
+                video_url=video_url,
+                out_mp4=src_video_path,
+                max_duration_s=max_duration_s,
+                start_offset_s=offset_s,
+                ffmpeg_threads=ffmpeg_threads,
+            )
+        if not have_real_video:
+            vid_bytes = download_fn(video_url, timeout=12.0)
+            if vid_bytes and len(vid_bytes) > 8192:
+                src_video_path.write_bytes(vid_bytes)
+                have_real_video = True
+
+    if not have_real_video and youtube_url:
+        have_real_video = extract_hd_youtube_clip_ytdlp(
+            video_page_url=youtube_url,
+            out_mp4=src_video_path,
+            max_duration_s=max_duration_s,
+            max_filesize_mb=ytdlp_max_filesize_mb,
+        )
+
+    if not have_real_video:
+        src_video_path.unlink(missing_ok=True)
+        logger.info(
+            "[CONVERTER] No video available for '%s' (video_url=%s, youtube_url=%s) -> skipping video phase",
+            title,
+            video_url,
+            youtube_url,
+        )
+        return {
+            "has_video": False,
+            "frame_count": 0,
+            "fps": fps,
+            "duration_s": 0.0,
+            "quality_score": 0,
+            "gif_file": "",
+            "stream_file": "",
+        }
+
+    use_auto_action, scroll_on_video, use_smart_color_boost, preset_mode = (
+        resolve_framing_and_color_params(video_mode=video_mode, color_boost=color_boost)
+    )
+
+    clip_cfg = DmdClipConfig(
+        width=width,
+        height=height,
+        fps=fps,
+        max_duration_s=max_duration_s,
+        mode=preset_mode,
+        use_ai_moments=True,
+        use_auto_action=use_auto_action,
+        use_smart_color_boost=use_smart_color_boost,
+        scroll_enabled=scroll_on_video,
+    )
+
+    processor = DmdMediaProcessor()
+    stem = f"video_{width}x{height}"
+    t0 = time.monotonic()
+    try:
+        res = processor.process_video_trailer(
+            input_video=src_video_path,
+            output_dir=out_dir,
+            config=clip_cfg,
+            export_gif=True,
+            export_rgb565_stream=True,
+            stem=stem,
+        )
+        logger.info(
+            "[CONVERTER] Encoded real video for '%s' -> %dx%d @ %dfps | frames=%d (%.1fs) | score=%d | took %.2fs",
+            title,
+            width,
+            height,
+            res.fps,
+            res.frame_count,
+            res.duration_s,
+            res.quality_score,
+            time.monotonic() - t0,
+        )
+        return {
+            "has_video": res.frame_count > 0,
+            "frame_count": res.frame_count,
+            "fps": res.fps,
+            "duration_s": res.duration_s,
+            "quality_score": res.quality_score,
+            "gif_file": f"{stem}.gif",
+            "stream_file": f"{stem}.rgb565.stream",
+        }
+    except Exception as exc:
+        logger.warning(
+            "[CONVERTER] Video conversion failed for '%s' (%s) -> skipping video phase",
+            title,
+            exc,
+        )
+        return {
+            "has_video": False,
+            "frame_count": 0,
+            "fps": fps,
+            "duration_s": 0.0,
+            "quality_score": 0,
+            "gif_file": "",
+            "stream_file": "",
+        }
+    finally:
+        src_video_path.unlink(missing_ok=True)

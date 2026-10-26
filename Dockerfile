@@ -29,6 +29,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY docs/asyncapi.yaml ./docs/asyncapi.yaml
 COPY scripts/compile_prod_vault.py ./scripts/compile_prod_vault.py
 
 # Resolved commit SHA of dmd_gif_converter@latest (injected by CI to invalidate layer cache on new releases)
