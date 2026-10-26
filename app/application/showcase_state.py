@@ -59,6 +59,10 @@ class QueuedOnDemandEntry:
     mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
     mark_seen: bool = True
     from_studio_sim: bool = False
+    cache_hit: bool = False
+    raw_query: str = ""
+    cache_key: str = ""
+    render_signature: str = ""
     status: Literal["queued", "preparing", "ready", "playing"] = "queued"
     created_at: float = field(default_factory=time.time)
     package: Optional[PreparedShowcasePackage] = None
@@ -78,6 +82,7 @@ class QueuedOnDemandEntry:
             "mode": self.mode,
             "mark_seen": self.mark_seen,
             "from_studio_sim": self.from_studio_sim,
+            "cache_hit": self.cache_hit,
             "card_layout": self.criteria.card_layout,
             "card_theme": self.criteria.card_theme,
             "status": self.status,

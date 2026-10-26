@@ -42,7 +42,12 @@ from app.infrastructure.http.runtime_reloader import apply_live_log_level
 from app.infrastructure.http.security_middleware import optional_api_key_security_middleware
 from app.infrastructure.mdns_responder import showcase_mdns_responder
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
-from app.infrastructure.persistence import dmd_profile_store, seen_repository, server_config_store
+from app.infrastructure.persistence import (
+    dmd_profile_store,
+    on_demand_cache_store,
+    seen_repository,
+    server_config_store,
+)
 from app.infrastructure.scrapers.http_utils import create_async_http_client
 from app.infrastructure.scrapers.registry import scraper_registry
 from app.infrastructure.web.dashboard_loader import STATIC_WEB_DIR
@@ -58,6 +63,7 @@ __all__ = [
     "consume_once_orchestrator",
     "create_async_http_client",
     "dmd_profile_store",
+    "on_demand_cache_store",
     "release_update_checker",
     "run",
     "scraper_registry",

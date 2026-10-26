@@ -53,6 +53,8 @@ USER_PERSISTED_KEYS = (
     "session_ttl_seconds",
     "batch_ttl_seconds",
     "cache_dir",
+    "on_demand_cache_enabled",
+    "on_demand_cache_max_mb",
     "log_level",
     "mdns_enabled",
     "mdns_hostname",
@@ -76,6 +78,8 @@ RUNTIME_SETTINGS_KEYS = (
     "session_ttl_seconds",
     "batch_ttl_seconds",
     "cache_dir",
+    "on_demand_cache_enabled",
+    "on_demand_cache_max_mb",
     "log_level",
     "mdns_enabled",
     "mdns_hostname",
@@ -234,6 +238,12 @@ class ServerConfigStore:
                 "session_ttl_seconds": int(_eff("session_ttl_seconds", settings.session_ttl_seconds)),
                 "batch_ttl_seconds": int(_eff("batch_ttl_seconds", settings.batch_ttl_seconds)),
                 "cache_dir": str(_eff("cache_dir", str(settings.cache_dir))),
+                "on_demand_cache_enabled": bool(
+                    _eff("on_demand_cache_enabled", settings.on_demand_cache_enabled)
+                ),
+                "on_demand_cache_max_mb": int(
+                    _eff("on_demand_cache_max_mb", settings.on_demand_cache_max_mb)
+                ),
                 "log_level": str(_eff("log_level", settings.log_level)).upper(),
                 "mdns_enabled": bool(_eff("mdns_enabled", settings.mdns_enabled)),
                 "mdns_hostname": str(_eff("mdns_hostname", settings.mdns_hostname)),
@@ -317,6 +327,8 @@ class ServerConfigStore:
                 "session_ttl_seconds": effective["session_ttl_seconds"],
                 "batch_ttl_seconds": effective["batch_ttl_seconds"],
                 "cache_dir": effective["cache_dir"],
+                "on_demand_cache_enabled": effective["on_demand_cache_enabled"],
+                "on_demand_cache_max_mb": effective["on_demand_cache_max_mb"],
                 "log_level": effective["log_level"],
                 "mdns_enabled": effective["mdns_enabled"],
                 "mdns_hostname": effective["mdns_hostname"],

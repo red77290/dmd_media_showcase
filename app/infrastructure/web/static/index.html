@@ -372,14 +372,27 @@
             <input type="number" id="batch_ttl_seconds" min="30" max="7200" step="30" value="1800" />
           </div>
         </div>
-        <div class="form-grid-2" style="margin-top:14px">
-          <div class="field span-2">
+        <div class="form-grid-3" style="margin-top:14px">
+          <div class="field">
             <label data-i18n="lbl_cache_dir">Transcoded Media Cache Directory (cache_dir)</label>
             <input type="text" id="cache_dir" placeholder="/tmp/dmd_showcase_cache" />
           </div>
+          <div class="field">
+            <label data-i18n="lbl_ondemand_cache_enabled">Persistent On-Demand Conversion Cache</label>
+            <select id="on_demand_cache_enabled">
+              <option value="false" data-i18n="opt_ondemand_cache_off">Disabled (Ephemeral Consume-Once)</option>
+              <option value="true" data-i18n="opt_ondemand_cache_on">Enabled (Instant 0ms Hit by System + Title)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_ondemand_cache_max_mb">Persistent On-Demand Cache Quota (MiB — 0 = Unlimited)</label>
+            <input type="number" id="on_demand_cache_max_mb" min="0" max="1048576" step="100" value="0" />
+          </div>
         </div>
-        <div class="form-actions">
+        <div class="form-actions" style="flex-wrap:wrap;gap:10px">
           <button onclick="saveConfig()" data-i18n="btn_save_live">Save &amp; Apply in Real Time</button>
+          <button type="button" class="secondary" onclick="evictOnDemandCache()" data-i18n="btn_evict_ondemand_cache">🗑 Evict On-Demand Cache</button>
+          <span id="ondemand-cache-stats-pill" class="pill info">0 items • 0.0 MB</span>
           <span id="status-msg-runtime" class="toast"></span>
         </div>
       </div>

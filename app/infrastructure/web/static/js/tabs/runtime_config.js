@@ -60,6 +60,8 @@ export function hydrateConfigInputs(cfg, force) {
     session_ttl_seconds: String(cfg.session_ttl_seconds != null ? cfg.session_ttl_seconds : 3600),
     batch_ttl_seconds: String(cfg.batch_ttl_seconds != null ? cfg.batch_ttl_seconds : 1800),
     cache_dir: cfg.cache_dir || '/tmp/dmd_showcase_cache',
+    on_demand_cache_enabled: String(Boolean(cfg.on_demand_cache_enabled)),
+    on_demand_cache_max_mb: String(cfg.on_demand_cache_max_mb != null ? cfg.on_demand_cache_max_mb : 0),
     log_level: String(cfg.log_level || 'INFO').toUpperCase(),
     mdns_enabled: String(cfg.mdns_enabled !== false),
     mdns_hostname: cfg.mdns_hostname || 'dmdmediashowcase',
@@ -87,6 +89,7 @@ export async function loadHealthAndConfig(forceHydrate = false) {
       const d = await cfgRes.value.json();
       uiState.lastDmdProfiles = Array.isArray(d.dmd_profiles) ? d.dmd_profiles : [];
       hydrateConfigInputs(d.config || {}, forceHydrate);
+      renderOnDemandCacheStats(d.on_demand_cache || {});
       renderVaultStatus(d.vault_status || {});
       renderProviders(d.providers || {});
       renderClients(d.clients || []);
@@ -141,6 +144,8 @@ export async function saveConfig() {
     session_ttl_seconds: clampIntInput('session_ttl_seconds', 60, 86400, 3600),
     batch_ttl_seconds: clampIntInput('batch_ttl_seconds', 30, 7200, 1800),
     cache_dir: document.getElementById('cache_dir').value.trim() || '/tmp/dmd_showcase_cache',
+    on_demand_cache_enabled: document.getElementById('on_demand_cache_enabled')?.value === 'true',
+    on_demand_cache_max_mb: clampIntInput('on_demand_cache_max_mb', 0, 1048576, 0),
     log_level: document.getElementById('log_level').value,
     mdns_enabled: document.getElementById('mdns_enabled').value === 'true',
     mdns_hostname: document.getElementById('mdns_hostname').value.trim() || 'dmdmediashowcase',
@@ -200,6 +205,37 @@ export async function resetHistory(domain) {
   const q = domain ? `?domain=${encodeURIComponent(domain)}` : '';
   await apiFetch('/api/v1/admin/history/reset' + q, {method: 'POST'});
   loadHealthAndConfig(false);
+}
+
+export function renderOnDemandCacheStats(stats) {
+  const pill = document.getElementById('ondemand-cache-stats-pill');
+  if (!pill || !stats) return;
+  const count = Number(stats.entry_count || 0);
+  const mb = Number(stats.total_mb || 0).toFixed(1);
+  const enabled = Boolean(stats.enabled);
+  pill.className = enabled ? 'pill ok' : 'pill info';
+  pill.textContent = t('pill_ondemand_cache_stats', {n: count, mb});
+}
+
+export async function evictOnDemandCache() {
+  try {
+    const r = await apiFetch('/api/v1/cache/on-demand/evict', {method: 'POST'});
+    if (!r.ok) {
+      showConfigToast('⚠️ HTTP ' + r.status, true);
+      return;
+    }
+    const res = await r.json();
+    showConfigToast(
+      t('msg_ondemand_cache_evicted', {
+        n: res.evicted_count || 0,
+        mb: Number(res.freed_mb || 0).toFixed(1)
+      }),
+      false
+    );
+    loadHealthAndConfig(false);
+  } catch (err) {
+    showConfigToast('⚠️ ' + (err.message || String(err)), true);
+  }
 }
 
 export function refreshAll() {
