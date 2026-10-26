@@ -241,33 +241,69 @@ class DomainSourceChainService:
             count=count,
         )
 
-        # Only reset domain seen_history when a probe pass without persisted_seen proves
-        # that the catalog is genuinely available and exhausted (never wipe history on
-        # transient HTTP timeouts, rate limits, or empty filters!).
+        # Guard against false catalog-exhaustion resets when stochastic single-page or
+        # single-system sampling happens to land on already-seen items:
+        # 1. Retry once with `persisted_seen` still enforced so random samplers get a second draw.
+        # 2. If still empty, probe `max(count, 3)` items without `persisted_seen`:
+        #    - If ANY returned candidate is genuinely unseen, return those unseen items WITHOUT
+        #      resetting `seen_history`.
+        #    - ONLY reset `seen_history` when the probe returns candidates and 100% of them
+        #      are already present in `persisted_seen` / `persisted_seen_fps`.
         if not results and persisted_seen:
+            results = await self._collect_from_chain(
+                chain=chain,
+                criteria=criteria,
+                working_seen=set(working_seen),
+                count=count,
+            )
+
+        if not results and persisted_seen:
+            persisted_fps: Set[str] = (
+                self.history_repo.get_seen_fingerprints(domain)
+                if hasattr(self.history_repo, "get_seen_fingerprints")
+                else set()
+            )
             probe_seen: Set[str] = set(extra_exclude_ids or set())
             if extra_exclude_ids and hasattr(self.history_repo, "get_seen_fingerprints"):
                 for ex_id in extra_exclude_ids:
                     probe_seen.update(
                         self.history_repo.get_seen_fingerprints(domain, include_item_ids={ex_id})
-                        - self.history_repo.get_seen_fingerprints(domain)
+                        - persisted_fps
                     )
             probe_results = await self._collect_from_chain(
                 chain=chain,
                 criteria=criteria,
                 working_seen=probe_seen,
-                count=count,
+                count=max(count, 3),
             )
             if probe_results:
-                logger.info(
-                    "[SOURCE CHAIN] Catalog exhausted for domain '%s' (%d seen), resetting seen_history",
-                    domain,
-                    len(persisted_seen),
-                )
-                self.history_repo.reset(domain)
+                genuinely_unseen: List[MediaCandidate] = []
                 for cand in probe_results:
-                    self._stage_candidate_fp(domain, cand)
-                results = probe_results
+                    cand_fp = (
+                        build_game_fingerprint(
+                            str((cand.extra_meta or {}).get("system") or ""),
+                            cand.title,
+                        )
+                        if domain == "games"
+                        else ""
+                    )
+                    if cand.id not in persisted_seen and not (cand_fp and cand_fp in persisted_fps):
+                        genuinely_unseen.append(cand)
+
+                if genuinely_unseen:
+                    for cand in genuinely_unseen[:count]:
+                        self._stage_candidate_fp(domain, cand)
+                    results = genuinely_unseen[:count]
+                else:
+                    logger.info(
+                        "[SOURCE CHAIN] Catalog exhausted for domain '%s' (%d seen), resetting seen_history",
+                        domain,
+                        len(persisted_seen),
+                    )
+                    self.history_repo.reset(domain)
+                    for cand in probe_results[:count]:
+                        self._stage_candidate_fp(domain, cand)
+                    results = probe_results[:count]
 
         final_results = results[:count]
         for cand in final_results:

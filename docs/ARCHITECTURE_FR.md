@@ -97,6 +97,8 @@ Au lieu de figer des catégories en dur dans le firmware ou le WebUI du DMD :
 
 ## 4. Cinématique MQTT Temps Réel, Pipelining `N+1` & Protocole UDP `DMDF`
 
+> **Résilience aux Redémarrages Conteneur (`RetainedClientConfigStore`) :** Chaque configuration Mode 1 retenue (`dmd_showcase/clients/{dmd_id}/config`, `retain=True`) publiée sur le Broker MQTT embarqué (`:1883`) est persistée de manière atomique dans `./data/mqtt_retained_clients.json`. Au redémarrage du serveur ou du conteneur Docker, `ShowcaseMqttGateway` restaure automatiquement les 4 rotations DMD dans `EmbeddedMqttBroker.retained` et relance immédiatement le pré-chauffage `N / N+1` en tâche de fond (tout en conservant `online=False` jusqu'au prochain paquet live du DMD).
+
 ```mermaid
 sequenceDiagram
     participant DMD as Client DMD (ESP32 / RPi)
