@@ -12,6 +12,30 @@
 
 ---
 
+## 🎬 Demostración en Vivo sobre Matriz LED HUB75 e Interfaz Web
+
+### 🕹️ Secuencias Reales en Matriz LED HUB75 (Generadas en Vivo mediante la API Showcase)
+
+Cada título ensambla automáticamente una emisión RGB565 multicapítulo adaptada a la resolución exacta de su panel:
+**`1. Ficha Informativa Animada`** (carátula, insignia de sistema, año, puntuación y texto deslizante) $\to$ **`2. Panoramas Verticales de Carátula y Marquee`** $\to$ **`3. Barrido de Captura In-Game`** $\to$ **`4. Vídeo de Gameplay / Tráiler Encuadrado por IA`**.
+
+| **Garou: Mark of the Wolves (`Neo Geo`)** | **Super Street Fighter II X / Turbo (`CPS2`)** | **Metal Slug X (`Neo Geo`)** |
+| :---: | :---: | :---: |
+| ![Garou: Mark of the Wolves Demo DMD HUB75](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 Demo DMD HUB75](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo Demo DMD HUB75](demo/dmd_metal_slug_x_neogeo.gif) |
+| `Classic Split` • `Tinted` • `auto_action` + `pixel_art` | `Badge Header` • `Neon Border` • `auto_action` + `pixel_art` | `Classic Split` • `Poster Wash` • `auto_action` + `pixel_art` |
+
+### 🖥️ Centro de Control Web Multilingüe (`ES` / `EN` / `FR`)
+
+| **1. Vista General en Vivo y Matrices HUB75 Conectadas** | **2. Estudio Card y Simulador LED HUB75 en Tiempo Real** |
+| :---: | :---: |
+| [![Vista General y Matrices DMD Conectadas](demo/ui_overview_live.png)](demo/ui_overview_live.png) | [![Estudio Card Modo 2B y Simulador HUB75](demo/ui_card_studio.png)](demo/ui_card_studio.png) |
+| Telemetría MQTT (`:1883`) + UDP en vivo, ranuras precalculadas `Ready (N)` y `Standby (N+1)` en los 4 dominios, historial Consume-Once y fuentes `[Primaria, Respaldo]`. | Perfiles por dominio (`Games`, `Movies`, `Series`, `Anime`), 5 diseños pixel-art (YOKO y TATE), simulador LED SMD en vivo e inyección en `0 ms` en la cola activa. |
+| **3. Búsqueda Multicatálogo y Cola Prioritaria On-Demand** | **4. Perfiles DMD Pasivos y Selector Visual de Etiquetas** |
+| [![Búsqueda en Catálogo y Cola On-Demand](demo/ui_ondemand_search.png)](demo/ui_ondemand_search.png) | [![Rotación DMD Pasiva y Etiquetas Multiselección](demo/ui_passive_rotation.png)](demo/ui_passive_rotation.png) |
+| Busque Juegos, Películas, Series y Anime en el idioma deseado y envíelos mediante `Queue Next` (`FIFO`) o emisión inmediata `Play Now`. | Configure listas Modo 2A/2B con etiquetas visuales multiselección (Sistemas, Géneros y Décadas) y acceso directo a cada perfil del Estudio. |
+
+---
+
 ## ✨ Características Principales
 
 - **4 Dominios Showcase (`games`, `movies`, `series`, `anime`)**:
@@ -30,6 +54,7 @@
   - Soporta tanto DMDs multimotores completos (`ArcadeMatrix`) **como** receptores pasivos UDP `:4210` ultramínimos (~180 líneas C++, cero UI, cero PSRAM en `ESP32_STD`, `supports_local_card: false` donde incluso la Ficha Informativa de la Fase 1 se renderiza en el stream RGB565) configurados en `./data/dmd_profiles.json`.
   - Búsqueda de catálogo localizada (`GET /api/v1/{domain}/search`), cola prioritaria por DMD (`enqueue_next` / `play_now`), controles en vivo `Skip` / `Pause` / `Resume` / `Stop` e integración **`FrontendSync`** (`mark_seen: false` para Batocera / RetroBat / LaunchBox / Playnite).
 - **Impulsado por `dmd_gif_converter`**: Encuadre de vídeo ortogonal (`auto_action` IA Let Me Handle It, `panorama` barrido vertical, `center_crop`) y colorimetría LED HUB75 (`auto` Smart Color Boost IA, `pixel_art`, `anime`, `cinema`), reescalado Lanczos + `unsharp` y panoramas verticales fluidos (`Carátula`, `Marquee`, `Capturas`) en todas las geometrías Horizontal (`128x32`, `128x64`, `256x64`), Cuadrada (`64x64`) y TATE (`64x128`, `32x128`).
+- **Notificación de Nuevas Versiones según el Sistema Operativo**: Comprobación integrada ligera (`GET /api/v1/system/update-check`) que muestra un aviso discreto en la Web UI cuando existe una nueva versión oficial en GitHub Releases para su entorno activo (`macOS .dmg`, `Windows .zip`, `Linux .tar.gz` o `Docker`) con enlace directo a la versión y al instalador correspondiente.
 
 ---
 

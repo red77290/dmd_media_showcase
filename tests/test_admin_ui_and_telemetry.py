@@ -37,6 +37,14 @@ from app.application.consume_once_orchestrator import (
     consume_once_orchestrator,
     strip_mqtt_gen_suffix,
 )
+from app.application.update_checker import (
+    ReleaseUpdateChecker,
+    detect_runtime_platform,
+    is_newer_release,
+    parse_semver_key,
+    release_update_checker,
+    select_os_release_asset,
+)
 from app.config import settings
 from app.domain.entities import FilterCriteria, MediaCandidate
 from app.infrastructure.mqtt.embedded_broker import EmbeddedMqttBroker, _ClientSession
@@ -937,6 +945,168 @@ def test_mode1_readonly_mqtt_inspector_and_studio_save_guard_in_webui():
         "summarizeLiveClientDomainBadges(",
     ):
         assert required_token in html, f"Missing Mode 1 read-only inspector token in WebUI: {required_token}"
+
+
+def test_update_checker_semver_and_os_asset_matching():
+    """Verify SemVer parsing, SNAPSHOT exclusion, runtime OS detection, and OS installer matching."""
+    assert parse_semver_key("1.0.0") == (1, 0, 0, 1)
+    assert parse_semver_key("v1.2.3") == (1, 2, 3, 1)
+    assert parse_semver_key("1.0.0.dev0") == (1, 0, 0, 0)
+    assert parse_semver_key("v1.1.0-SNAPSHOT") == (1, 1, 0, 0)
+    assert parse_semver_key("invalid") is None
+
+    assert is_newer_release("1.0.0", "v1.1.0") is True
+    assert is_newer_release("1.0.0", "1.0.0") is False
+    assert is_newer_release("1.2.0", "v1.1.9") is False
+    assert is_newer_release("1.0.0", "v1.2.0-SNAPSHOT") is False
+    assert is_newer_release("1.0.0.dev0", "v1.0.0") is True
+
+    assert detect_runtime_platform(sys_platform="darwin", machine="arm64", is_docker=False) == (
+        "macos",
+        "arm64",
+        "macOS (Apple Silicon)",
+    )
+    assert detect_runtime_platform(sys_platform="win32", machine="AMD64", is_docker=False) == (
+        "windows",
+        "x64",
+        "Windows (x64)",
+    )
+    assert detect_runtime_platform(sys_platform="linux", machine="x86_64", is_docker=False) == (
+        "linux",
+        "x64",
+        "Linux (x64)",
+    )
+    assert detect_runtime_platform(sys_platform="linux", machine="aarch64", is_docker=True) == (
+        "docker",
+        "arm64",
+        "Docker (arm64)",
+    )
+
+    sample_assets = [
+        {
+            "name": "DMD_Media_Showcase_macOS_arm64.dmg",
+            "browser_download_url": "https://github.com/red77290/dmd_media_showcase/releases/download/v1.2.0/DMD_Media_Showcase_macOS_arm64.dmg",
+        },
+        {
+            "name": "DMD_Media_Showcase_macOS_x64.dmg",
+            "browser_download_url": "https://github.com/red77290/dmd_media_showcase/releases/download/v1.2.0/DMD_Media_Showcase_macOS_x64.dmg",
+        },
+        {
+            "name": "DMD_Media_Showcase_Windows_x64.zip",
+            "browser_download_url": "https://github.com/red77290/dmd_media_showcase/releases/download/v1.2.0/DMD_Media_Showcase_Windows_x64.zip",
+        },
+        {
+            "name": "DMD_Media_Showcase_Linux_x64.tar.gz",
+            "browser_download_url": "https://github.com/red77290/dmd_media_showcase/releases/download/v1.2.0/DMD_Media_Showcase_Linux_x64.tar.gz",
+        },
+        {
+            "name": "evil_untrusted.dmg",
+            "browser_download_url": "https://evil.example.com/evil_untrusted.dmg",
+        },
+    ]
+
+    assert select_os_release_asset(sample_assets, "macos", "arm64")[0] == "DMD_Media_Showcase_macOS_arm64.dmg"
+    assert select_os_release_asset(sample_assets, "macos", "x64")[0] == "DMD_Media_Showcase_macOS_x64.dmg"
+    assert select_os_release_asset(sample_assets, "windows", "x64")[0] == "DMD_Media_Showcase_Windows_x64.zip"
+    assert select_os_release_asset(sample_assets, "linux", "x64")[0] == "DMD_Media_Showcase_Linux_x64.tar.gz"
+    assert select_os_release_asset(sample_assets, "docker", "arm64") == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_update_check_endpoint_and_webui_banner(monkeypatch):
+    """Verify `/api/v1/system/update-check` caching, 404/offline resilience, and WebUI notification banner."""
+    html = ADMIN_DASHBOARD_HTML
+    for token in (
+        'id="update-banner"',
+        'id="update-banner-asset-link"',
+        'id="update-banner-release-link"',
+        "checkSystemUpdate(",
+        "renderUpdateBanner(",
+        "dismissUpdateBanner(",
+    ):
+        assert token in html, f"Missing update notification banner token in WebUI: {token}"
+
+    calls = {"count": 0, "mode": "newer"}
+
+    class _DummyResponse:
+        def __init__(self, status_code: int, body: dict):
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class _DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str):
+            calls["count"] += 1
+            if calls["mode"] == "404":
+                return _DummyResponse(404, {"message": "Not Found"})
+            if calls["mode"] == "offline":
+                raise RuntimeError("Simulated offline network")
+            return _DummyResponse(
+                200,
+                {
+                    "tag_name": "v2.1.0",
+                    "draft": False,
+                    "prerelease": False,
+                    "html_url": "https://github.com/red77290/dmd_media_showcase/releases/tag/v2.1.0",
+                    "published_at": "2026-10-26T08:00:00Z",
+                    "assets": [
+                        {
+                            "name": "DMD_Media_Showcase_macOS_arm64.dmg",
+                            "browser_download_url": "https://github.com/red77290/dmd_media_showcase/releases/download/v2.1.0/DMD_Media_Showcase_macOS_arm64.dmg",
+                        }
+                    ],
+                },
+            )
+
+    monkeypatch.setattr(
+        "app.application.update_checker.detect_runtime_platform",
+        lambda: ("macos", "arm64", "macOS (Apple Silicon)"),
+    )
+    checker = ReleaseUpdateChecker(
+        current_version="1.0.0",
+        client_factory=lambda **kwargs: _DummyClient(),
+    )
+    monkeypatch.setattr("app.main.release_update_checker", checker)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        r1 = await client.get("/api/v1/system/update-check")
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["status"] == "update_available"
+        assert d1["update_available"] is True
+        assert d1["latest_version"] == "2.1.0"
+        assert d1["runtime_os"] == "macos"
+        assert d1["asset_name"] == "DMD_Media_Showcase_macOS_arm64.dmg"
+        assert calls["count"] == 1
+
+        # Cached second call does not hit GitHub again
+        r2 = await client.get("/api/v1/system/update-check")
+        assert r2.status_code == 200
+        assert calls["count"] == 1
+
+        # 404 (no stable release yet) handled cleanly
+        calls["mode"] = "404"
+        r3 = await client.get("/api/v1/system/update-check?force=true")
+        assert r3.status_code == 200
+        assert r3.json()["status"] == "no_release_yet"
+        assert r3.json()["update_available"] is False
+
+        # Offline network error handled cleanly without 500
+        calls["mode"] = "offline"
+        r4 = await client.get("/api/v1/system/update-check?force=true")
+        assert r4.status_code == 200
+        assert r4.json()["status"] == "unreachable"
+        assert r4.json()["update_available"] is False
+
 
 
 

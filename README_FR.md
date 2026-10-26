@@ -12,6 +12,30 @@
 
 ---
 
+## 🎬 Aperçu Réel sur Matrice LED HUB75 & Interface Web
+
+### 🕹️ Séquences Réelles sur Matrice LED HUB75 (Générées en Direct via l'API Showcase)
+
+Chaque œuvre assemble automatiquement une diffusion RGB565 multi-chapitres adaptée à la géométrie exacte de votre panneau :
+**`1. Fiche Info Animée`** (jaquette, badge système, année, note & défilement fluide) $\to$ **`2. Panoramas Verticaux Jaquette & Marquee`** $\to$ **`3. Balayage Capture In-Game`** $\to$ **`4. Vidéo Gameplay / Trailer Cadrée par IA`**.
+
+| **Garou: Mark of the Wolves (`Neo Geo`)** | **Super Street Fighter II X / Turbo (`CPS2`)** | **Metal Slug X (`Neo Geo`)** |
+| :---: | :---: | :---: |
+| ![Garou: Mark of the Wolves Démo DMD HUB75](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 Démo DMD HUB75](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo Démo DMD HUB75](demo/dmd_metal_slug_x_neogeo.gif) |
+| `Classic Split` • `Tinted` • `auto_action` + `pixel_art` | `Badge Header` • `Neon Border` • `auto_action` + `pixel_art` | `Classic Split` • `Poster Wash` • `auto_action` + `pixel_art` |
+
+### 🖥️ Centre de Contrôle Web Multilingue (`FR` / `EN` / `ES`)
+
+| **1. Vue d'Ensemble Live & Matrices HUB75 Connectées** | **2. Studio Card & Simulateur LED HUB75 Temps Réel** |
+| :---: | :---: |
+| [![Vue d'ensemble et matrices DMD connectées](demo/ui_overview_live.png)](demo/ui_overview_live.png) | [![Studio Card Mode 2B et Simulateur HUB75](demo/ui_card_studio.png)](demo/ui_card_studio.png) |
+| Télémétrie MQTT (`:1883`) + UDP en direct, slots pré-calculés `Ready (N)` & `Standby (N+1)` sur les 4 domaines, historique Consume-Once et sources `[Primaire, Fallback]`. | Profils dédiés par domaine (`Games`, `Movies`, `Series`, `Anime`), 5 mises en page pixel-art (YOKO & TATE), simulateur LED SMD temps réel et injection `0 ms` en file active. |
+| **3. Recherche Multi-Catalogues & File Prioritaire On-Demand** | **4. Profils DMD Passifs & Sélecteur Visuel de Tags** |
+| [![Recherche Catalogue et File On-Demand](demo/ui_ondemand_search.png)](demo/ui_ondemand_search.png) | [![Rotation DMD Passive et Tags Multi-Sélection](demo/ui_passive_rotation.png)](demo/ui_passive_rotation.png) |
+| Recherche localisée (Jeux, Films, Séries, Anime) dans la langue souhaitée et envoi immédiat via `Queue Next` (`FIFO`) ou préemption directe `Play Now`. | Configuration visuelle de rotations Mode 2A/2B par puces multi-sélection (Systèmes, Genres & Décennies) avec raccourci direct vers chaque profil Studio. |
+
+---
+
 ## ✨ Fonctionnalités Clés
 
 - **4 Domaines Showcase (`games`, `movies`, `series`, `anime`)** :
@@ -30,6 +54,7 @@
   - Supporte à la fois les DMD multi-moteurs complets (`ArcadeMatrix`) **et** les récepteurs passifs UDP `:4210` ultra-légers (~180 lignes C++, zéro UI, zéro PSRAM sur `ESP32_STD`, `supports_local_card: false` où même la Fiche Info de Phase 1 est rendue dans le flux RGB565) configurés centralement dans `./data/dmd_profiles.json`.
   - Recherche catalogue localisée (`GET /api/v1/{domain}/search`), file prioritaire par DMD (`enqueue_next` / `play_now`), contrôles temps réel `Skip` / `Pause` / `Resume` / `Stop` et intégration **`FrontendSync`** (`mark_seen: false` pour Batocera / RetroBat / LaunchBox / Playnite).
 - **Propulsé par `dmd_gif_converter`** : Cadrage vidéo orthogonal (`auto_action` IA Let Me Handle It, `panorama` balayage haut-bas, `center_crop`) et colorimétrie LED HUB75 (`auto` Smart Color Boost IA, `pixel_art`, `anime`, `cinema`), redimensionnement Lanczos + `unsharp`, et panoramas verticaux fluides (`Jaquette`, `Marquee`, `Captures`) sur toutes les géométries Paysage (`128x32`, `128x64`, `256x64`), Carré (`64x64`) et TATE (`64x128`, `32x128`).
+- **Notification de Mise à Jour Sensible à l'OS** : Vérification légère intégrée (`GET /api/v1/system/update-check`) affichant une bannière discrète dans la Web UI dès qu'une nouvelle release GitHub officielle est disponible pour votre environnement actif (`macOS .dmg`, `Windows .zip`, `Linux .tar.gz` ou `Docker`) avec lien direct vers la release et l'installeur correspondant.
 
 ---
 

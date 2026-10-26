@@ -12,6 +12,30 @@
 
 ---
 
+## 🎬 Live HUB75 DMD Output & Web Control Center
+
+### 🕹️ Real HUB75 LED Matrix Sequences (Generated Live via the Showcase API)
+
+Every title automatically assembles a complete multi-chapter RGB565 broadcast tailored to your panel geometry:
+**`1. Animated Info Card`** (boxart, system badge, year, rating & smooth ticker) $\to$ **`2. Vertical Boxart & Marquee Panoramas`** $\to$ **`3. In-Game Screenshot Scan`** $\to$ **`4. AI-Framed Gameplay / Trailer Video`**.
+
+| **Garou: Mark of the Wolves (`Neo Geo`)** | **Super Street Fighter II X / Turbo (`CPS2`)** | **Metal Slug X (`Neo Geo`)** |
+| :---: | :---: | :---: |
+| ![Garou: Mark of the Wolves HUB75 DMD Demo](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 HUB75 DMD Demo](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo HUB75 DMD Demo](demo/dmd_metal_slug_x_neogeo.gif) |
+| `Classic Split` • `Tinted` • `auto_action` + `pixel_art` | `Badge Header` • `Neon Border` • `auto_action` + `pixel_art` | `Classic Split` • `Poster Wash` • `auto_action` + `pixel_art` |
+
+### 🖥️ Multilingual Web Control Center (`EN` / `FR` / `ES`)
+
+| **1. Live Overview & Connected HUB75 Matrices** | **2. Card Studio & Real-Time HUB75 LED Simulator** |
+| :---: | :---: |
+| [![Live Overview & Connected DMD Matrices](demo/ui_overview_live.png)](demo/ui_overview_live.png) | [![Mode 2B Card Studio & HUB75 Simulator](demo/ui_card_studio.png)](demo/ui_card_studio.png) |
+| Live MQTT (`:1883`) + UDP telemetry, pre-warmed `Ready (N)` & `Standby (N+1)` slots across all 4 domains, Consume-Once history, and active `[Primary, Fallback]` sources. | Per-domain profiles (`Games`, `Movies`, `Series`, `Anime`), 5 pixel-art layouts (YOKO & TATE), live SMD LED simulator, and `0 ms` injection into any connected DMD queue. |
+| **3. Multi-Catalog Search & On-Demand Priority Queue** | **4. Passive DMD Profiles & Visual Multi-Tag Rotation** |
+| [![Catalog Search & On-Demand Queue](demo/ui_ondemand_search.png)](demo/ui_ondemand_search.png) | [![Passive DMD Rotation & Multi-Tag Picker](demo/ui_passive_rotation.png)](demo/ui_passive_rotation.png) |
+| Search Games, Movies, TV Series, and Anime in your preferred language and push titles via `Queue Next` (`FIFO`) or immediate `Play Now` preemption. | Configure Mode 2A/2B server-driven playlists with interactive System, Genre & Decade tag pickers and direct links to each domain's Studio profile. |
+
+---
+
 ## ✨ Key Features
 
 - **4 Showcase Domains (`games`, `movies`, `series`, `anime`)**:
@@ -30,6 +54,7 @@
   - Supports full multi-engine DMDs (`ArcadeMatrix`) **and** ultra-light ~180-line zero-UI/zero-PSRAM `ESP32_STD` passive UDP `:4210` receivers (`supports_local_card: false`, with even Phase 1 Info Cards rendered into the RGB565 stream) configured centrally in `./data/dmd_profiles.json`.
   - Localized catalog search (`GET /api/v1/{domain}/search`), per-DMD priority queue (`enqueue_next` / `play_now`), live `Skip` / `Pause` / `Resume` / `Stop` controls, and **`FrontendSync`** (`mark_seen: false` for Batocera / RetroBat / LaunchBox / Playnite).
 - **Powered by `dmd_gif_converter`**: Orthogonal video framing (`auto_action` Let Me Handle It AI motion saliency, `panorama` top-to-bottom scan, `center_crop`) and HUB75 LED colorimetry (`auto` Smart Color Boost AI, `pixel_art`, `anime`, `cinema`), Lanczos + unsharp downscaling, and top-to-bottom sub-pixel scrolling panoramas (`Jacket`, `Marquee`, `Snapshots`) across all Landscape (`128x32`, `128x64`, `256x64`), Square (`64x64`), and TATE (`64x128`, `32x128`) resolutions.
+- **OS-Aware Release Update Notification**: Built-in non-intrusive release checker (`GET /api/v1/system/update-check`) that notifies you in the Web UI whenever a newer version is published on GitHub for your runtime platform (`macOS .dmg`, `Windows .zip`, `Linux .tar.gz`, or `Docker`) with direct links to the release notes and installer.
 
 ---
 
