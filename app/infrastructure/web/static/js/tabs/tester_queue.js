@@ -288,10 +288,10 @@ export async function loadTargetDmdQueue() {
     box.innerHTML = items.map((it, i) => {
       const stClass = it.status === 'ready' || it.status === 'playing' ? 'ok' : 'warn';
       const safeQid = esc(it.queue_id).replace(/'/g, "\\'");
-      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;background:#0d121b;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
-        <div>
+      return `<div class="queue-item-row">
+        <div class="queue-item-meta">
           <b>#${i + 1} — ${esc(it.title)}</b>
-          <span class="pill info" style="margin-left:6px">${esc((it.domain || '').toUpperCase())}</span>
+          <span class="pill info">${esc((it.domain || '').toUpperCase())}</span>
           <span class="pill info">${esc((it.lang || 'fr').toUpperCase())}</span>
           <span class="pill ${stClass}">${esc(it.status)}</span>
           ${it.from_studio_sim ? `<span class="pill ok">${esc(t('pill_sim_studio'))}</span>` : ''}

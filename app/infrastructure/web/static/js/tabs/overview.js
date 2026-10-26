@@ -156,41 +156,42 @@ export function renderClients(clients) {
 
     let playingCell = '—';
     if (c.paused) {
-      playingCell = `<span class="pill warn">${esc(t('pill_paused'))}</span>`;
+      playingCell = `<span class="pill warn slot-pill">${esc(t('pill_paused'))}</span>`;
     } else if (c.udp_streaming) {
       const liveTitle = c.playing_title || c.active_title || 'Live';
-      playingCell = `<span class="pill ok">${esc(t('pill_streaming'))} ${esc(liveTitle)}</span>`;
+      playingCell = `<span class="pill ok slot-pill" title="${esc(liveTitle)}">${esc(t('pill_streaming'))} ${esc(liveTitle)}</span>`;
     } else if (c.is_playing && c.playing_title) {
-      playingCell = `<span class="pill info">▶ ${esc(c.playing_title)}</span>`;
+      playingCell = `<span class="pill info slot-pill" title="${esc(c.playing_title)}">▶ ${esc(c.playing_title)}</span>`;
     } else if (c.playing_title) {
-      playingCell = `<span class="pill info">▶ ${esc(c.playing_title)}</span>`;
+      playingCell = `<span class="pill info slot-pill" title="${esc(c.playing_title)}">▶ ${esc(c.playing_title)}</span>`;
     } else if (c.last_played_title || c.active_title) {
-      playingCell = `<span class="last-played">↺ ${esc(c.last_played_title || c.active_title)}</span>`;
+      const prevTitle = c.last_played_title || c.active_title;
+      playingCell = `<span class="last-played slot-pill" title="${esc(prevTitle)}">↺ ${esc(prevTitle)}</span>`;
     }
     const readyCell = c.ready_title
-      ? `<span class="pill ok">✓ ${esc(c.ready_title)}</span>`
-      : (c.preparing ? `<span class="pill warn">${esc(t('pill_preparing'))}</span>` : '—');
+      ? `<span class="pill ok slot-pill" title="${esc(c.ready_title)}">✓ ${esc(c.ready_title)}</span>`
+      : (c.preparing ? `<span class="pill warn slot-pill">${esc(t('pill_preparing'))}</span>` : '—');
     const standbyCell = c.standby_title
-      ? `<span class="pill info">✓ ${esc(c.standby_title)}</span>`
-      : (c.ready_title && c.preparing ? `<span class="pill warn">${esc(t('pill_preparing'))}</span>` : '—');
+      ? `<span class="pill info slot-pill" title="${esc(c.standby_title)}">✓ ${esc(c.standby_title)}</span>`
+      : (c.ready_title && c.preparing ? `<span class="pill warn slot-pill">${esc(t('pill_preparing'))}</span>` : '—');
     const safeId = esc(c.dmd_id).replace(/'/g, "\\'");
     const pauseAct = c.paused ? 'resume' : 'pause';
     const pauseIcon = c.paused ? '▶' : '⏸';
     return `
       <tr>
-        <td>
+        <td class="dmd-id-cell">
           <b>${esc(c.display_name || c.dmd_id)}</b>
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${modeBadge} ${langBadge}${qBadge}</div>
           <small style="color:var(--muted)">${ipInfo}</small>
         </td>
         <td><span class="pill info">${esc((c.domain || '').toUpperCase())}</span></td>
         <td><code>${esc(c.width)}×${esc(c.height)}</code></td>
-        <td><code>${esc(c.video_mode)}</code> • <code>${esc(c.color_boost)}</code>${c.video_max_duration_s != null ? `<br/><small style="color:var(--muted)">≤${esc(Number(c.video_max_duration_s).toFixed(1))}s @ ${esc(c.video_fps || 15)}fps</small>` : ''}</td>
+        <td class="framing-cell"><code>${esc(c.video_mode)}</code> • <code>${esc(c.color_boost)}</code>${c.video_max_duration_s != null ? `<br/><small style="color:var(--muted)">≤${esc(Number(c.video_max_duration_s).toFixed(1))}s @ ${esc(c.video_fps || 15)}fps</small>` : ''}</td>
         <td>${playingCell}</td>
         <td>${readyCell}</td>
         <td>${standbyCell}</td>
-        <td>
-          <div style="display:flex;gap:5px;flex-wrap:nowrap">
+        <td class="actions-cell">
+          <div class="client-actions">
             <button type="button" class="secondary mini-btn" title="Profile & Playlist" onclick="openProfileEditor('${safeId}')">⚙️</button>
             <button type="button" class="secondary mini-btn" title="Skip" onclick="controlDmd('${safeId}', 'skip')">⏭</button>
             <button type="button" class="secondary mini-btn" title="Pause / Resume" onclick="controlDmd('${safeId}', '${pauseAct}')">${pauseIcon}</button>

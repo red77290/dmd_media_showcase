@@ -62,6 +62,7 @@ dmd_media_showcase/
 2. **Presupuestos Anti-God-Class y Anti-God-Module**: Cada módulo Python se mantiene `<= 800` líneas, cada clase `<= 750` líneas y cada módulo ES frontend `<= 600` líneas (`tests/test_architecture_ddd_fitness.py`), con cero etiquetas `<style>` o `<script>` incrustadas en Python.
 3. **Cero Categorías Fijas en el DMD**: Normalizar siempre sistemas y géneros mediante `resolve_canonical_system()` y `resolve_canonical_genre()` en `app/domain/taxonomy/`.
 4. **Filtrado Estricto de Videojuegos (`wd:Q7889`) y Exclusión de AV1**: Cada juego de consola debe corresponder a un recurso verificado en `libretro-thumbnails/{repo}`, y `youtube_resolver.py` excluye `av01` (`[vcodec!*=av01]`) priorizando H.264.
+5. **Cascada CSS y Tablas Responsivas del WebUI (`app/infrastructure/web/static/`)**: Mantener el orden estricto `css/dashboard.css` → `css/studio.css` → `css/responsive.css` (todos los `@media` residen en `responsive.css`), envolver cada `<table>` en `.table-wrap` y registrar cada manejador inline `onclick`/`onchange` en `WINDOW_HANDLERS` de `js/app.js` (validado automáticamente por pytest).
 
 ---
 

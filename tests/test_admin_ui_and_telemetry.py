@@ -98,12 +98,16 @@ async def test_admin_dashboard_html_css_alignment_and_js_syntax(tmp_path: Path, 
         r_admin = await client.get("/admin")
         r_css_dash = await client.get("/static/css/dashboard.css")
         r_css_studio = await client.get("/static/css/studio.css")
+        r_css_resp = await client.get("/static/css/responsive.css")
         r_js_entry = await client.get("/static/js/app.js")
         assert r_root.status_code == 200
         assert r_admin.status_code == 200
         assert r_root.text == r_admin.text
+        assert r_root.headers.get("cache-control") == "no-cache"
         assert r_css_dash.status_code == 200
         assert r_css_studio.status_code == 200
+        assert r_css_resp.status_code == 200
+        assert r_css_resp.headers.get("cache-control") == "no-cache"
         assert r_js_entry.status_code == 200
 
     html = ADMIN_DASHBOARD_HTML
@@ -113,6 +117,7 @@ async def test_admin_dashboard_html_css_alignment_and_js_syntax(tmp_path: Path, 
     assert '<html lang="en">' in html
     assert '/static/css/dashboard.css' in html
     assert '/static/css/studio.css' in html
+    assert '/static/css/responsive.css' in html
     assert '<script type="module" src="/static/js/app.js"></script>' in html
     assert "<style>" not in html
     assert 'class="form-actions"' in html
