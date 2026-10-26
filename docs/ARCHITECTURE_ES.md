@@ -7,68 +7,97 @@
 
 ---
 
-## 1. Arquitectura Hexagonal / DDD en Capas
+## 1. Arquitectura Hexagonal / DDD Modular en Capas
+
+El servidor aplica una estricta **Arquitectura Hexagonal (Puertos y Adaptadores) y Domain-Driven Design (DDD)** cuyas reglas de dependencia hacia el interior y límites de tamaño se validan automáticamente mediante `tests/test_architecture_ddd_fitness.py`:
+
+- **Capa de Dominio (`app/domain/`)**: 100 % Python puro (cero importaciones de FastAPI, HTTPX, Pillow, OpenCV o Infraestructura). Contiene Entidades y Objetos de Valor (`entities.py`, `board_identity.py`, `style_specs.py`), Agregados genéricos y reutilizables (`app/domain/aggregates/`), el subpaquete modular de Taxonomía multilingüe (`app/domain/taxonomy/`) y los Puertos Hexagonales (`app/domain/ports/`).
+- **Capa de Aplicación (`app/application/`)**: Depende exclusivamente de `app/domain/` y sus Puertos. Dividida en servicios de aplicación de responsabilidad única coordinados por la fachada ligera `ConsumeOnceOrchestrator` (`<= 550` líneas) e inyectados mediante `app/container.py`.
+- **Capas de Infraestructura y Scheduler (`app/infrastructure/`, `app/scheduler/`)**: Adaptadores de entrada (`6` routers FastAPI en `app/infrastructure/http/routers/`, WebUI estática en módulos ES en `app/infrastructure/web/static/` y `ShowcaseMqttGateway`) y adaptadores de salida (scrapers y estrategias referenciales por fuente, motor de renderizado HUB75 en `app/infrastructure/rendering/`, repositorios JSON, `DmdConverterAdapter` y `FfmpegUdpClockStreamer`).
 
 ```mermaid
 flowchart TD
-    subgraph DMD["Clientes DMD (ESP32 / ESP32-S3 / Raspberry Pi)"]
-        WUI["WebUI DMD (Listas desplegables dinámicas)"]
-        ENG["Motor Showcase (Ficha -> Panoramas -> Vídeo)"]
+    subgraph DMD["Clientes DMD y Navegadores"]
+        BROWSER["Navegador Control Center\n(HTML5 + CSS + 15 Módulos ES)"]
+        ENG["Motor DMD (ESP32 / ESP32-S3 / RPi)\nFicha -> Panoramas -> Vídeo"]
     end
 
-    subgraph INFRA_IN["Adaptadores de Entrada (Infraestructura)"]
-        HTTP["API REST FastAPI (:8890 + mDNS dmdmediashowcase.local)\n/api/v1/{domain}/filters & /config & /next"]
+    subgraph INFRA_IN["Adaptadores de Entrada (app/infrastructure/http & mqtt & web)"]
+        ROUTERS["6 Routers FastAPI (:8890)\nsystem_admin, discovery, clients_and_queue,\nstudio, consume_once, rotation_batch"]
+        STATIC["Activos Web Estáticos (/static/*)\nindex.html, css/*.css, js/**/*.js"]
         MQTT["ShowcaseMqttGateway & EmbeddedMqttBroker (:1883)\nRetain=True + LWT"]
     end
 
-    subgraph APP["Capa de Aplicación"]
-        ORCH["ConsumeOnceOrchestrator\n(Slots sin estado + Pipelining N+1 + Invalidación Config)"]
-        CHAIN["DomainSourceChainService\n(Enrutamiento por Capacidad + Exclusión Seen)"]
+    subgraph APP["Servicios de Aplicación (app/application/)"]
+        ORCH["ConsumeOnceOrchestrator (Fachada)"]
+        REG_SVC["ClientRegistryService"]
+        PREP_SVC["SlotPreparationService"]
+        QUEUE_SVC["OnDemandQueueService"]
+        DIR_SVC["PassivePlaylistDirectorService"]
+        STUDIO_SVC["StudioPreviewService"]
+        CHAIN["DomainSourceChainService"]
     end
 
     subgraph DOMAIN["Núcleo de Dominio (app/domain/)"]
-        TAX["ReferentialConsolidator y Taxonomía Canónica\n(5 Idiomas, Normalización de Sinónimos, Sistema->Géneros)"]
-        PORTS["Puertos: IScraperSource, IScraperReferentialStrategy,\nISeenHistoryRepository, IMediaTranscoderPort, IFrameStreamerPort"]
+        AGG["Agregados Genéricos:\nBoundedTtlCache, DualSlotPipeline,\nPriorityPlaybackQueue, WeightedPlaylistCursor"]
+        TAX["Taxonomía Modular & SynonymCatalogResolver\n(systems, game_genres, cinema_genres, consolidator)"]
+        VO["Entidades y Objetos de Valor:\nMediaCandidate, FilterCriteria, BoardIdentity, StyleSpecs"]
+        PORTS["Puertos Hexagonales (app/domain/ports/):\nIScraperSource, IScraperReferentialStrategy, ISeenHistoryRepository,\nIDmdProfileRepository, IMqttControlGateway, ICardPreviewRenderer,\nIMediaTranscoderPort, IFrameStreamerPort"]
     end
 
-    subgraph INFRA_OUT["Adaptadores de Salida (Infraestructura)"]
-        SCRAPERS["8 Adaptadores de Scrapers\n+ LiveReferentialStore (./data/referentials/*.json)"]
-        SEEN["JsonSeenHistoryRepository\n(./data/seen_history.json)"]
-        CONV["DmdConverterAdapter\n(dmd_gif_converter + yt-dlp H.264 HD)"]
+    subgraph INFRA_OUT["Adaptadores de Salida (app/infrastructure/)"]
+        SCRAPERS["8 Adaptadores de Scrapers + Referenciales por Fuente\n(games/, movies/, series/, anime/)"]
+        RENDER["Motor de Renderizado Modular (rendering/)\ncard_geometry, card_layout_engine,\npanorama_and_static, video_pipeline"]
+        PERSIST["Repositorios de Persistencia\nseen_history, dmd_profiles, server_config"]
         UDP["FfmpegUdpClockStreamer\n(ffmpeg -re -> UDP DMDF 10 bytes)"]
     end
 
-    WUI -->|"GET /api/v1/{domain}/filters?lang=es"| HTTP
+    BROWSER -->|"GET / & /static/*"| STATIC
+    BROWSER -->|"REST /api/v1/*"| ROUTERS
     ENG <-->|"MQTT Retain + Events"| MQTT
-    HTTP --> ORCH
+    ROUTERS --> ORCH
     MQTT --> ORCH
-    ORCH --> CHAIN
-    ORCH --> CONV
-    ORCH --> UDP
-    CHAIN --> TAX
-    CHAIN --> PORTS
-    PORTS --> SCRAPERS
-    PORTS --> SEEN
+    ORCH --> REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC
+    PREP_SVC & QUEUE_SVC & STUDIO_SVC --> CHAIN
+    REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC --> AGG & VO & PORTS
+    CHAIN --> TAX & AGG & PORTS
+    PORTS -.->|"Conectados vía app/container.py"| SCRAPERS & RENDER & PERSIST & UDP
     UDP ==>|"Tramas UDP DMDF (client_ip:udp_port)"| ENG
 ```
 
 ---
 
-## 2. Consolidación Dinámica de Referenciales (`ReferentialConsolidator`)
+## 2. Bloques Genéricos y Reutilizables
 
-En lugar de codificar categorías fijas en el firmware o en la WebUI del DMD:
-1. Cada adaptador posee su propia estrategia `IScraperReferentialStrategy` (`./data/referentials/{source_id}.json`):
-   - **`LibretroWikidataReferentialStrategy`** (`games` consolas): Consulta Wikidata SPARQL estrictamente para Videojuegos (`wd:Q7889`) filtrados por el QID de la plataforma (`wdt:P400`) y del género (`wdt:P136/wdt:P279*`), extrae títulos localizados y enlaces de Wikipedia, y cruza con el árbol de archivos de GitHub `libretro-thumbnails/{repo}` con prioridad regional `(France) -> (Europe) -> (World) -> (USA)`.
-   - **`ArcadeItaliaReferentialStrategy`** (`games` arcade): Consulta `https://adb.arcadeitalia.net` exclusivamente por HTTPS.
-2. `ReferentialConsolidator` (`app/domain/taxonomy.py`) normaliza todos los sinónimos (`Famicom` / `Nintendo Entertainment System` $\to$ `nes`, `Plataformas` / `Platformer` $\to$ `platform`) y expone un esquema relacional (`Sistema -> Géneros y Décadas compatibles`) mediante `GET /api/v1/{domain}/filters?lang={lang}` y MQTT `dmd_showcase/catalog/{domain}/referential` (`retain=True`).
+| Componente | Módulo | Responsabilidad Genérica |
+| :--- | :--- | :--- |
+| `BoundedTtlCache[TKey, TVal]` | `app/domain/aggregates/artifact_cache.py` | Caché acotada con expiración TTL, límite de entradas y callback `on_evict(key, val)`. |
+| `DualSlotPipeline[TKey, TItem]` | `app/domain/aggregates/slot_pipeline.py` | Máquina de estados de doble búfer `Ready (N)` + `Standby (N+1)` + `Active` con promoción atómica `claim_ready()`. |
+| `PriorityPlaybackQueue` | `app/domain/aggregates/priority_queue.py` | Cola prioritaria por placa DMD (`enqueue_next` FIFO frente a `play_now` en cabeza). |
+| `WeightedPlaylistCursor` | `app/domain/aggregates/playlist_cursor.py` | Cursor determinista `(slot_index, items_in_slot)` para rotación ponderada multi-dominio (`1..10` obras por turno). |
+| `SynonymCatalogResolver` | `app/domain/taxonomy/resolver.py` | Resolutor genérico de sinónimos indexado por slug reutilizable sobre cualquier catálogo canónico. |
+| `BoundedWorkerExecutorMixin[TJob]` | `app/scheduler/executor_lifecycle.py` | Controlador reutilizable de `ProcessPoolExecutor` / `ThreadPoolExecutor` con escalado en caliente (`reconfigure_workers()`). |
 
 ---
 
-## 3. Protocolo MQTT en Tiempo Real, Pipelining `N+1` y Paquetes UDP `DMDF`
+## 3. Consolidación Dinámica de Referenciales (`ReferentialConsolidator`)
+
+En lugar de codificar categorías fijas en el firmware o en la WebUI del DMD:
+1. Cada adaptador posee su propio módulo `IScraperReferentialStrategy` (`./data/referentials/{source_id}.json`):
+   - **`LibretroWikidataReferentialStrategy`** (`app/infrastructure/scrapers/games/libretro_wikidata_referential.py` + `libretro_tree_resolver.py`): Consulta Wikidata SPARQL estrictamente para Videojuegos (`wd:Q7889`) filtrados por el QID de la plataforma (`wdt:P400`) y del género (`wdt:P136/wdt:P279*`), extrae títulos localizados y enlaces de Wikipedia, y cruza con el árbol de GitHub `libretro-thumbnails/{repo}`.
+   - **`ArcadeItaliaReferentialStrategy`** (`app/infrastructure/scrapers/games/arcadeitalia_referential.py`): Consulta `https://adb.arcadeitalia.net` exclusivamente por HTTPS.
+   - **`JikanReferentialStrategy` / `AniListReferentialStrategy` / `TvMazeReferentialStrategy`** (`anime/` y `series/`): Recolectan dinámicamente géneros de Anime y Series.
+2. `ReferentialConsolidator` (`app/domain/taxonomy/consolidator.py`) normaliza todos los sinónimos (`Famicom` / `Nintendo Entertainment System` $\to$ `nes`, `Plataformas` / `Platformer` $\to$ `platform`) mediante `SynonymCatalogResolver` y expone un esquema relacional (`Sistema -> Géneros y Décadas compatibles`) en `GET /api/v1/{domain}/filters?lang={lang}` y MQTT `dmd_showcase/catalog/{domain}/referential` (`retain=True`).
+
+---
+
+## 4. Protocolo MQTT en Tiempo Real, Pipelining `N+1` y Paquetes UDP `DMDF`
+
+> **Persistencia ante Reinicios (`RetainedClientConfigStore`):** Cada configuración Modo 1 retenida (`dmd_showcase/clients/{dmd_id}/config`, `retain=True`) en el Broker MQTT integrado (`:1883`) se persiste atómicamente en `./data/mqtt_retained_clients.json`. Al reiniciar el servidor o el contenedor Docker, `ShowcaseMqttGateway` restaura las rotaciones DMD en `EmbeddedMqttBroker.retained` y reactiva de inmediato el precalentamiento `N / N+1` en segundo plano (manteniendo `online=False` hasta recibir tráfico activo del DMD).
 
 ### Cabecera Binaria UDP `DMDF` (10 Bytes, Little-Endian `<4sHBBH`)
 
-> Especificación formal completa (tópicos MQTT 3.1.1 + datagramas UDP `DMDF`): [`docs/asyncapi.yaml`](asyncapi.yaml) (también servida en vivo en `GET /asyncapi.yaml` y `GET /api/v1/asyncapi.yaml`).
+> Especificación formal completa (tópicos MQTT 3.1.1 + datagramas UDP `DMDF`): [`docs/asyncapi.yaml`](asyncapi.yaml) (cargada directamente por `app/asyncapi_spec.py` y servida en `GET /asyncapi.yaml` y `GET /api/v1/asyncapi.yaml`).
 
 | Offset | Tipo | Campo | Descripción |
 | :--- | :--- | :--- | :--- |
@@ -92,4 +121,3 @@ En lugar de codificar categorías fijas en el firmware o en la WebUI del DMD:
 | `12..13` | `uint16le` | `frame_dur_ms` | Duración nominal por fotograma en ms (`round(1000 / fps)`) |
 | `14..15` | `uint16le` | `reserved` | Reservado (`0`) |
 | `16..EOF` | `uint8[]` | `frames` | Secuencia contigua de `total_frames * width * height * 2` bytes RGB565LE |
-

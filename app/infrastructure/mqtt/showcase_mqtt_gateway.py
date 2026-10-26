@@ -14,10 +14,15 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from app import __version__
+from app.domain.ports.control_gateway import IMqttControlGatewayPort
 from app.domain.taxonomy import ReferentialConsolidator
 from app.infrastructure.mqtt.embedded_broker import (
     EmbeddedMqttBroker,
     SimpleAsyncMqttClient,
+)
+from app.infrastructure.persistence.mqtt_retained_store import (
+    RetainedClientConfigStore,
+    mqtt_retained_store,
 )
 from app.infrastructure.persistence.server_config_store import server_config_store
 
@@ -50,14 +55,19 @@ def _summarize_payload_for_log(data: Dict[str, Any]) -> str:
     return json.dumps(copy_dict, ensure_ascii=False)
 
 
-class ShowcaseMqttGateway:
+class ShowcaseMqttGateway(IMqttControlGatewayPort):
     """
     Unified MQTT Control Plane gateway for `dmd_media_showcase`.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        retained_store: Optional[RetainedClientConfigStore] = None,
+    ) -> None:
         self.embedded_broker: Optional[EmbeddedMqttBroker] = None
         self.external_client: Optional[SimpleAsyncMqttClient] = None
+        self.retained_store: RetainedClientConfigStore = retained_store or mqtt_retained_store
+        self._persist_retained_enabled: bool = retained_store is not None
         self._on_client_config: Optional[ConfigHandler] = None
         self._on_client_event: Optional[EventHandler] = None
         self._on_client_hello: Optional[ConfigHandler] = None
@@ -79,10 +89,47 @@ class ShowcaseMqttGateway:
             ref = ReferentialConsolidator.build_domain_referential(dom, lang=lang)  # type: ignore[arg-type]
             await self.publish_json(f"dmd_showcase/catalog/{dom}/referential", ref, retain=True)
 
+    async def _restore_persisted_client_configs(self) -> None:
+        """Reload persisted retained `dmd_showcase/clients/{dmd_id}/config` registrations on startup."""
+        if not self._persist_retained_enabled or self.embedded_broker is None:
+            return
+        entries = self.retained_store.list_entries()
+        if not entries:
+            return
+        restored_count = 0
+        for dmd_id, item in sorted(entries.items()):
+            payload = item.get("payload")
+            if not isinstance(payload, dict) or payload.get("unregister"):
+                continue
+            topic = str(item.get("topic") or f"dmd_showcase/clients/{dmd_id}/config")
+            self.embedded_broker.retained[topic] = json.dumps(
+                payload, ensure_ascii=False
+            ).encode("utf-8")
+            if self._on_client_config is not None:
+                restored_payload: Dict[str, Any] = {
+                    **payload,
+                    "_restored_retained": True,
+                }
+                peer_ip = str(item.get("peer_ip") or "").strip()
+                if peer_ip:
+                    restored_payload.setdefault("_peer_ip", peer_ip)
+                saved_at = float(item.get("saved_at") or 0.0)
+                if saved_at > 0:
+                    restored_payload["_saved_at"] = saved_at
+                await self._on_client_config(dmd_id, restored_payload)
+            restored_count += 1
+        if restored_count > 0:
+            logger.info(
+                "[MQTT GATEWAY] Restored %d persisted retained DMD client config(s) from %s",
+                restored_count,
+                self.retained_store.file_path,
+            )
+
     async def start(self, bind_port: Optional[int] = None) -> None:
         if self._running:
             return
         self._running = True
+        self._persist_retained_enabled = True
         cfg = server_config_store.get_all()
         mode = str(cfg.get("mqtt_mode") or "embedded").lower()
         port = bind_port if bind_port is not None else int(cfg.get("mqtt_port") or 1883)
@@ -139,6 +186,7 @@ class ShowcaseMqttGateway:
             retain=True,
         )
         await self.publish_catalog_referentials(lang=default_lang)
+        await self._restore_persisted_client_configs()
 
     async def stop(self) -> None:
         if not self._running:
@@ -173,13 +221,18 @@ class ShowcaseMqttGateway:
             await self.embedded_broker.publish(topic, raw, retain=retain)
 
     async def _on_raw_msg(self, topic: str, payload: bytes, retain: bool) -> None:
-        if not payload:
-            return
         parts = topic.split("/")
         if len(parts) < 4 or parts[0] != "dmd_showcase" or parts[1] != "clients":
             return
         dmd_id = parts[2]
         leaf = parts[-1]
+        if not payload:
+            if retain and leaf == "config":
+                if self._persist_retained_enabled:
+                    self.retained_store.remove(dmd_id)
+                if self._on_client_config is not None:
+                    await self._on_client_config(dmd_id, {"unregister": True})
+            return
         try:
             decoded = json.loads(payload.decode("utf-8"))
             if not isinstance(decoded, dict):
@@ -213,8 +266,26 @@ class ShowcaseMqttGateway:
                 await self._on_client_hello(dmd_id, decoded)
             elif self._on_client_config is not None:
                 await self._on_client_config(dmd_id, {**decoded, "_is_hello": True})
-        elif leaf == "config" and self._on_client_config is not None:
-            await self._on_client_config(dmd_id, decoded)
+        elif leaf == "config":
+            if retain:
+                if decoded.get("unregister"):
+                    if self.embedded_broker is not None:
+                        self.embedded_broker.retained.pop(topic, None)
+                    if self._persist_retained_enabled:
+                        self.retained_store.remove(dmd_id)
+                elif (
+                    self._persist_retained_enabled
+                    and not decoded.get("_restored_retained")
+                    and not decoded.get("_is_hello")
+                ):
+                    self.retained_store.upsert(
+                        dmd_id=dmd_id,
+                        topic=topic,
+                        payload=decoded,
+                        peer_ip=peer_ip or declared_ip,
+                    )
+            if self._on_client_config is not None:
+                await self._on_client_config(dmd_id, decoded)
         elif leaf == "events" and self._on_client_event is not None:
             await self._on_client_event(dmd_id, decoded)
         elif leaf == "status" and self._on_client_event is not None:

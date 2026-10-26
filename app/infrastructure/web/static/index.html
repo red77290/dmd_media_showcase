@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DMD Media Showcase Server — Control Center</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css" />
+  <link rel="stylesheet" href="/static/css/studio.css" />
+  <link rel="stylesheet" href="/static/css/responsive.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-logo">DMD</div>
+        <div>
+          <h1>DMD Media Showcase Server</h1>
+          <div class="subtitle" data-i18n="header_sub">
+            MQTT Retain (:1883) + Real-Time UDP • Consume-Once • HUB75 LED Matrices
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <span id="health-pill" class="pill ok">● Online</span>
+        <div class="links">
+          <a href="/docs">Swagger (/docs)</a>
+          <a href="/redoc">ReDoc</a>
+          <a href="/asyncapi.yaml">AsyncAPI (MQTT/UDP)</a>
+          <a href="/api/v1/health">Health JSON</a>
+        </div>
+        <select id="ui-lang" class="lang-switch" onchange="setUiLang(this.value)">
+          <option value="en">🇬🇧 English</option>
+          <option value="fr">🇫🇷 Français</option>
+          <option value="es">🇪🇸 Español</option>
+        </select>
+      </div>
+    </header>
+
+    <div id="update-banner" class="update-banner" style="display:none" role="status" aria-live="polite">
+      <div class="update-banner-left">
+        <span id="update-banner-badge" class="pill warn">🚀 New Release</span>
+        <span id="update-banner-text"></span>
+      </div>
+      <div class="update-banner-actions">
+        <a id="update-banner-asset-link" class="update-btn-link primary" href="https://github.com/red77290/dmd_media_showcase/releases" target="_blank" rel="noopener noreferrer" style="display:none"></a>
+        <a id="update-banner-release-link" class="update-btn-link" href="https://github.com/red77290/dmd_media_showcase/releases" target="_blank" rel="noopener noreferrer"></a>
+        <button type="button" class="update-dismiss-btn" onclick="dismissUpdateBanner()" aria-label="Dismiss">✕</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('overview')" data-i18n="tab_overview">
+        1. Overview &amp; DMD Matrices
+      </button>
+      <button class="tab-btn" onclick="switchTab('runtime')" data-i18n="tab_runtime">
+        2. Runtime, Workers &amp; Video Limits
+      </button>
+      <button class="tab-btn" onclick="switchTab('tester')" data-i18n="tab_tester">
+        3. Search &amp; On-Demand Queue
+      </button>
+      <button class="tab-btn" onclick="switchTab('studio')" data-i18n="tab_studio">
+        4. Studio Card &amp; Sim DMD (2B)
+      </button>
+      <button class="tab-btn" onclick="switchTab('keys')" data-i18n="tab_keys">
+        5. API Keys &amp; Encrypted Vault
+      </button>
+      <button class="tab-btn" onclick="switchTab('network')" data-i18n="tab_network">
+        6. Network, MQTT &amp; Maintenance
+      </button>
+    </div>
+
+    <!-- TAB 1: OVERVIEW & CONNECTED DMDS -->
+    <div id="tab-overview" class="tab-pane active">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label" data-i18n="kpi_workers">Workers &amp; Transcode Queue</div>
+          <div class="kpi-val" id="kpi-workers-val">0 / 2</div>
+          <div class="kpi-sub" id="kpi-queue-sub">Queue: 0</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label" data-i18n="kpi_mqtt">MQTT Broker &amp; Sessions</div>
+          <div class="kpi-val" id="kpi-mqtt-val">Embedded :1883</div>
+          <div class="kpi-sub" id="kpi-sessions-sub">0 DMD client(s)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label" data-i18n="kpi_jobs">Prepared Jobs &amp; Latency</div>
+          <div class="kpi-val" id="kpi-jobs-val">0</div>
+          <div class="kpi-sub" id="kpi-avg-sub">Average: 0.0s</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label" data-i18n="kpi_seen">Consumed Titles (Consume-Once)</div>
+          <div class="kpi-val" id="kpi-seen-val">0</div>
+          <div class="kpi-sub" id="kpi-seen-sub" data-i18n="kpi_seen_sub">Zero repetition guaranteed</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>
+          <span data-i18n="dmd_clients_title">Connected DMD Matrices (ESP32 / Raspberry Pi)</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="secondary" style="margin:0;padding:6px 12px;font-size:0.8rem" onclick="openProfileEditor('')" data-i18n="btn_new_profile">
+              ➕ New Passive DMD Profile
+            </button>
+            <button class="secondary" style="margin:0;padding:6px 12px;font-size:0.8rem" onclick="refreshAll()" data-i18n="btn_refresh">
+              Refresh
+            </button>
+          </div>
+        </h2>
+        <p class="desc" data-i18n="dmd_clients_desc">
+          Live view of HUB75 panels registered via MQTT or HTTP Polling, their orthogonal framing/color presets, active broadcast, and pre-computed N (Ready) and N+1 (Standby) slots.
+        </p>
+        <div class="table-wrap">
+          <table class="clients-table">
+            <thead>
+              <tr>
+                <th data-i18n="th_dmd_id">DMD ID</th>
+                <th data-i18n="th_domain">Domain</th>
+                <th data-i18n="th_geom">Geometry</th>
+                <th data-i18n="th_framing">Framing &amp; Colors</th>
+                <th data-i18n="th_playing">Now Playing</th>
+                <th data-i18n="th_ready">Ready Slot (N)</th>
+                <th data-i18n="th_standby">Standby Slot (N+1)</th>
+                <th data-i18n="th_actions">Control</th>
+              </tr>
+            </thead>
+            <tbody id="clients-tbody">
+              <tr><td colspan="8" style="color:var(--muted)" data-i18n="no_clients">No active DMD client registered yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- PERSISTENT DMD PROFILE & SERVER-MANAGED PLAYLIST EDITOR / LIVE MODE 1 INSPECTOR -->
+      <div class="card" id="dmd-profile-editor-card" style="display:none">
+        <h2>
+          <span id="prof-editor-title-span" data-i18n="prof_editor_title">DMD Profile &amp; Server-Managed Playlist (dmd_profiles.json)</span>
+          <button class="secondary mini-btn" onclick="closeProfileEditor()" data-i18n="btn_close">✕ Close</button>
+        </h2>
+        <p class="desc" id="prof-editor-desc-p" data-i18n="prof_editor_desc">
+          Configure passive ESP32 / RPi receivers directly from the Showcase server (Mode 2A Hybrid or Mode 2B 100% Passive UDP), set their broadcast content language, and curate multi-domain rotation playlists persisted in ./data/dmd_profiles.json.
+        </p>
+        <div id="prof-readonly-banner" class="readonly-inspector-banner" style="display:none">
+          <div style="font-weight:700;color:#fff;font-size:0.9rem;margin-bottom:5px" data-i18n="prof_readonly_banner_title">
+            🔒 Active DMD (Mode 1) — Configuration Owned by DMD over MQTT / HTTP
+          </div>
+          <div style="font-size:0.82rem;color:var(--muted);line-height:1.45" data-i18n="prof_readonly_banner_desc">
+            This DMD pushes its own rotation and domain settings over MQTT Retain or HTTP Polling. Its profile is greyed out here so it cannot be accidentally overridden in dmd_profiles.json. To broadcast custom content transiently without altering its config, push items into its Priority Queue or Studio Simulator:
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button type="button" class="secondary mini-btn" onclick="jumpToQueueFromInspector()" data-i18n="btn_ro_jump_queue">🎯 Inject via On-Demand Queue</button>
+            <button type="button" class="mini-btn" onclick="openStudioFromInspector()" data-i18n="btn_ro_jump_studio">🎨 Simulate &amp; Push to Queue (Studio)</button>
+          </div>
+        </div>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_prof_id">DMD Identifier (dmd_id)</label>
+            <input type="text" id="prof-dmd-id" placeholder="esp32_cab_1" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_name">Friendly Display Name</label>
+            <input type="text" id="prof-display-name" placeholder="Living Room Arcade DMD" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_mode">DMD Operating Mode</label>
+            <select id="prof-mode">
+              <option value="server_hybrid" data-i18n="opt_mode_2a">Mode 2A — Server Playlist + Local 60 FPS Card</option>
+              <option value="server_passive" data-i18n="opt_mode_2b">Mode 2B — 100% Passive UDP Framebuffer</option>
+              <option value="client" data-i18n="opt_mode_1">Mode 1 — Client-Driven (e.g. ArcadeMatrix)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_lang">Broadcast Content Language (lang)</label>
+            <select id="prof-lang" onchange="onProfileLangChange()">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_resolution">DMD Panel Resolution</label>
+            <select id="prof-res">
+              <option value="128x32">128×32 (Standard Marquee)</option>
+              <option value="128x64">128×64 (Double Height)</option>
+              <option value="256x64">256×64 (XL Arcade)</option>
+              <option value="64x64">64×64 (Square)</option>
+              <option value="64x128">64×128 (TATE Vertical)</option>
+              <option value="32x128">32×128 (Slim TATE)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_always_udp">Continuous UDP Push (without MQTT)</label>
+            <select id="prof-always-udp">
+              <option value="false" data-i18n="opt_udp_presence">Wait for MQTT / HTTP Hello Presence</option>
+              <option value="true" data-i18n="opt_udp_always">Always Stream UDP to LAN IP (Pure UDP Sketch)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_ip">Target DMD LAN IP (udp_ip)</label>
+            <input type="text" id="prof-udp-ip" placeholder="192.168.1.85" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_port">UDP Frame Port (udp_port)</label>
+            <input type="number" id="prof-udp-port" min="1" max="65535" step="1" value="4210" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_prof_gap">Inter-Item Transition Gap (s — 0..10)</label>
+            <input type="number" id="prof-gap-s" min="0" max="10" step="0.5" value="1.0" />
+          </div>
+        </div>
+
+        <div id="prof-rotation-hint-box" style="margin-top:16px;padding:10px 14px;background:#0d131d;border:1px solid var(--border);border-radius:9px;font-size:0.82rem;color:var(--muted)" data-i18n="prof_rotation_hint">
+          💡 Select Systems, Genres &amp; Decades with visual tags (empty = All). Video duration, framing, color boost, and Mode 2B Card layout are configured per domain inside Studio — click any domain's Studio button on the right to customize it.
+        </div>
+
+        <div class="table-wrap" style="margin-top:12px">
+          <table class="playlist-table">
+            <thead>
+              <tr>
+                <th data-i18n="th_pl_on">On</th>
+                <th data-i18n="th_domain">Domain</th>
+                <th data-i18n="th_pl_count">Items / Turn</th>
+                <th data-i18n="th_pl_systems_tags">Systems (Games)</th>
+                <th data-i18n="th_pl_genres_tags">Genres &amp; Decades</th>
+                <th data-i18n="th_pl_studio_link">Studio Profile (Card, Framing &amp; Video)</th>
+              </tr>
+            </thead>
+            <tbody id="prof-playlist-tbody"></tbody>
+          </table>
+        </div>
+
+        <details id="prof-mqtt-json-wrap" class="mqtt-json-details" style="display:none" open>
+          <summary data-i18n="prof_raw_json_summary">{ } Inspect Live MQTT / HTTP JSON Payload Received from DMD</summary>
+          <pre id="prof-mqtt-json-pre"></pre>
+        </details>
+
+        <div class="form-actions" id="prof-editor-actions">
+          <button id="btn-save-prof" onclick="saveDmdProfile()" data-i18n="btn_save_profile">💾 Save Profile &amp; Apply Live</button>
+          <button id="btn-del-prof" class="danger" onclick="deleteDmdProfile()" data-i18n="btn_delete_profile">🗑️ Delete Profile</button>
+          <span id="prof-status-msg" class="toast"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="chains_title">Metadata &amp; Trailer Sources ([Primary, Fallback])</h2>
+        <p class="desc" data-i18n="chains_desc">
+          Each domain queries its Primary source first and seamlessly switches to its Fallback source if unconfigured or rate-limited.
+        </p>
+        <div class="providers-grid" id="providers-grid"></div>
+      </div>
+    </div>
+
+    <!-- TAB 2: RUNTIME, WORKERS & VIDEO LIMITS (REAL-TIME HOT RELOAD) -->
+    <div id="tab-runtime" class="tab-pane">
+      <div class="card">
+        <h2>
+          <span data-i18n="rt_workers_title">Workers, Concurrency &amp; CPU Protection</span>
+          <span id="rt-live-workers-pill" class="pill info">⚡ Auto</span>
+        </h2>
+        <p class="desc" data-i18n="rt_workers_desc">
+          Adjust background transcoding workers, executor isolation, FFmpeg threads, queue capacity, and live log verbosity in real time with zero server restart and zero interruption to active DMD streams.
+        </p>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_max_workers">Concurrent Transcode Workers (max_concurrent_jobs)</label>
+            <select id="max_concurrent_jobs">
+              <option value="0" id="opt-workers-auto" data-i18n="opt_workers_auto">Auto (CPU-bounded — Recommended)</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+              <option value="11">11</option>
+              <option value="12">12</option>
+              <option value="13">13</option>
+              <option value="14">14</option>
+              <option value="15">15</option>
+              <option value="16">16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_pool_mode">Worker Executor Mode (use_process_pool)</label>
+            <select id="use_process_pool">
+              <option value="true" data-i18n="opt_pool_process">ProcessPoolExecutor (Multi-Core Isolation)</option>
+              <option value="false" data-i18n="opt_pool_thread">ThreadPoolExecutor (Shared Memory)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_ffmpeg_threads">FFmpeg / OpenCV Threads per Job (1..8)</label>
+            <input type="number" id="ffmpeg_threads_per_job" min="1" max="8" step="1" value="1" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_worker_nice">Worker OS CPU Nice Increment (0..19)</label>
+            <input type="number" id="worker_nice_increment" min="0" max="19" step="1" value="10" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_max_queue">Max Pending Job Queue Size (10..1000)</label>
+            <input type="number" id="max_queue_size" min="10" max="1000" step="10" value="128" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_log_level">Live Server Log Level (log_level)</label>
+            <select id="log_level">
+              <option value="DEBUG">DEBUG</option>
+              <option value="INFO">INFO</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>
+          <span data-i18n="rt_video_title">Video Ceiling, Panoramas, Cache &amp; Session Limits</span>
+          <span id="rt-live-video-pill" class="pill ok">🎬 ≤ 30.0s @ 30 FPS</span>
+        </h2>
+        <p class="desc" data-i18n="rt_video_desc">
+          Enforce global server ceilings on video trailer duration, frame rate, source download size, panorama scroll duration, default AI framing/colorimetry, and cache TTLs. Lowering video ceilings automatically refreshes oversized standby slots.
+        </p>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_video_max_dur">Hard Max Video Duration Ceiling (s — 1.5..120)</label>
+            <input type="number" id="video_max_duration_limit_s" min="1.5" max="120" step="0.5" value="30.0" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_master_clip_max">Master Pre-Encode Clip Target (s — 1.5..120)</label>
+            <input type="number" id="server_master_clip_max_s" min="1.5" max="120" step="0.5" value="30.0" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_video_max_fps">Hard Max Video Frame Rate (FPS — 6..60)</label>
+            <input type="number" id="video_max_fps_limit" min="6" max="60" step="1" value="30" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_panorama_dur">Panorama Vertical Scroll Duration (s — 1.5..15)</label>
+            <input type="number" id="panorama_duration_s" min="1.5" max="15" step="0.5" value="4.0" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_ytdlp_max_mb">Max Trailer Source Download Size (MB — 10..250)</label>
+            <input type="number" id="ytdlp_max_filesize_mb" min="10" max="250" step="5" value="60" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_default_vmode">Default Video Framing (default_video_mode)</label>
+            <select id="default_video_mode">
+              <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
+              <option value="panorama" data-i18n="opt_vmode_panorama">Panorama (Top-Bottom Scan)</option>
+              <option value="center_crop" data-i18n="opt_vmode_crop">Static Center Crop</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_default_cboost">Default LED Color Boost (default_color_boost)</label>
+            <select id="default_color_boost">
+              <option value="auto" data-i18n="opt_cboost_auto">Auto (Let Me Handle It AI)</option>
+              <option value="pixel_art" data-i18n="opt_cboost_pixel">Pixel Art (Crisp Retro)</option>
+              <option value="anime" data-i18n="opt_cboost_anime">Anime (Vibrant Cel-Shaded)</option>
+              <option value="cinema" data-i18n="opt_cboost_cinema">Cinema (Balanced Contrast &amp; Shadows)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_session_ttl">Inactive HTTP Session TTL (s — 60..86400)</label>
+            <input type="number" id="session_ttl_seconds" min="60" max="86400" step="60" value="3600" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_batch_ttl">Prepared Batch Cache TTL (s — 30..7200)</label>
+            <input type="number" id="batch_ttl_seconds" min="30" max="7200" step="30" value="1800" />
+          </div>
+        </div>
+        <div class="form-grid-2" style="margin-top:14px">
+          <div class="field span-2">
+            <label data-i18n="lbl_cache_dir">Transcoded Media Cache Directory (cache_dir)</label>
+            <input type="text" id="cache_dir" placeholder="/tmp/dmd_showcase_cache" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button onclick="saveConfig()" data-i18n="btn_save_live">Save &amp; Apply in Real Time</button>
+          <span id="status-msg-runtime" class="toast"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: SEARCH, ON-DEMAND QUEUE & LIVE SHOWCASE TESTER -->
+    <div id="tab-tester" class="tab-pane">
+      <div class="card">
+        <h2 data-i18n="tester_title">Search, On-Demand DMD Queue &amp; Live Tester</h2>
+        <p class="desc" data-i18n="tester_desc">
+          Search across official multilingual catalogs by category and text, choose the exact broadcast language, preview assets in the browser, or push any selected title directly to a DMD's priority queue (Next or Play Now).
+        </p>
+        <div class="form-grid-3">
+          <div class="field">
+            <label data-i18n="lbl_target_dmd">Target DMD Matrix (for Queue / Play Now)</label>
+            <select id="test-target-dmd" onchange="loadTargetDmdQueue()">
+              <option value="" data-i18n="opt_target_browser">🖥️ Browser Preview Only</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_content_lang">Content Broadcast Language (lang)</label>
+            <select id="test-content-lang" onchange="loadDomainFilters()">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_domain">Domain</label>
+            <select id="test-domain" onchange="loadDomainFilters()">
+              <option value="games" data-i18n="opt_dom_games">🕹️ Retro Games (games)</option>
+              <option value="movies" data-i18n="opt_dom_movies">🎬 Movies / Films (movies)</option>
+              <option value="series" data-i18n="opt_dom_series">📺 TV Series (series)</option>
+              <option value="anime" data-i18n="opt_dom_anime">⛩️ Anime / Japanimation (anime)</option>
+            </select>
+          </div>
+          <div class="field" id="test-system-wrap">
+            <label data-i18n="lbl_system">System (Games)</label>
+            <select id="test-system"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_genre">Genre</label>
+            <select id="test-genre"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_decade">Decade</label>
+            <select id="test-decade"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_video_mode">Video Framing Mode (video_mode)</label>
+            <select id="test-video-mode">
+              <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
+              <option value="panorama" data-i18n="opt_vmode_panorama">Panorama (Top-Bottom Scan)</option>
+              <option value="center_crop" data-i18n="opt_vmode_crop">Static Center Crop</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_color_boost">LED Color Boost (color_boost)</label>
+            <select id="test-color-boost">
+              <option value="auto" data-i18n="opt_cboost_auto">Auto (Let Me Handle It AI)</option>
+              <option value="pixel_art" data-i18n="opt_cboost_pixel">Pixel Art (Crisp Retro)</option>
+              <option value="anime" data-i18n="opt_cboost_anime">Anime (Vibrant Cel-Shaded)</option>
+              <option value="cinema" data-i18n="opt_cboost_cinema">Cinema (Balanced Contrast &amp; Shadows)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_resolution">DMD Panel Resolution</label>
+            <select id="test-res">
+              <option value="128x32">128×32 (Standard Marquee)</option>
+              <option value="128x64">128×64 (Double Height)</option>
+              <option value="64x32">64×32 (Compact)</option>
+              <option value="64x64">64×64 (Square)</option>
+              <option value="256x64">256×64 (XL Arcade)</option>
+              <option value="64x128">64×128 (TATE Vertical)</option>
+            </select>
+          </div>
+          <div class="field span-2">
+            <label data-i18n="lbl_query">Title / Keyword Search (Optional — leave empty to browse filtered picks)</label>
+            <input type="text" id="test-query" onkeydown="if(event.key==='Enter') runCandidateSearch()" data-i18n-placeholder="ph_query" placeholder="e.g. Super Street Fighter II Turbo, The Matrix, Cowboy Bebop..." />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mark_seen">Consume-Once History Policy</label>
+            <select id="test-mark-seen">
+              <option value="true" data-i18n="opt_mark_seen_yes">Mark as Seen after playback</option>
+              <option value="false" data-i18n="opt_mark_seen_no">Keep repeatable (FrontendSync mode)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button onclick="runCandidateSearch()" id="btn-search-cands" data-i18n="btn_search_cands">
+            🔍 Search / Browse Candidates
+          </button>
+          <button class="secondary" onclick="runLiveTest()" id="btn-run-test" data-i18n="btn_run_test">
+            🎬 Direct Web Preview
+          </button>
+          <span id="test-status" class="toast"></span>
+        </div>
+
+        <div id="search-results-grid" class="cand-grid" style="display:none"></div>
+
+        <div id="test-preview" class="preview-box">
+          <img id="prev-img" class="preview-poster" src="" alt="Poster" />
+          <div class="preview-meta">
+            <h3 id="prev-title"></h3>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <span id="prev-badge" class="pill info"></span>
+              <span id="prev-year" class="pill ok"></span>
+              <span id="prev-source" class="pill warn"></span>
+            </div>
+            <div id="prev-sub" style="color:var(--muted);font-size:0.84rem;margin-top:6px"></div>
+            <div id="prev-synopsis" class="preview-synopsis"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="ondemand-queue-card">
+        <h2>
+          <span data-i18n="queue_panel_title">On-Demand Priority Queue (Target DMD)</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="secondary mini-btn" onclick="skipSelectedDmd()" data-i18n="btn_skip_now">⏭ Skip Current</button>
+            <button class="secondary mini-btn" onclick="loadTargetDmdQueue()" data-i18n="btn_refresh">Refresh</button>
+          </div>
+        </h2>
+        <p class="desc" data-i18n="queue_panel_desc">
+          Items added with Queue Next play in strict FIFO order right after the current item without losing pre-transcoded random slots. Play Now preempts immediately.
+        </p>
+        <div id="ondemand-queue-body" style="color:var(--muted);font-size:0.86rem" data-i18n="queue_select_dmd">
+          Select a Target DMD above to inspect or control its live priority queue.
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: MODE 2B CARD STUDIO & REAL-TIME HUB75 DMD SIMULATOR -->
+    <div id="tab-studio" class="tab-pane">
+      <!-- DOMAIN PROFILE SWITCHER BAR (PER-DOMAIN CARD + SEQUENCE PROFILES: GAMES / MOVIES / SERIES / ANIME) -->
+      <div class="studio-profile-bar">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:0.9rem;font-weight:700;color:#fff" data-i18n="studio_prof_bar_title">🎯 Domain Profiles on DMD:</span>
+            <select id="studio-top-dmd-select" onchange="onStudioTopDmdChange(this.value)" style="width:auto;min-width:220px;max-width:100%;height:36px;line-height:34px;font-size:0.84rem;padding:0 32px 0 10px">
+              <option value="" data-i18n="studio_opt_no_dmd">— Select or connect a DMD —</option>
+            </select>
+            <button type="button" id="btn-studio-back-rotation" class="secondary mini-btn" onclick="returnToDmdRotationEditor()" style="display:none" data-i18n="btn_back_rotation">
+              ← Back to DMD Rotation
+            </button>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button type="button" id="btn-st-top-save" class="mini-btn" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
+              💾 Save Domain Profile to DMD
+            </button>
+            <button type="button" id="btn-st-top-save-all" class="secondary mini-btn" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
+              📋 Apply to All 4 Domains
+            </button>
+          </div>
+        </div>
+        <div id="studio-top-save-msg" class="toast" style="margin-top:6px"></div>
+
+        <div class="studio-dom-tabs" id="studio-dom-tabs">
+          <button type="button" class="studio-dom-tab active" data-st-dom="games" onclick="selectStudioDomainProfile('games')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_games">🕹️ Games Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">games</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-games">classic_split • tinted • 10s</span>
+          </button>
+          <button type="button" class="studio-dom-tab" data-st-dom="movies" onclick="selectStudioDomainProfile('movies')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_movies">🎬 Movies Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">movies</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-movies">poster_right • poster_wash • 12s</span>
+          </button>
+          <button type="button" class="studio-dom-tab" data-st-dom="series" onclick="selectStudioDomainProfile('series')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_series">📺 Series Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">series</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-series">classic_split • tinted • 10s</span>
+          </button>
+          <button type="button" class="studio-dom-tab" data-st-dom="anime" onclick="selectStudioDomainProfile('anime')">
+            <span class="studio-dom-tab-title"><span data-i18n="dom_prof_anime">⛩️ Anime Profile</span> <span class="pill info" style="padding:1px 6px;font-size:0.68rem">anime</span></span>
+            <span class="studio-dom-tab-sub" id="st-dom-sub-anime">badge_header • neon_border • 12s</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- TOP SEARCH & RESOLUTION BAR -->
+      <div class="card" style="padding:16px 20px">
+        <h2>
+          <span data-i18n="studio_title">Mode 2B Card Studio &amp; Real-Time HUB75 DMD Simulator</span>
+          <span id="studio-geom-pill" class="pill info">128×32 • YOKO</span>
+        </h2>
+        <p class="desc" data-i18n="studio_desc">
+          Search any game, movie, series, or anime via the On-Demand catalog, customize the Mode 2B pixel-art Info Card &amp; sequence options across standard and TATE resolutions, preview on the live HUB75 LED Simulator, and push your simulation directly into the active DMD queue.
+        </p>
+
+        <div class="studio-search-bar">
+          <div class="field">
+            <label data-i18n="lbl_domain">Domain</label>
+            <select id="studio-domain" onchange="selectStudioDomainProfile(this.value)">
+              <option value="games" data-i18n="opt_dom_games">🕹️ Retro Games (games)</option>
+              <option value="movies" data-i18n="opt_dom_movies">🎬 Movies / Films (movies)</option>
+              <option value="series" data-i18n="opt_dom_series">📺 TV Series (series)</option>
+              <option value="anime" data-i18n="opt_dom_anime">⛩️ Anime / Japanimation (anime)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_content_lang">Content Broadcast Language (lang)</label>
+            <select id="studio-lang" onchange="loadStudioFilters()">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_system">System (Games)</label>
+            <select id="studio-system"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_genre">Genre</label>
+            <select id="studio-genre"><option value="" data-i18n="opt_all">All</option></select>
+          </div>
+          <div class="field">
+            <label data-i18n="studio_lbl_search">Search Catalog Content (Title / ROM / Franchise)</label>
+            <input type="text" id="studio-query" onkeydown="if(event.key==='Enter') runStudioSearch()" data-i18n-placeholder="ph_query" placeholder="e.g. Metal Slug X, Blade Runner, Akira..." />
+          </div>
+          <button type="button" id="btn-studio-search" onclick="runStudioSearch()" style="height:42px;white-space:nowrap" data-i18n="studio_btn_search">
+            🔍 Search
+          </button>
+        </div>
+
+        <div id="studio-search-status" class="toast" style="margin-top:8px"></div>
+        <div id="studio-cand-strip" class="studio-cand-strip"></div>
+
+        <div class="studio-res-bar">
+          <span style="font-size:0.8rem;font-weight:600;color:var(--muted)" data-i18n="studio_lbl_res_presets">HUB75 Presets:</span>
+          <button type="button" class="res-chip" data-res="64x32" onclick="setStudioBaseRes(64, 32)">64×32</button>
+          <button type="button" class="res-chip active" data-res="128x32" onclick="setStudioBaseRes(128, 32)">128×32</button>
+          <button type="button" class="res-chip" data-res="64x64" onclick="setStudioBaseRes(64, 64)">64×64</button>
+          <button type="button" class="res-chip" data-res="128x64" onclick="setStudioBaseRes(128, 64)">128×64</button>
+          <button type="button" class="res-chip" data-res="256x64" onclick="setStudioBaseRes(256, 64)">256×64</button>
+          <button type="button" id="btn-studio-tate" class="tate-btn" onclick="toggleStudioTate()" data-i18n="studio_btn_tate">
+            ⇄ Mode TATE (Vertical)
+          </button>
+        </div>
+      </div>
+
+      <!-- TWO-COLUMN WORKSPACE: CUSTOMIZER (LEFT) + LED SIMULATOR & ACTIVE DMD QUEUE (RIGHT) -->
+      <div class="studio-grid">
+        <!-- LEFT COLUMN: CARD & SEQUENCE BUILDER -->
+        <div>
+          <div class="card">
+            <h2 data-i18n="studio_card_sec_title">1. Mode 2B Card Layout, Theme &amp; Scroll</h2>
+            <p class="desc" data-i18n="studio_card_sec_desc">
+              Every tweak updates the binary RGB565 Card stream in under 100 ms. Layouts automatically reflow in TATE vertical orientation.
+            </p>
+
+            <label data-i18n="studio_lbl_layout">Pixel-Art Card Layout (5 Presets)</label>
+            <div class="layout-cards-grid" id="studio-layout-grid">
+              <button type="button" class="layout-card-btn active" data-layout="classic_split" onclick="selectStudioLayout('classic_split')">
+                <span class="layout-wire"><span style="width:36%;background:#ff6d00;opacity:0.75"></span><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span></span>
+                <span data-i18n="lay_classic_split">Classic Split</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="poster_right" onclick="selectStudioLayout('poster_right')">
+                <span class="layout-wire"><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span><span style="width:36%;background:#ff6d00;opacity:0.75"></span></span>
+                <span data-i18n="lay_poster_right">Poster Right</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="badge_header" onclick="selectStudioLayout('badge_header')">
+                <span class="layout-wire" style="flex-direction:column"><span style="height:5px;background:#ff6d00"></span><span style="flex:1;display:flex"><span style="width:32%;background:#2c394f"></span><span style="flex:1"></span></span></span>
+                <span data-i18n="lay_badge_header">Badge Header</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="hero_banner" onclick="selectStudioLayout('hero_banner')">
+                <span class="layout-wire" style="flex-direction:column;background:linear-gradient(180deg,#2c394f,#06080d)"><span style="flex:1"></span><span style="height:7px;background:rgba(0,0,0,0.8);border-top:1px solid #00e5ff"></span></span>
+                <span data-i18n="lay_hero_banner">Hero Banner</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="minimal_arcade" onclick="selectStudioLayout('minimal_arcade')">
+                <span class="layout-wire" style="flex-direction:column;justify-content:center;padding:0 4px;gap:2px"><span style="height:4px;background:#ffab00"></span><span style="height:2px;background:#8b949e;width:80%"></span></span>
+                <span data-i18n="lay_minimal_arcade">Minimal Text</span>
+              </button>
+            </div>
+
+            <div class="form-grid-3">
+              <div class="field">
+                <label data-i18n="studio_lbl_theme">Visual Theme (card_theme)</label>
+                <select id="studio-theme" onchange="scheduleStudioCardPreview()">
+                  <option value="tinted" data-i18n="thm_tinted">Tinted Dark (Badge Glow)</option>
+                  <option value="pure_black" data-i18n="thm_pure_black">Pure Black HUB75 (Zero Glow)</option>
+                  <option value="neon_border" data-i18n="thm_neon_border">Neon Arcade Frame (1px)</option>
+                  <option value="poster_wash" data-i18n="thm_poster_wash">Poster Color Wash</option>
+                  <option value="amber_dmd" data-i18n="thm_amber_dmd">Amber Pinball DMD (#FF7300)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_font">Pixel Typography (card_font)</label>
+                <select id="studio-font" onchange="scheduleStudioCardPreview()">
+                  <option value="arcade_pixel" data-i18n="fnt_arcade_pixel">Arcade Pixel (1-bit Crisp)</option>
+                  <option value="clean_sans" data-i18n="fnt_clean_sans">Clean Sans (Smooth)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_accent">Accent Color</label>
+                <div class="input-row">
+                  <select id="studio-accent-mode" onchange="onStudioAccentModeChange()" style="flex:1">
+                    <option value="auto" data-i18n="opt_accent_auto">Auto (Badge)</option>
+                    <option value="custom" data-i18n="opt_accent_custom">Custom #Hex</option>
+                  </select>
+                  <input type="color" id="studio-accent-picker" class="studio-color" value="#ff6d00" onchange="scheduleStudioCardPreview()" disabled />
+                </div>
+              </div>
+            </div>
+
+            <div class="studio-toggles">
+              <label class="chk-pill"><input type="checkbox" id="st-inc-card" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_card">Card Intro</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-inc-poster" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_poster">Poster / Boxart</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-show-badge" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_badge">System / Genre Badge</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-show-year" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_year">Year</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-show-rating" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_rating">★ Rating</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-inc-synopsis" class="studio-chk" checked onchange="scheduleStudioCardPreview()" /> <span data-i18n="st_tog_synopsis">Synopsis Ticker</span></label>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label><span data-i18n="studio_lbl_scroll_speed">Scroll Speed (1..10)</span>: <b id="lbl-val-scroll" style="color:var(--cyan)">4 (Normal)</b></label>
+                <input type="range" id="st-scroll-speed" class="studio-range" min="1" max="10" step="1" value="4" oninput="updateStudioSliderLabels(); scheduleStudioCardPreview();" />
+              </div>
+              <div class="field">
+                <label><span data-i18n="studio_lbl_card_hold">Intro Static Hold (s)</span>: <b id="lbl-val-hold" style="color:var(--cyan)">0.9s</b></label>
+                <input type="range" id="st-card-hold" class="studio-range" min="0.2" max="4.0" step="0.1" value="0.9" oninput="updateStudioSliderLabels(); scheduleStudioCardPreview();" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 data-i18n="studio_seq_sec_title">2. Full Sequence Content (Panoramas, Screenshots &amp; Video)</h2>
+            <p class="desc" data-i18n="studio_seq_sec_desc">
+              Choose which visual chapters follow the Info Card (ArcadeMatrix parity + extended screenshot &amp; framing controls).
+            </p>
+            <div class="studio-toggles" style="margin-top:0">
+              <label class="chk-pill"><input type="checkbox" id="st-jacket-pan" class="studio-chk" checked onchange="markStudioFullDirty()" /> <span data-i18n="st_tog_jacket_pan">Poster Vertical Scan</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-marquee-pan" class="studio-chk" onchange="markStudioFullDirty()" /> <span data-i18n="st_tog_marquee_pan">Marquee / Backdrop Scan</span></label>
+              <label class="chk-pill"><input type="checkbox" id="st-inc-video" class="studio-chk" checked onchange="markStudioFullDirty()" /> <span data-i18n="st_tog_video">Video Trailer / Gameplay</span></label>
+            </div>
+            <div class="form-grid-3">
+              <div class="field">
+                <label data-i18n="studio_lbl_snaps">Screenshots Count (0..5)</label>
+                <select id="st-snap-count" onchange="markStudioFullDirty()">
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2" selected>2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_pan_dur">Panorama Scan Duration (s)</label>
+                <input type="number" id="st-pan-dur" min="1.5" max="15" step="0.5" value="3.5" onchange="markStudioFullDirty()" />
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_vid_dur">Max Video Clip (s)</label>
+                <input type="number" id="st-vid-dur" min="1.5" max="60" step="0.5" value="8.0" onchange="markStudioFullDirty()" />
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_vid_fps">Stream Frame Rate (FPS)</label>
+                <select id="st-vid-fps" onchange="scheduleStudioCardPreview()">
+                  <option value="12">12 FPS</option>
+                  <option value="15" selected>15 FPS</option>
+                  <option value="20">20 FPS</option>
+                  <option value="25">25 FPS</option>
+                  <option value="30">30 FPS</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_vid_type">Preferred Clip Type (video_type)</label>
+                <select id="st-video-type" onchange="markStudioFullDirty()">
+                  <option value="any" data-i18n="opt_vtype_any">Any (Gameplay / Trailer / Clip)</option>
+                  <option value="trailer" data-i18n="opt_vtype_trailer">Official Trailer (Movies / Series)</option>
+                  <option value="opening" data-i18n="opt_vtype_opening">Opening Theme OP (Anime)</option>
+                  <option value="ending" data-i18n="opt_vtype_ending">Ending Theme ED (Anime)</option>
+                  <option value="pv" data-i18n="opt_vtype_pv">Promotional Video PV</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_video_mode">Video Framing Mode (video_mode)</label>
+                <select id="st-video-mode" onchange="markStudioFullDirty()">
+                  <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
+                  <option value="panorama" data-i18n="opt_vmode_panorama">Panorama (Top-Bottom Scan)</option>
+                  <option value="center_crop" data-i18n="opt_vmode_crop">Static Center Crop</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_color_boost">LED Color Boost (color_boost)</label>
+                <select id="st-color-boost" onchange="scheduleStudioCardPreview()">
+                  <option value="auto" data-i18n="opt_cboost_auto">Auto (Let Me Handle It AI)</option>
+                  <option value="pixel_art" data-i18n="opt_cboost_pixel">Pixel Art (Crisp Retro)</option>
+                  <option value="anime" data-i18n="opt_cboost_anime">Anime (Vibrant Cel-Shaded)</option>
+                  <option value="cinema" data-i18n="opt_cboost_cinema">Cinema (Balanced Contrast &amp; Shadows)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: REAL-TIME MOD SIM DMD + ACTIVE DMD QUEUE -->
+        <div>
+          <div class="card">
+            <div class="sim-toolbar">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <b style="color:var(--cyan)" data-i18n="studio_sim_title">HUB75 Mod Sim DMD</b>
+                <span id="studio-sim-badge" class="pill ok">⚡ Card Preview</span>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <select id="studio-led-mode" onchange="redrawCurrentStudioFrame()" style="width:auto;height:32px;line-height:30px;font-size:0.8rem;padding:0 28px 0 8px">
+                  <option value="smd_round" data-i18n="sim_mode_smd">💡 SMD Round LEDs</option>
+                  <option value="pixel_grid" data-i18n="sim_mode_grid">🟦 Square LED Grid</option>
+                  <option value="raw" data-i18n="sim_mode_raw">🖼️ Raw 1:1 Pixels</option>
+                </select>
+                <select id="studio-led-zoom" onchange="redrawCurrentStudioFrame()" style="width:auto;height:32px;line-height:30px;font-size:0.8rem;padding:0 28px 0 8px">
+                  <option value="auto" data-i18n="sim_zoom_auto">Zoom: Auto</option>
+                  <option value="3">3×</option>
+                  <option value="4">4×</option>
+                  <option value="6">6×</option>
+                  <option value="8">8×</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="sim-stage-wrap">
+              <canvas id="studio-dmd-canvas" width="512" height="128"></canvas>
+              <div style="display:flex;justify-content:space-between;width:100%;margin-top:8px;font-size:0.76rem;color:var(--muted)">
+                <span id="studio-sim-meta">128×32 • 15 FPS</span>
+                <span id="studio-sim-frame-lbl">Frame 0 / 0</span>
+              </div>
+            </div>
+
+            <div id="studio-chapters-bar" class="chapter-pills"></div>
+
+            <div class="sim-controls-row">
+              <button type="button" class="secondary mini-btn" onclick="studioStepFrame(-1)">⏮</button>
+              <button type="button" class="secondary mini-btn" id="btn-studio-play" onclick="toggleStudioPlay()">⏸</button>
+              <button type="button" class="secondary mini-btn" onclick="studioStepFrame(1)">⏭</button>
+              <input type="range" id="studio-scrubber" class="studio-range" min="0" max="0" value="0" style="flex:1;min-width:110px" oninput="onStudioScrub(this.value)" />
+            </div>
+
+            <div class="form-actions" style="margin-top:12px">
+              <button type="button" class="secondary" onclick="requestStudioCardPreviewNow()" data-i18n="studio_btn_fast_card">
+                ⚡ Refresh Card (&lt;100ms)
+              </button>
+              <button type="button" id="btn-studio-full-sim" onclick="runStudioFullPreview()" data-i18n="studio_btn_full_sim">
+                🎬 Simulate Full Sequence (Card + Snaps + Video)
+              </button>
+            </div>
+            <div id="studio-sim-status" class="toast" style="margin-top:8px"></div>
+          </div>
+
+          <!-- ACTIVE DMD LIVE QUEUE INJECTION -->
+          <div class="card">
+            <h2>
+              <span data-i18n="studio_queue_sec_title">3. Active DMD &amp; Live Simulation Queue</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" class="secondary mini-btn" onclick="syncStudioResFromActiveDmd()" data-i18n="studio_btn_sync_res">📐 Match DMD Res</button>
+                <button type="button" class="secondary mini-btn" onclick="skipStudioTargetDmd()" data-i18n="btn_skip_now">⏭ Skip Current</button>
+              </div>
+            </h2>
+            <p class="desc" data-i18n="studio_queue_sec_desc">
+              Inject this exact customized simulation into the active DMD's queue (0 ms instant promotion without re-transcoding when Full Sequence matches DMD geometry) or save the style as its default Mode 2B profile.
+            </p>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label data-i18n="studio_lbl_active_dmd">Active DMD Matrix</label>
+                <select id="studio-target-dmd" onchange="onStudioTargetDmdChange()">
+                  <option value="" data-i18n="studio_opt_no_dmd">— Select or connect a DMD —</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_mark_seen">Consume-Once History Policy</label>
+                <select id="studio-mark-seen">
+                  <option value="false" data-i18n="opt_mark_seen_no">Keep repeatable (FrontendSync mode)</option>
+                  <option value="true" data-i18n="opt_mark_seen_yes">Mark as Seen after playback</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="studio-active-dmd-banner" style="margin-top:10px;padding:8px 11px;background:#0d121b;border:1px solid var(--border);border-radius:8px;font-size:0.82rem;color:var(--muted)"></div>
+
+            <div class="form-actions" style="margin-top:12px">
+              <button type="button" onclick="enqueueStudioSim('enqueue_next')" data-i18n="studio_btn_add_sim_queue">
+                ➕ Add Simulation to Active DMD Queue
+              </button>
+              <button type="button" class="secondary" onclick="enqueueStudioSim('play_now')" data-i18n="studio_btn_play_sim_now">
+                ⚡ Broadcast Simulation Now
+              </button>
+              <button type="button" id="btn-st-sec3-save" class="secondary" onclick="saveStudioStyleToDmdProfile(false)" data-i18n="studio_btn_save_dom_prof">
+                💾 Save Domain Profile to DMD
+              </button>
+              <button type="button" id="btn-st-sec3-save-all" class="secondary" onclick="saveStudioStyleToDmdProfile(true)" data-i18n="studio_btn_copy_all_doms">
+                📋 Apply to All 4 Domains
+              </button>
+            </div>
+            <div id="studio-queue-action-msg" class="toast" style="margin-top:8px"></div>
+
+            <div id="studio-dmd-queue-list" style="margin-top:12px;font-size:0.84rem;color:var(--muted)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: API KEYS & ENCRYPTED VAULT -->
+    <div id="tab-keys" class="tab-pane">
+      <div class="card">
+        <h2 data-i18n="vault_title">Built-in &amp; Environment Key Status (Prod Vault / .env / docker-compose)</h2>
+        <p class="desc" data-i18n="vault_desc">
+          Runtime priority: 1. WebUI Override (server_config.json) → 2. .env / docker-compose.yml → 3. Native _prod_vault binary (CI/CD Prod Release). Developer keys are never exposed in plaintext.
+        </p>
+        <div class="vault-grid">
+          <div class="vault-box">
+            <div class="vault-title">ScreenScraper Dev API (devid / devpassword)</div>
+            <div id="vault-ss-dev" class="pill warn">Checking...</div>
+            <div style="color:var(--muted);font-size:0.78rem;margin-top:8px" data-i18n="vault_ss_note">
+              Developer credentials required by ScreenScraper API v2. When absent, the server automatically fails over to ArcadeItalia.
+            </div>
+          </div>
+          <div class="vault-box">
+            <div class="vault-title">TMDB API v3/v4 (Movies &amp; TV Series)</div>
+            <div id="vault-tmdb" class="pill warn">Checking...</div>
+            <div style="color:var(--muted);font-size:0.78rem;margin-top:8px" data-i18n="vault_tmdb_note">
+              Default key active via .env or Prod Vault. Can optionally be overridden below with your own personal key.
+            </div>
+          </div>
+          <div class="vault-box">
+            <div class="vault-title">TheTVDB API v4 (Series, Anime &amp; Movies)</div>
+            <div id="vault-tvdb" class="pill warn">Checking...</div>
+            <div style="color:var(--muted);font-size:0.78rem;margin-top:8px" data-i18n="vault_tvdb_note">
+              Default key active via .env or Prod Vault for localized synopses and official trailers.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="user_keys_title">User Credentials &amp; Optional Overrides</h2>
+        <p class="desc" data-i18n="user_keys_desc">
+          Enter your free ScreenScraper member account (SSID / password) to use your player quota. TMDB and TheTVDB fields are optional when an .env or Prod Vault key is already active.
+        </p>
+        <div class="form-grid-2">
+          <div class="field">
+            <label data-i18n="lbl_ss_user">ScreenScraper Player Account — Username (SSID)</label>
+            <input type="text" id="screenscraper_user" data-i18n-placeholder="ph_ss_user" placeholder="Your ScreenScraper username (e.g. player1)" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_ss_pass">ScreenScraper Player Account — Password</label>
+            <div class="input-row">
+              <input type="password" id="screenscraper_pass" data-i18n-placeholder="ph_ss_pass" placeholder="ScreenScraper player password" />
+              <button type="button" class="icon-btn" onclick="togglePwd('screenscraper_pass')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('screenscraper_pass')">✕</button>
+            </div>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_tmdb_override">Custom TMDB Key (Optional — leave empty to use .env / Prod Vault)</label>
+            <div class="input-row">
+              <input type="password" id="tmdb_api_key" data-i18n-placeholder="ph_vault_default" placeholder="Uses built-in / .env key when left empty" />
+              <button type="button" class="icon-btn" onclick="togglePwd('tmdb_api_key')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('tmdb_api_key')">✕</button>
+            </div>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_tvdb_override">Custom TheTVDB v4 Key (Optional — leave empty to use .env / Prod Vault)</label>
+            <div class="input-row">
+              <input type="password" id="tvdb_api_key" data-i18n-placeholder="ph_vault_default" placeholder="Uses built-in / .env key when left empty" />
+              <button type="button" class="icon-btn" onclick="togglePwd('tvdb_api_key')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('tvdb_api_key')">✕</button>
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button onclick="saveConfig()" data-i18n="btn_save">Save Server Configuration</button>
+          <span id="status-msg-keys" class="toast"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: NETWORK, MQTT & MAINTENANCE -->
+    <div id="tab-network" class="tab-pane">
+      <div class="card">
+        <h2 data-i18n="net_title">Language, MQTT Broker, mDNS &amp; Security Settings</h2>
+        <div class="form-grid-2">
+          <div class="field">
+            <label data-i18n="lbl_default_lang">Default Metadata &amp; Synopsis Language</label>
+            <select id="default_lang">
+              <option value="fr">Français (fr)</option>
+              <option value="en">English (en)</option>
+              <option value="es">Español (es)</option>
+              <option value="de">Deutsch (de)</option>
+              <option value="it">Italiano (it)</option>
+              <option value="pt">Português (pt)</option>
+              <option value="ja">日本語 (ja)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mqtt_mode">MQTT Broker Mode</label>
+            <select id="mqtt_mode" onchange="syncMqttModeUi()">
+              <option value="embedded" data-i18n="opt_mqtt_embedded">Embedded Broker (:1883 built-in — Recommended)</option>
+              <option value="external" data-i18n="opt_mqtt_external">External MQTT Broker (Mosquitto / Home Assistant)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mqtt_port">Embedded MQTT Broker TCP Port (mqtt_port)</label>
+            <input type="number" id="mqtt_port" min="1" max="65535" step="1" value="1883" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mqtt_url">External MQTT Broker URL (when mode = external)</label>
+            <input type="text" id="mqtt_external_url" data-i18n-placeholder="ph_mqtt_url" placeholder="mqtt://192.168.1.50:1883" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mdns_enabled">LAN mDNS Auto-Discovery (:5353 .local)</label>
+            <select id="mdns_enabled" onchange="syncMdnsUi()">
+              <option value="true" data-i18n="opt_bool_enabled">Enabled</option>
+              <option value="false" data-i18n="opt_bool_disabled">Disabled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_mdns_hostname">mDNS Hostname (.local)</label>
+            <input type="text" id="mdns_hostname" placeholder="dmdmediashowcase" />
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_trust_proxy">Trust Reverse Proxy Headers (X-Forwarded-Proto/For)</label>
+            <select id="trust_proxy_headers">
+              <option value="true" data-i18n="opt_bool_enabled">Enabled</option>
+              <option value="false" data-i18n="opt_bool_disabled">Disabled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="lbl_showcase_key">Optional HTTP/Cloud Access Key (X-Showcase-Key — empty = open LAN)</label>
+            <div class="input-row">
+              <input type="password" id="showcase_api_key" data-i18n-placeholder="ph_showcase_key" placeholder="Empty = passwordless Home-Lab LAN mode" />
+              <button type="button" class="icon-btn" onclick="togglePwd('showcase_api_key')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('showcase_api_key')">✕</button>
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button onclick="saveConfig()" data-i18n="btn_save_live">Save &amp; Apply in Real Time</button>
+          <span id="status-msg-net" class="toast"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="ref_title">Upstream Referential Synchronization (Official Catalogs)</h2>
+        <p class="desc" data-i18n="ref_desc">
+          Force immediate synchronization of upstream genre &amp; system indexes (ArcadeItalia MAME ADB, Libretro+Wikidata, Jikan MAL, AniList GraphQL, TVMaze) and republish retained MQTT catalogs.
+        </p>
+        <div class="form-actions" style="margin-top:0">
+          <button class="secondary" onclick="syncReferentials()" id="btn-sync-ref" data-i18n="btn_sync_ref">
+            🔄 Sync Upstream Referentials Now
+          </button>
+          <span id="sync-status" class="toast"></span>
+        </div>
+        <div class="badges" id="ref-badges"></div>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="seen_title">Consume-Once History (seen_history.json)</h2>
+        <p class="desc" data-i18n="seen_desc">
+          Every title played on a DMD matrix is immediately marked as consumed to guarantee continuous discovery with zero repetition.
+        </p>
+        <div class="badges" id="seen-badges"></div>
+        <div class="form-actions">
+          <button class="danger" onclick="resetHistory('')" data-i18n="btn_reset_all">Reset All Domains</button>
+          <button class="secondary" onclick="resetHistory('games')" data-i18n="btn_reset_games">Reset Games</button>
+          <button class="secondary" onclick="resetHistory('movies')" data-i18n="btn_reset_movies">Reset Movies</button>
+          <button class="secondary" onclick="resetHistory('series')" data-i18n="btn_reset_series">Reset Series</button>
+          <button class="secondary" onclick="resetHistory('anime')" data-i18n="btn_reset_anime">Reset Anime</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MULTI-SELECT TAG PICKER MODAL (SYSTEMS / GENRES & DECADES) -->
+  <div id="tag-picker-modal" class="modal-backdrop" onclick="if(event.target===this) closeTagPickerModal()">
+    <div class="tag-modal" role="dialog" aria-modal="true">
+      <div class="tag-modal-head">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
+          <b id="tag-modal-title" style="font-size:1.02rem;color:#fff">🏷️ Select Tags</b>
+          <button type="button" class="secondary mini-btn" onclick="closeTagPickerModal()" data-i18n="btn_close">✕ Close</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="tag-modal-search" oninput="renderTagPickerOptions()" data-i18n-placeholder="ph_tag_search" placeholder="🔍 Filter systems, genres, or decades..." style="flex:1;min-width:200px;height:36px" />
+          <button type="button" class="secondary mini-btn" onclick="clearAllTagModal()" data-i18n="btn_tag_clear_all">✨ All (No Filter)</button>
+          <button type="button" class="secondary mini-btn" onclick="selectVisibleTagModal()" data-i18n="btn_tag_select_vis">✓ Select Visible</button>
+        </div>
+      </div>
+      <div class="tag-modal-body" id="tag-modal-body"></div>
+      <div class="tag-modal-foot">
+        <span id="tag-modal-count" style="font-size:0.82rem;color:var(--muted)">0 selected</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="secondary" onclick="closeTagPickerModal()" data-i18n="btn_cancel">Cancel</button>
+          <button type="button" onclick="applyTagPickerModal()" data-i18n="btn_apply_tags">✓ Apply Selection</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

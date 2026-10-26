@@ -177,17 +177,27 @@ class AniListAdapter(IScraperSource):
         seen_ids: Set[str],
         count: int = 1,
     ) -> List[MediaCandidate]:
-        genre_keys = [g.lower().strip() for g in criteria.genres if g.lower().strip() in ANIME_GENRES]
-        chosen_genre_key = random.choice(genre_keys) if genre_keys else "shonen"
-        g_meta = ANIME_GENRES[chosen_genre_key]
+        genre_keys: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("anime", g)
+            gk = cg if cg in ANIME_GENRES else g.strip().lower()
+            if gk in ANIME_GENRES and gk not in genre_keys:
+                genre_keys.append(gk)
+
+        explicit_g_meta: Optional[Dict[str, Any]] = None
+        if genre_keys:
+            explicit_g_meta = ANIME_GENRES[random.choice(genre_keys)]
 
         base_variables: Dict[str, Any] = {
             "perPage": 25,
         }
-        if g_meta.get("anilist_tag"):
-            base_variables["tag"] = g_meta["anilist_tag"]
-        else:
-            base_variables["genre"] = g_meta["anilist"]
+        if explicit_g_meta is not None:
+            if explicit_g_meta.get("anilist_tag"):
+                base_variables["tag"] = explicit_g_meta["anilist_tag"]
+            else:
+                base_variables["genre"] = explicit_g_meta["anilist"]
 
         valid_decades = [d for d in criteria.decades if d in DECADE_BOUNDS]
         if valid_decades:
@@ -198,7 +208,8 @@ class AniListAdapter(IScraperSource):
 
         results: List[MediaCandidate] = []
         tried_pages: Set[int] = set()
-        max_page = 15
+        page_cap = 15 if explicit_g_meta is not None else 40
+        max_page = page_cap
         async with create_async_http_client(timeout=5.5) as client:
             for _ in range(max(2, count * 2)):
                 if len(results) >= count:
@@ -219,7 +230,7 @@ class AniListAdapter(IScraperSource):
                         continue
                     page_data = (resp.json().get("data") or {}).get("Page") or {}
                     last_page = int(((page_data.get("pageInfo") or {}).get("lastPage")) or 1)
-                    max_page = max(1, min(15, last_page))
+                    max_page = max(1, min(page_cap, last_page))
                     items = page_data.get("media") or []
                     if not items and page > 1:
                         fallback_pages = [p for p in range(1, max_page + 1) if p not in tried_pages] or [1]
@@ -240,8 +251,14 @@ class AniListAdapter(IScraperSource):
                         cid = f"anime_anilist_{item.get('id')}"
                         if cid in seen_ids:
                             continue
+                        node_genres = {str(x).lower() for x in (item.get("genres") or []) if x}
+                        item_g_meta = (
+                            explicit_g_meta
+                            if explicit_g_meta is not None
+                            else self._infer_anilist_genre_meta(node_genres, genre_keys)
+                        )
                         cand = await self._build_anilist_candidate(
-                            client, item, g_meta, criteria.lang, criteria.video_type
+                            client, item, item_g_meta, criteria.lang, criteria.video_type
                         )
                         if cand:
                             seen_ids.add(cand.id)
