@@ -1,16 +1,22 @@
 """
-Persistence adapters (`JsonSeenHistoryRepository`, `ServerConfigStore`, and `DmdProfileStore`).
+Persistence adapters (`JsonSeenHistoryRepository`, `ServerConfigStore`, `DmdProfileStore`, and `RetainedClientConfigStore`).
 """
 
 from app.infrastructure.persistence.dmd_profile_store import DmdProfileStore, dmd_profile_store
 from app.infrastructure.persistence.json_seen_repository import JsonSeenHistoryRepository, seen_repository
+from app.infrastructure.persistence.mqtt_retained_store import (
+    RetainedClientConfigStore,
+    mqtt_retained_store,
+)
 from app.infrastructure.persistence.server_config_store import ServerConfigStore, server_config_store
 
 __all__ = [
     "DmdProfileStore",
     "JsonSeenHistoryRepository",
+    "RetainedClientConfigStore",
     "ServerConfigStore",
     "dmd_profile_store",
+    "mqtt_retained_store",
     "seen_repository",
     "server_config_store",
 ]

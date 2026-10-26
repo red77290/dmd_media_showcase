@@ -50,7 +50,13 @@ from app.domain.entities import FilterCriteria, MediaCandidate
 from app.infrastructure.mqtt.embedded_broker import EmbeddedMqttBroker, _ClientSession
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
 from app.infrastructure.persistence.json_seen_repository import JsonSeenHistoryRepository
-from app.infrastructure.web_admin import ADMIN_DASHBOARD_HTML
+from app.infrastructure.web_admin import (
+    ADMIN_DASHBOARD_HTML,
+    STATIC_WEB_DIR,
+    iter_static_js_files,
+    load_combined_static_css,
+    load_combined_static_js,
+)
 from app.main import _session_client_meta, app
 from app.providers.base import RawMediaCandidate
 from app.scheduler.worker_pool import batch_manager
@@ -80,59 +86,75 @@ def _cleanup_worker_pool_between_tests():
 @pytest.mark.asyncio
 async def test_admin_dashboard_html_css_alignment_and_js_syntax(tmp_path: Path, monkeypatch):
     """
-    Verify `/` and `/admin` serve valid HTML, strict 42px dark form control CSS rules,
-    syntactically valid JavaScript (`node --check`), and 100% EN/FR/ES I18N parity.
+    Verify `/`, `/admin`, and `/static/*` serve externalized HTML5, modular CSS stylesheets,
+    syntactically valid ES JavaScript modules (`node --check`), and 100% EN/FR/ES I18N parity.
     """
     monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(settings, "showcase_api_key", "test-static-bypass-secret")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r_root = await client.get("/")
         r_admin = await client.get("/admin")
+        r_css_dash = await client.get("/static/css/dashboard.css")
+        r_css_studio = await client.get("/static/css/studio.css")
+        r_css_resp = await client.get("/static/css/responsive.css")
+        r_js_entry = await client.get("/static/js/app.js")
         assert r_root.status_code == 200
         assert r_admin.status_code == 200
         assert r_root.text == r_admin.text
+        assert r_root.headers.get("cache-control") == "no-cache"
+        assert r_css_dash.status_code == 200
+        assert r_css_studio.status_code == 200
+        assert r_css_resp.status_code == 200
+        assert r_css_resp.headers.get("cache-control") == "no-cache"
+        assert r_js_entry.status_code == 200
 
     html = ADMIN_DASHBOARD_HTML
-    assert '<html lang="en">' in html
-    assert "color-scheme: dark;" in html
+    css_code = load_combined_static_css()
+    js_code = load_combined_static_js()
 
-    # Verify cross-browser select/input alignment & Windows Chrome/Edge dark <option> styling
-    assert "select option, option" in html
-    assert "background-color: #131924;" in html
-    assert "height: 42px;" in html
-    assert "align-items: end;" in html
+    assert '<html lang="en">' in html
+    assert '/static/css/dashboard.css' in html
+    assert '/static/css/studio.css' in html
+    assert '/static/css/responsive.css' in html
+    assert '<script type="module" src="/static/js/app.js"></script>' in html
+    assert "<style>" not in html
     assert 'class="form-actions"' in html
 
+    # Verify cross-browser select/input alignment & Windows Chrome/Edge dark <option> styling
+    assert "color-scheme: dark;" in css_code
+    assert "select option, option" in css_code
+    assert "background-color: #131924;" in css_code
+    assert "height: 42px;" in css_code
+    assert "align-items: end;" in css_code
+
     # Ensure #test-system-wrap is never hidden with display:none (prevents 3-column grid shift)
-    script_match = re.search(r"<script>([\s\S]*?)</script>", html)
-    assert script_match is not None, "Embedded <script> block missing from ADMIN_DASHBOARD_HTML"
-    js_code = script_match.group(1)
     assert "sysWrap.style.display" not in js_code
     assert "sysEl.disabled = !isGames;" in js_code
     assert "X-Showcase-Key" in js_code
     assert "isMaskedSecret" in js_code
 
-    # Extract & verify JavaScript syntax + I18N key parity via node when available
+    # Verify JavaScript syntax across all ES modules + I18N key parity via node when available
     node_bin = shutil.which("node")
     if node_bin:
-        js_file = tmp_path / "admin_dashboard.js"
-        js_file.write_text(js_code, encoding="utf-8")
-        chk = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
-        assert chk.returncode == 0, f"JavaScript syntax error in web_admin.py: {chk.stderr}"
+        js_files = iter_static_js_files()
+        assert len(js_files) >= 12
+        for mod_path in js_files:
+            chk = subprocess.run([node_bin, "--check", str(mod_path)], capture_output=True, text=True)
+            assert chk.returncode == 0, f"JavaScript syntax error in {mod_path.name}: {chk.stderr}"
 
-        i18n_prefix = js_code.split("const CANONICAL_DOMAINS")[0]
-        eval_file = tmp_path / "eval_i18n.js"
-        eval_file.write_text(
-            i18n_prefix
-            + "\nconsole.log(JSON.stringify({"
-            + "en: Object.keys(I18N.en).sort(),"
-            + "fr: Object.keys(I18N.fr).sort(),"
-            + "es: Object.keys(I18N.es).sort()"
-            + "}));\n",
-            encoding="utf-8",
+        i18n_entry_url = (STATIC_WEB_DIR / "js" / "i18n" / "index.js").resolve().as_uri()
+        eval_script = (
+            f"import({json.dumps(i18n_entry_url)}).then((m) => {{"
+            "console.log(JSON.stringify({"
+            "en: Object.keys(m.I18N.en).sort(),"
+            "fr: Object.keys(m.I18N.fr).sort(),"
+            "es: Object.keys(m.I18N.es).sort()"
+            "}));"
+            "});"
         )
-        res = subprocess.run([node_bin, str(eval_file)], capture_output=True, text=True, check=True)
+        res = subprocess.run([node_bin, "-e", eval_script], capture_output=True, text=True, check=True)
         parsed = json.loads(res.stdout)
         en_keys = set(parsed["en"])
         fr_keys = set(parsed["fr"])
@@ -871,13 +893,15 @@ async def test_realtime_admin_config_updates_workers_video_limits_and_logging(
 def test_no_user_facing_ddd_jargon_in_ui_readmes_or_openapi():
     """
     Ensure architectural 'DDD' jargon never leaks into end-user surfaces
-    (WebUI HTML/I18N, OpenAPI/Swagger descriptions, READMEs, QuickStart, ESP32 guides,
+    (WebUI HTML/CSS/JS/I18N, OpenAPI/Swagger descriptions, READMEs, QuickStart, ESP32 guides,
     Dockerfile, pyproject.toml, or CI release notes), staying strictly in ARCHITECTURE/DEVELOPER docs.
     """
     repo_root = Path(__file__).resolve().parent.parent
     ddd_re = re.compile(r"\bddd\b", re.IGNORECASE)
 
     assert not ddd_re.search(ADMIN_DASHBOARD_HTML), "Found 'DDD' in ADMIN_DASHBOARD_HTML"
+    assert not ddd_re.search(load_combined_static_css()), "Found 'DDD' in static CSS stylesheets"
+    assert not ddd_re.search(load_combined_static_js()), "Found 'DDD' in static ES JS modules"
     openapi_text = json.dumps(app.openapi(), ensure_ascii=False)
     assert not ddd_re.search(openapi_text), "Found 'DDD' in live app.openapi() schema"
 
@@ -909,17 +933,17 @@ def test_passive_rotation_tag_picker_and_studio_domain_profiles_ui_coherence():
     zero raw CSV inputs or duplicated framing/color/video columns) and Tab 4 (4-Domain Studio
     Profile Switcher with bidirectional jump links).
     """
-    html = ADMIN_DASHBOARD_HTML
-    assert 'id="tag-picker-modal"' in html
-    assert "openTagPickerModal(" in html
-    assert "applyTagPickerModal(" in html
-    assert 'id="studio-dom-tabs"' in html
-    assert "selectStudioDomainProfile(" in html
-    assert "openStudioForDmdDomainFromEditor(" in html
-    assert "returnToDmdRotationEditor(" in html
+    webui_bundle = ADMIN_DASHBOARD_HTML + "\n" + load_combined_static_js()
+    assert 'id="tag-picker-modal"' in webui_bundle
+    assert "openTagPickerModal(" in webui_bundle
+    assert "applyTagPickerModal(" in webui_bundle
+    assert 'id="studio-dom-tabs"' in webui_bundle
+    assert "selectStudioDomainProfile(" in webui_bundle
+    assert "openStudioForDmdDomainFromEditor(" in webui_bundle
+    assert "returnToDmdRotationEditor(" in webui_bundle
 
     for removed_legacy_cls in ("pl-systems", "pl-genres", "pl-vmode", "pl-cboost", "pl-vdur"):
-        assert removed_legacy_cls not in html, f"Legacy duplicated input '{removed_legacy_cls}' still present in HTML"
+        assert removed_legacy_cls not in webui_bundle, f"Legacy duplicated input '{removed_legacy_cls}' still present in WebUI"
 
 
 def test_mode1_readonly_mqtt_inspector_and_studio_save_guard_in_webui():
@@ -928,7 +952,7 @@ def test_mode1_readonly_mqtt_inspector_and_studio_save_guard_in_webui():
     for Mode 1 DMDs (`config_source == 'client'`), and disables Studio profile-save buttons while keeping
     Simulation Queue injection active.
     """
-    html = ADMIN_DASHBOARD_HTML
+    webui_bundle = ADMIN_DASHBOARD_HTML + "\n" + load_combined_static_js()
     for required_token in (
         'id="prof-readonly-banner"',
         'id="prof-mqtt-json-wrap"',
@@ -944,7 +968,7 @@ def test_mode1_readonly_mqtt_inspector_and_studio_save_guard_in_webui():
         "syncStudioSaveButtonsState(",
         "summarizeLiveClientDomainBadges(",
     ):
-        assert required_token in html, f"Missing Mode 1 read-only inspector token in WebUI: {required_token}"
+        assert required_token in webui_bundle, f"Missing Mode 1 read-only inspector token in WebUI: {required_token}"
 
 
 def test_update_checker_semver_and_os_asset_matching():
@@ -1015,7 +1039,7 @@ def test_update_checker_semver_and_os_asset_matching():
 @pytest.mark.asyncio
 async def test_update_check_endpoint_and_webui_banner(monkeypatch):
     """Verify `/api/v1/system/update-check` caching, 404/offline resilience, and WebUI notification banner."""
-    html = ADMIN_DASHBOARD_HTML
+    webui_bundle = ADMIN_DASHBOARD_HTML + "\n" + load_combined_static_js()
     for token in (
         'id="update-banner"',
         'id="update-banner-asset-link"',
@@ -1024,7 +1048,7 @@ async def test_update_check_endpoint_and_webui_banner(monkeypatch):
         "renderUpdateBanner(",
         "dismissUpdateBanner(",
     ):
-        assert token in html, f"Missing update notification banner token in WebUI: {token}"
+        assert token in webui_bundle, f"Missing update notification banner token in WebUI: {token}"
 
     calls = {"count": 0, "mode": "newer"}
 

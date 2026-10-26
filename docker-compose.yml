@@ -12,21 +12,21 @@ services:
       - path: .env
         required: false
     environment:
-      - DEFAULT_LANG=${DEFAULT_LANG:-fr}
-      - HOST_LAN_IP=${HOST_LAN_IP:-}
-      - MQTT_MODE=${MQTT_MODE:-embedded}
-      - MQTT_PORT=${MQTT_PORT:-1883}
-      - MQTT_EXTERNAL_URL=${MQTT_EXTERNAL_URL:-}
-      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-0}
-      - FFMPEG_THREADS_PER_JOB=${FFMPEG_THREADS_PER_JOB:-1}
-      - WORKER_NICE_INCREMENT=${WORKER_NICE_INCREMENT:-10}
-      - SERVER_MASTER_CLIP_MAX_S=${SERVER_MASTER_CLIP_MAX_S:-30.0}
-      - TMDB_API_KEY=${TMDB_API_KEY:-}
-      - TVDB_API_KEY=${TVDB_API_KEY:-}
-      - SCREENSCRAPER_USER=${SCREENSCRAPER_USER:-}
-      - SCREENSCRAPER_PASS=${SCREENSCRAPER_PASS:-}
-      - SCREENSCRAPER_DEV_ID=${SCREENSCRAPER_DEV_ID:-}
-      - SCREENSCRAPER_DEV_PASS=${SCREENSCRAPER_DEV_PASS:-}
+      - DEFAULT_LANG
+      - HOST_LAN_IP
+      - MQTT_MODE
+      - MQTT_PORT
+      - MQTT_EXTERNAL_URL
+      - MAX_CONCURRENT_JOBS
+      - FFMPEG_THREADS_PER_JOB
+      - WORKER_NICE_INCREMENT
+      - SERVER_MASTER_CLIP_MAX_S
+      - TMDB_API_KEY
+      - TVDB_API_KEY
+      - SCREENSCRAPER_USER
+      - SCREENSCRAPER_PASS
+      - SCREENSCRAPER_DEV_ID
+      - SCREENSCRAPER_DEV_PASS
     volumes:
       # Persistent volume for server_config.json, dmd_profiles.json, seen_history.json & referentials/
       # Survives `docker compose down`, `docker compose down -v`, and image rebuilds/pulls.

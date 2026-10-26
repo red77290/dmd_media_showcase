@@ -15,14 +15,39 @@ import platform
 import re
 import sys
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
+import app.container  # noqa: F401
 from app import __version__
-from app.infrastructure.scrapers.http_utils import create_async_http_client
-from app.models import RuntimeOsType, UpdateCheckResponse
+from app.domain.ports.default_ports import default_port_registry
 
 logger = logging.getLogger("dmd_showcase.update_checker")
+
+RuntimeOsType = Literal["macos", "windows", "linux", "docker"]
+UpdateStatusType = Literal["update_available", "up_to_date", "no_release_yet", "unreachable"]
+
+
+@dataclass(frozen=True)
+class UpdateCheckResult:
+    """Pure Application-layer value object describing release update availability."""
+
+    status: UpdateStatusType
+    current_version: str
+    latest_version: Optional[str] = None
+    update_available: bool = False
+    runtime_os: RuntimeOsType = "linux"
+    runtime_arch: str = "x64"
+    os_label: str = "Linux (x64)"
+    release_url: str = "https://github.com/red77290/dmd_media_showcase/releases"
+    asset_name: Optional[str] = None
+    asset_download_url: Optional[str] = None
+    published_at: Optional[str] = None
+    checked_at: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 GITHUB_REPO = "red77290/dmd_media_showcase"
 GITHUB_RELEASES_HTML_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -180,25 +205,30 @@ class ReleaseUpdateChecker:
         current_version: str = __version__,
         ttl_ok_s: float = 3600.0,
         ttl_error_s: float = 300.0,
-        client_factory: Callable[..., Any] = create_async_http_client,
+        client_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.current_version = current_version
         self.ttl_ok_s = ttl_ok_s
         self.ttl_error_s = ttl_error_s
         self._client_factory = client_factory
         self._lock = asyncio.Lock()
-        self._cached: Optional[UpdateCheckResponse] = None
+        self._cached: Optional[UpdateCheckResult] = None
         self._expires_monotonic: float = 0.0
+
+    def _resolve_client_factory(self) -> Callable[..., Any]:
+        if self._client_factory is not None:
+            return self._client_factory
+        return default_port_registry.resolve("http_client_factory")
 
     def invalidate_cache(self) -> None:
         """Clear cached GitHub release metadata."""
         self._cached = None
         self._expires_monotonic = 0.0
 
-    async def check_for_update(self, *, force: bool = False) -> UpdateCheckResponse:
+    async def check_for_update(self, *, force: bool = False) -> UpdateCheckResult:
         """
         Query GitHub `/releases/latest` (or return cached result when fresh) and build
-        an OS-aware `UpdateCheckResponse`. Never raises on network or API errors.
+        an OS-aware `UpdateCheckResult`. Never raises on network or API errors.
         """
         now_mono = time.monotonic()
         if not force and self._cached is not None and now_mono < self._expires_monotonic:
@@ -211,16 +241,17 @@ class ReleaseUpdateChecker:
 
             runtime_os, runtime_arch, os_label = detect_runtime_platform()
             checked_ts = time.time()
+            factory = self._resolve_client_factory()
 
             try:
-                async with self._client_factory(
+                async with factory(
                     timeout=4.0,
                     headers={"Accept": "application/vnd.github+json"},
                 ) as client:
                     resp = await client.get(GITHUB_LATEST_API_URL)
 
                 if resp.status_code == 404:
-                    result = UpdateCheckResponse(
+                    result = UpdateCheckResult(
                         status="no_release_yet",
                         current_version=self.current_version,
                         latest_version=None,
@@ -237,7 +268,7 @@ class ReleaseUpdateChecker:
 
                 if resp.status_code != 200:
                     logger.debug("GitHub release check returned HTTP %s", resp.status_code)
-                    result = UpdateCheckResponse(
+                    result = UpdateCheckResult(
                         status="unreachable",
                         current_version=self.current_version,
                         latest_version=None,
@@ -254,7 +285,7 @@ class ReleaseUpdateChecker:
 
                 payload = resp.json()
                 if not isinstance(payload, dict) or payload.get("draft") or payload.get("prerelease"):
-                    result = UpdateCheckResponse(
+                    result = UpdateCheckResult(
                         status="no_release_yet",
                         current_version=self.current_version,
                         latest_version=None,
@@ -280,7 +311,7 @@ class ReleaseUpdateChecker:
                     "update_available" if has_update else "up_to_date"
                 )
 
-                result = UpdateCheckResponse(
+                result = UpdateCheckResult(
                     status=status_val,
                     current_version=self.current_version,
                     latest_version=clean_ver,
@@ -300,7 +331,7 @@ class ReleaseUpdateChecker:
 
             except Exception as exc:
                 logger.debug("GitHub release check skipped (offline or unreachable): %s", exc)
-                result = UpdateCheckResponse(
+                result = UpdateCheckResult(
                     status="unreachable",
                     current_version=self.current_version,
                     latest_version=None,

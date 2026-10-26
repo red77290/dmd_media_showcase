@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from app.domain.entities import DomainType
+from app.domain.ports.scraper_registry_port import IScraperRegistryPort
 from app.domain.ports.scraper_source import IScraperSource
 from app.domain.taxonomy import ReferentialConsolidator
 from app.infrastructure.scrapers.anime import AniListAdapter, JikanAnimeThemesAdapter
@@ -23,7 +24,7 @@ from app.infrastructure.scrapers.series import TmdbSeriesAdapter, TvMazeAdapter
 from app.infrastructure.scrapers.tvdb_adapter import TvdbSeriesAdapter
 
 
-class ScraperRegistry:
+class ScraperRegistry(IScraperRegistryPort):
     """
     Registry of domain scraper adapters (`IScraperSource`).
     Guarantees each domain has its Primary and Fallback source in priority order,

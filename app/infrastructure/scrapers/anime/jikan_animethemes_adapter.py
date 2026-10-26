@@ -13,6 +13,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 from typing import Any, Dict, List, Optional, Set
 
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
@@ -115,11 +116,44 @@ async def enrich_with_animethemes_webm(
 class JikanAnimeThemesAdapter(IScraperSource):
     """
     Primary `IScraperSource` for `anime` querying Jikan v4 + AnimeThemes.moe.
+    Includes a lightweight circuit-breaker backoff so upstream `api.jikan.moe` outages or
+    timeouts fail over in `0ms` to `AniListAdapter` instead of burning `12-24s` per slot.
     """
 
     source_id: str = "jikan_animethemes"
     domain: DomainType = "anime"
     role: str = "primary"
+
+    _FAILURE_THRESHOLD: int = 2
+    _BACKOFF_SECONDS: float = 180.0
+    _consecutive_failures: int = 0
+    _backoff_until_monotonic: float = 0.0
+
+    @classmethod
+    def reset_circuit_breaker(cls) -> None:
+        cls._consecutive_failures = 0
+        cls._backoff_until_monotonic = 0.0
+
+    @classmethod
+    def _is_circuit_open(cls) -> bool:
+        return time.monotonic() < cls._backoff_until_monotonic
+
+    @classmethod
+    def _record_jikan_success(cls) -> None:
+        cls._consecutive_failures = 0
+        cls._backoff_until_monotonic = 0.0
+
+    @classmethod
+    def _record_jikan_failure(cls, reason: str) -> None:
+        cls._consecutive_failures += 1
+        if cls._consecutive_failures >= cls._FAILURE_THRESHOLD:
+            cls._backoff_until_monotonic = time.monotonic() + cls._BACKOFF_SECONDS
+            logger.warning(
+                "[Jikan] Circuit breaker opened for %.0fs after %d consecutive failures (%s); failing over to AniList",
+                cls._BACKOFF_SECONDS,
+                cls._consecutive_failures,
+                reason,
+            )
 
     def is_configured(self) -> bool:
         return True
@@ -233,19 +267,34 @@ class JikanAnimeThemesAdapter(IScraperSource):
         seen_ids: Set[str],
         count: int = 1,
     ) -> List[MediaCandidate]:
-        genre_keys = [g.lower().strip() for g in criteria.genres if g.lower().strip() in ANIME_GENRES]
-        chosen_genre_key = random.choice(genre_keys) if genre_keys else "shonen"
-        g_meta = ANIME_GENRES[chosen_genre_key]
+        if self._is_circuit_open():
+            logger.debug("[Jikan] Circuit breaker open, skipping Jikan discovery")
+            return []
 
-        req_mal_id = int(g_meta["mal_id"])
+        genre_keys: List[str] = []
+        for g in criteria.genres or []:
+            if not g or g.strip().lower() == "all":
+                continue
+            cg = resolve_canonical_genre("anime", g)
+            gk = cg if cg in ANIME_GENRES else g.strip().lower()
+            if gk in ANIME_GENRES and gk not in genre_keys:
+                genre_keys.append(gk)
+
+        explicit_g_meta: Optional[Dict[str, Any]] = None
+        req_mal_id: Optional[int] = None
+        if genre_keys:
+            explicit_g_meta = ANIME_GENRES[random.choice(genre_keys)]
+            req_mal_id = int(explicit_g_meta["mal_id"])
+
         base_params: Dict[str, str] = {
-            "genres": str(req_mal_id),
             "order_by": "members",
             "sort": "desc",
             "limit": "25",
             "sfw": "true",
             "min_score": str(max(6.0, criteria.min_rating)),
         }
+        if req_mal_id is not None:
+            base_params["genres"] = str(req_mal_id)
         valid_decades = [d for d in criteria.decades if d in DECADE_BOUNDS]
         if valid_decades:
             start_d, end_d = DECADE_BOUNDS[random.choice(valid_decades)]
@@ -254,10 +303,11 @@ class JikanAnimeThemesAdapter(IScraperSource):
 
         results: List[MediaCandidate] = []
         tried_pages: Set[int] = set()
-        max_page = 12
-        async with create_async_http_client(timeout=6.0) as client:
+        page_cap = 15 if req_mal_id is not None else 30
+        max_page = page_cap
+        async with create_async_http_client(timeout=3.5) as client:
             for _ in range(max(2, count * 2)):
-                if len(results) >= count:
+                if len(results) >= count or self._is_circuit_open():
                     break
                 avail_pages = [p for p in range(1, max_page + 1) if p not in tried_pages]
                 if not avail_pages:
@@ -268,11 +318,15 @@ class JikanAnimeThemesAdapter(IScraperSource):
                 params["page"] = str(page)
                 try:
                     resp = await client.get("https://api.jikan.moe/v4/anime", params=params)
+                    if resp.status_code in (429, 500, 502, 503, 504):
+                        self._record_jikan_failure(f"HTTP {resp.status_code}")
+                        continue
                     if resp.status_code != 200:
                         continue
+                    self._record_jikan_success()
                     payload = resp.json()
                     last_page = int(((payload.get("pagination") or {}).get("last_visible_page")) or 1)
-                    max_page = max(1, min(15, last_page))
+                    max_page = max(1, min(page_cap, last_page))
                     if page > last_page and last_page >= 1:
                         fallback_pages = [p for p in range(1, max_page + 1) if p not in tried_pages] or [1]
                         page = random.choice(fallback_pages)
@@ -294,16 +348,22 @@ class JikanAnimeThemesAdapter(IScraperSource):
                             + (item.get("themes") or [])
                             + (item.get("demographics") or [])
                         )
+                        item_mal_ids: Set[int] = set()
                         if item_genre_objs:
                             item_mal_ids = {
                                 int(g.get("mal_id"))
                                 for g in item_genre_objs
                                 if isinstance(g, dict) and str(g.get("mal_id") or "").isdigit()
                             }
-                            if item_mal_ids and req_mal_id not in item_mal_ids:
+                            if req_mal_id is not None and item_mal_ids and req_mal_id not in item_mal_ids:
                                 continue
+                        item_g_meta = (
+                            explicit_g_meta
+                            if explicit_g_meta is not None
+                            else self._infer_jikan_genre_meta(item_mal_ids, genre_keys)
+                        )
                         cand = await self._build_jikan_candidate(
-                            client, item, g_meta, criteria.lang, criteria.video_type
+                            client, item, item_g_meta, criteria.lang, criteria.video_type
                         )
                         if cand:
                             seen_ids.add(cand.id)
@@ -311,6 +371,7 @@ class JikanAnimeThemesAdapter(IScraperSource):
                             if len(results) >= count:
                                 break
                 except Exception as exc:
+                    self._record_jikan_failure(type(exc).__name__)
                     logger.debug("[Jikan] Discover error: %s", exc)
 
         return results
@@ -334,7 +395,7 @@ class JikanAnimeThemesAdapter(IScraperSource):
         limit: int = 8,
     ) -> List[MediaCandidate]:
         q_clean = (query or "").strip()
-        if not q_clean or limit <= 0:
+        if not q_clean or limit <= 0 or self._is_circuit_open():
             return []
 
         target_limit = max(1, int(limit))
@@ -370,10 +431,14 @@ class JikanAnimeThemesAdapter(IScraperSource):
             params["end_date"] = end_d
 
         try:
-            async with create_async_http_client(timeout=5.5) as client:
+            async with create_async_http_client(timeout=3.5) as client:
                 resp = await client.get("https://api.jikan.moe/v4/anime", params=params)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    self._record_jikan_failure(f"HTTP {resp.status_code}")
+                    return []
                 if resp.status_code != 200:
                     return []
+                self._record_jikan_success()
                 raw_items = resp.json().get("data") or []
                 matched_specs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
                 seen_ids: Set[str] = set()
@@ -443,6 +508,7 @@ class JikanAnimeThemesAdapter(IScraperSource):
                 )
                 return [c for c in built if isinstance(c, MediaCandidate)][:target_limit]
         except Exception as exc:
+            self._record_jikan_failure(type(exc).__name__)
             logger.debug("[Jikan] Search error for '%s': %s", q_clean, exc)
         return []
 
