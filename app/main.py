@@ -37,6 +37,7 @@ from app.application.consume_once_orchestrator import (
     strip_mqtt_gen_suffix,
 )
 from app.application.source_chain_service import source_chain_service
+from app.application.update_checker import release_update_checker
 from app.asyncapi_spec import ASYNCAPI_YAML
 from app.config import settings
 from app.domain.entities import MediaCandidate, PanelGeometry
@@ -71,6 +72,7 @@ from app.models import (
     SessionRegisterResponse,
     StudioCardPreviewRequest,
     StudioFullPreviewRequest,
+    UpdateCheckResponse,
 )
 from app.scheduler.worker_pool import batch_manager
 
@@ -346,6 +348,25 @@ async def get_health() -> HealthResponse:
         use_process_pool=settings.use_process_pool,
         seen_history_counts=_normalized_seen_stats(),
     )
+
+
+@app.get(
+    "/api/v1/system/update-check",
+    response_model=UpdateCheckResponse,
+    tags=["System & Admin"],
+)
+async def check_system_update(
+    force: bool = Query(
+        default=False,
+        description="Bypass the 1-hour in-memory cache and re-query GitHub Releases immediately.",
+    ),
+) -> UpdateCheckResponse:
+    """
+    Check whether a newer official GitHub Release of `dmd_media_showcase` is available for the
+    current runtime operating system (`macos`, `windows`, `linux`, or `docker`), returning the
+    release page URL and matching OS binary download link when available.
+    """
+    return await release_update_checker.check_for_update(force=force)
 
 
 @app.get("/api/v1/admin/config", tags=["System & Admin"])

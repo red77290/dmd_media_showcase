@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 DomainType = Literal["games", "movies", "series", "anime"]
 SupportedLang = Literal["fr", "en", "es", "de", "it", "pt", "ja"]
+RuntimeOsType = Literal["macos", "windows", "linux", "docker"]
 CardLayoutType = Literal[
     "classic_split",
     "poster_right",
@@ -351,6 +352,23 @@ class HealthResponse(BaseModel):
     video_max_fps_limit: int = 30
     use_process_pool: bool = True
     seen_history_counts: Dict[str, int] = Field(default_factory=dict)
+
+
+class UpdateCheckResponse(BaseModel):
+    """OS-aware GitHub Release update status returned by `GET /api/v1/system/update-check`."""
+
+    status: Literal["up_to_date", "update_available", "no_release_yet", "unreachable"] = "up_to_date"
+    current_version: str
+    latest_version: Optional[str] = None
+    update_available: bool = False
+    runtime_os: RuntimeOsType
+    runtime_arch: str = "x64"
+    os_label: str
+    release_url: str
+    asset_name: Optional[str] = None
+    asset_download_url: Optional[str] = None
+    published_at: Optional[str] = None
+    checked_at: float = 0.0
 
 
 class AdminServerConfigPayload(BaseModel):

@@ -842,6 +842,75 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       overflow: auto;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .update-banner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px 16px;
+      flex-wrap: wrap;
+      background: linear-gradient(90deg, rgba(255, 109, 0, 0.16) 0%, rgba(0, 229, 255, 0.10) 100%);
+      border: 1px solid rgba(255, 171, 0, 0.55);
+      border-radius: 10px;
+      padding: 11px 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+    .update-banner-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 0.88rem;
+      color: #fff;
+    }
+    .update-banner-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .update-btn-link {
+      display: inline-flex;
+      align-items: center;
+      height: 32px;
+      padding: 0 12px;
+      border-radius: 7px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-decoration: none;
+      color: var(--cyan);
+      background: rgba(0, 229, 255, 0.10);
+      border: 1px solid rgba(0, 229, 255, 0.38);
+      white-space: nowrap;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .update-btn-link:hover {
+      background: rgba(0, 229, 255, 0.20);
+      border-color: var(--cyan);
+    }
+    .update-btn-link.primary {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .update-btn-link.primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+    .update-dismiss-btn {
+      height: 32px !important;
+      min-width: 32px;
+      padding: 0 8px !important;
+      border-radius: 7px !important;
+      background: rgba(13, 18, 27, 0.7) !important;
+      border: 1px solid var(--border) !important;
+      color: var(--muted) !important;
+      font-size: 0.82rem !important;
+    }
+    .update-dismiss-btn:hover {
+      color: #fff !important;
+      border-color: #465d82 !important;
+    }
 
     @media (max-width: 960px) {
       .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -886,6 +955,18 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         </select>
       </div>
     </header>
+
+    <div id="update-banner" class="update-banner" style="display:none" role="status" aria-live="polite">
+      <div class="update-banner-left">
+        <span id="update-banner-badge" class="pill warn">🚀 New Release</span>
+        <span id="update-banner-text"></span>
+      </div>
+      <div class="update-banner-actions">
+        <a id="update-banner-asset-link" class="update-btn-link primary" href="https://github.com/red77290/dmd_media_showcase/releases" target="_blank" rel="noopener noreferrer" style="display:none"></a>
+        <a id="update-banner-release-link" class="update-btn-link" href="https://github.com/red77290/dmd_media_showcase/releases" target="_blank" rel="noopener noreferrer"></a>
+        <button type="button" class="update-dismiss-btn" onclick="dismissUpdateBanner()" aria-label="Dismiss">✕</button>
+      </div>
+    </div>
 
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('overview')" data-i18n="tab_overview">
@@ -2241,7 +2322,12 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         pill_local_card_60fps: "🃏 Local 60 FPS Card (DMD)",
         btn_sim_dom_queue: "🎨 Sim & Queue {d} →",
         studio_dmd_client_readonly_note: "Mode 1 (MQTT/HTTP DMD-driven): profile saving is disabled (read-only), while Simulation Queue injection is active ✓",
-        msg_studio_readonly_client: "🔒 This DMD is client-driven via MQTT/HTTP (Mode 1, read-only). Use 'Add Simulation to Active DMD Queue' or 'Broadcast Now' instead."
+        msg_studio_readonly_client: "🔒 This DMD is client-driven via MQTT/HTTP (Mode 1, read-only). Use 'Add Simulation to Active DMD Queue' or 'Broadcast Now' instead.",
+        upd_badge: "🚀 New Release",
+        upd_msg_os: "Version v{latest} is available for {os} (installed: v{current}).",
+        upd_msg_docker: "Version v{latest} is available for {os} (installed: v{current}) — pull the latest image or view release notes.",
+        upd_btn_download: "⬇ Download ({asset})",
+        upd_btn_release: "View GitHub Release ↗"
       },
       fr: {
         header_sub: "MQTT Retain (:1883) + UDP Temps Réel • Consume-Once • Matrices LED HUB75",
@@ -2561,7 +2647,12 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         pill_local_card_60fps: "🃏 Card 60 FPS Locale (DMD)",
         btn_sim_dom_queue: "🎨 Simuler en Queue ({d}) →",
         studio_dmd_client_readonly_note: "Mode 1 (piloté par le DMD via MQTT/HTTP) : sauvegarde de profil grisée (lecture seule), injection dans la Queue active ✓",
-        msg_studio_readonly_client: "🔒 Ce DMD est piloté par MQTT/HTTP (Mode 1, lecture seule). Utilise « Ajouter cette Simulation à la Queue du DMD » ou « Diffuser Maintenant »."
+        msg_studio_readonly_client: "🔒 Ce DMD est piloté par MQTT/HTTP (Mode 1, lecture seule). Utilise « Ajouter cette Simulation à la Queue du DMD » ou « Diffuser Maintenant ».",
+        upd_badge: "🚀 Nouvelle Version",
+        upd_msg_os: "La version v{latest} est disponible pour {os} (installée : v{current}).",
+        upd_msg_docker: "La version v{latest} est disponible pour {os} (installée : v{current}) — mets à jour l'image ou consulte la release.",
+        upd_btn_download: "⬇ Télécharger ({asset})",
+        upd_btn_release: "Voir la Release GitHub ↗"
       },
       es: {
         header_sub: "MQTT Retain (:1883) + UDP en Tiempo Real • Consume-Once • Matrices LED HUB75",
@@ -2881,7 +2972,12 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
         pill_local_card_60fps: "🃏 Card 60 FPS Local (DMD)",
         btn_sim_dom_queue: "🎨 Simular en Cola ({d}) →",
         studio_dmd_client_readonly_note: "Modo 1 (dirigido por DMD vía MQTT/HTTP): guardado de perfil desactivado (solo lectura), inyección en Cola activa ✓",
-        msg_studio_readonly_client: "🔒 Este DMD está dirigido por MQTT/HTTP (Modo 1, solo lectura). Usa 'Añadir Simulación a la Cola del DMD' o 'Emitir Ahora'."
+        msg_studio_readonly_client: "🔒 Este DMD está dirigido por MQTT/HTTP (Modo 1, solo lectura). Usa 'Añadir Simulación a la Cola del DMD' o 'Emitir Ahora'.",
+        upd_badge: "🚀 Nueva Versión",
+        upd_msg_os: "La versión v{latest} está disponible para {os} (instalada: v{current}).",
+        upd_msg_docker: "La versión v{latest} está disponible para {os} (instalada: v{current}) — actualiza la imagen o consulta la release.",
+        upd_btn_download: "⬇ Descargar ({asset})",
+        upd_btn_release: "Ver Release en GitHub ↗"
       }
     };
 
@@ -2937,6 +3033,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
     let lastClients = [];
     let lastSeenStats = {};
     let lastHealth = null;
+    let lastUpdateInfo = null;
     let lastServerConfig = {};
     let lastDmdProfiles = [];
     let lastSearchCandidates = [];
@@ -3034,6 +3131,7 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       renderClients(lastClients);
       renderSeen(lastSeenStats);
       if (lastHealth) renderHealth(lastHealth);
+      renderUpdateBanner(lastUpdateInfo);
       loadDomainFilters();
       loadStudioFilters();
       updateStudioSliderLabels();
@@ -5956,9 +6054,84 @@ ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function renderUpdateBanner(info) {
+      const banner = document.getElementById('update-banner');
+      if (!banner) return;
+      if (!info || !info.update_available || !info.latest_version) {
+        banner.style.display = 'none';
+        return;
+      }
+      try {
+        if (sessionStorage.getItem('dmd_showcase_dismissed_update') === String(info.latest_version)) {
+          banner.style.display = 'none';
+          return;
+        }
+      } catch (_) {}
+
+      const allowedPrefix = 'https://github.com/red77290/dmd_media_showcase/';
+      const safeReleaseUrl = (info.release_url && String(info.release_url).startsWith(allowedPrefix))
+        ? String(info.release_url)
+        : 'https://github.com/red77290/dmd_media_showcase/releases';
+
+      const badgeEl = document.getElementById('update-banner-badge');
+      if (badgeEl) badgeEl.textContent = t('upd_badge');
+
+      const txtEl = document.getElementById('update-banner-text');
+      const msgKey = info.runtime_os === 'docker' ? 'upd_msg_docker' : 'upd_msg_os';
+      if (txtEl) {
+        txtEl.textContent = t(msgKey, {
+          latest: info.latest_version,
+          os: info.os_label || info.runtime_os || 'OS',
+          current: info.current_version || '1.0.0'
+        });
+      }
+
+      const relLink = document.getElementById('update-banner-release-link');
+      if (relLink) {
+        relLink.href = safeReleaseUrl;
+        relLink.textContent = t('upd_btn_release');
+      }
+
+      const assetLink = document.getElementById('update-banner-asset-link');
+      if (assetLink) {
+        const dlUrl = info.asset_download_url ? String(info.asset_download_url) : '';
+        if (info.asset_name && dlUrl.startsWith(allowedPrefix)) {
+          assetLink.href = dlUrl;
+          assetLink.textContent = t('upd_btn_download', {asset: info.asset_name});
+          assetLink.style.display = 'inline-flex';
+        } else {
+          assetLink.style.display = 'none';
+        }
+      }
+      banner.style.display = 'flex';
+    }
+
+    function dismissUpdateBanner() {
+      if (lastUpdateInfo && lastUpdateInfo.latest_version) {
+        try {
+          sessionStorage.setItem('dmd_showcase_dismissed_update', String(lastUpdateInfo.latest_version));
+        } catch (_) {}
+      }
+      const banner = document.getElementById('update-banner');
+      if (banner) banner.style.display = 'none';
+    }
+
+    async function checkSystemUpdate(force = false) {
+      try {
+        const r = await apiFetch('/api/v1/system/update-check' + (force ? '?force=true' : ''), {
+          cache: 'no-store'
+        });
+        if (!r.ok) return;
+        lastUpdateInfo = await r.json();
+        renderUpdateBanner(lastUpdateInfo);
+      } catch (_) {}
+    }
+
     setUiLang(currentUiLang);
     loadHealthAndConfig(true);
+    checkSystemUpdate(false);
     setInterval(() => loadHealthAndConfig(false), 3000);
+    setInterval(() => checkSystemUpdate(false), 3600000);
   </script>
 </body>
 </html>

@@ -54,6 +54,52 @@
         }
       }
     },
+    "/api/v1/system/update-check": {
+      "get": {
+        "tags": [
+          "System & Admin"
+        ],
+        "summary": "Check System Update",
+        "description": "Check whether a newer official GitHub Release of `dmd_media_showcase` is available for the\ncurrent runtime operating system (`macos`, `windows`, `linux`, or `docker`), returning the\nrelease page URL and matching OS binary download link when available.",
+        "operationId": "check_system_update_api_v1_system_update_check_get",
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Bypass the 1-hour in-memory cache and re-query GitHub Releases immediately.",
+              "default": false,
+              "title": "Force"
+            },
+            "description": "Bypass the 1-hour in-memory cache and re-query GitHub Releases immediately."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateCheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/config": {
       "get": {
         "tags": [
@@ -4969,6 +5015,111 @@
         "type": "object",
         "title": "StudioFullPreviewRequest",
         "description": "Full unified sequence `DMDS` preview payload (`POST /api/v1/studio/full-preview`):\nAssembles `[Card Intro (optional) -> Jacket Panorama -> Marquee Panorama -> Snapshots (0..5) -> Video]`\nand caches the result under `X-DMD-Preview-Id` for instant 0 ms promotion into an active DMD's queue."
+      },
+      "UpdateCheckResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "up_to_date",
+              "update_available",
+              "no_release_yet",
+              "unreachable"
+            ],
+            "title": "Status",
+            "default": "up_to_date"
+          },
+          "current_version": {
+            "type": "string",
+            "title": "Current Version"
+          },
+          "latest_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Version"
+          },
+          "update_available": {
+            "type": "boolean",
+            "title": "Update Available",
+            "default": false
+          },
+          "runtime_os": {
+            "type": "string",
+            "enum": [
+              "macos",
+              "windows",
+              "linux",
+              "docker"
+            ],
+            "title": "Runtime Os"
+          },
+          "runtime_arch": {
+            "type": "string",
+            "title": "Runtime Arch",
+            "default": "x64"
+          },
+          "os_label": {
+            "type": "string",
+            "title": "Os Label"
+          },
+          "release_url": {
+            "type": "string",
+            "title": "Release Url"
+          },
+          "asset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Name"
+          },
+          "asset_download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Download Url"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "checked_at": {
+            "type": "number",
+            "title": "Checked At",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_version",
+          "runtime_os",
+          "os_label",
+          "release_url"
+        ],
+        "title": "UpdateCheckResponse",
+        "description": "OS-aware GitHub Release update status returned by `GET /api/v1/system/update-check`."
       },
       "ValidationError": {
         "properties": {
