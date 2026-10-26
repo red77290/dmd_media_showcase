@@ -697,3 +697,82 @@ async def test_per_domain_studio_profiles_persistence_partial_merge_and_passive_
             assert crit3.snapshot_panorama_count == 4
     finally:
         await isolated_co.stop_server_managed_profiles()
+
+
+def test_card_banner_scrolls_when_year_and_rating_overflow(tmp_path: Path):
+    """
+    Verify that when `badge` + `year` + `*rating` exceeds the horizontal banner width:
+    1. On `128x32` (`classic_split`, `scroll_meta`), the `[NEO-GEO]` badge stays anchored on the left
+       while the overflowing `1999 *8.8` metadata region scrolls smoothly across frames (even when
+       `title` is short and `include_synopsis=False`).
+    2. On narrow viewports (`64x32` `badge_header` or `128x32` with a wide `MEGA DRIVE` badge, `scroll_full`),
+       the full banner strip scrolls cleanly without static truncation.
+    """
+    poster = _make_vivid_poster_bytes(32, 32)
+    (tmp_path / "poster.png").write_bytes(poster)
+
+    # 1. `scroll_meta`: 128x32 with short static title & no synopsis, overflowing year+rating
+    meta_stream = build_card_stream_sync(
+        item_dir=str(tmp_path),
+        width=128,
+        height=32,
+        fps=15,
+        title="Garou",
+        year="1999-11-26",
+        badge="NEO-GEO",
+        badge_color="#FF3D00",
+        rating="★ 8.8/10",
+        synopsis="",
+        poster_png_name="poster.png",
+        include_poster=True,
+        include_synopsis=False,
+        text_scroll_speed="7",
+        include_card_intro=True,
+        card_layout="classic_split",
+        card_theme="tinted",
+        card_hold_s=0.3,
+    )
+    raw1 = (tmp_path / meta_stream).read_bytes()
+    _, _, _, w1, h1, n1, _, _ = struct.unpack(DMDS_HEADER_FMT, raw1[:DMDS_HEADER_SIZE])
+    assert (w1, h1) == (128, 32)
+    assert n1 >= 25
+    px1 = np.frombuffer(raw1[DMDS_HEADER_SIZE : DMDS_HEADER_SIZE + n1 * w1 * h1 * 2], dtype="<u2").reshape(
+        (n1, h1, w1)
+    )
+    # Left pinned `[NEO-GEO]` badge region (`x = 35..80, y = 1..10`) stays constant across frames
+    assert np.array_equal(px1[0, 1:10, 35:80], px1[15, 1:10, 35:80])
+    # Right metadata viewport (`x = 89..126, y = 1..10`) actively scrolls rather than staying frozen
+    assert not np.array_equal(px1[0, 1:10, 89:126], px1[12, 1:10, 89:126])
+
+    # 2. `scroll_full`: 64x32 `badge_header` with overflowing `MEGA DRIVE` + `1992 *9.5`
+    full_dir = tmp_path / "narrow_hdr"
+    full_dir.mkdir(parents=True, exist_ok=True)
+    full_stream = build_card_stream_sync(
+        item_dir=str(full_dir),
+        width=64,
+        height=32,
+        fps=15,
+        title="SOR2",
+        year="1992",
+        badge="MEGA DRIVE",
+        badge_color="#00B0FF",
+        rating="9.5",
+        synopsis="",
+        include_poster=False,
+        include_synopsis=False,
+        text_scroll_speed="7",
+        include_card_intro=True,
+        card_layout="badge_header",
+        card_theme="neon_border",
+        card_hold_s=0.3,
+    )
+    raw2 = (full_dir / full_stream).read_bytes()
+    _, _, _, w2, h2, n2, _, _ = struct.unpack(DMDS_HEADER_FMT, raw2[:DMDS_HEADER_SIZE])
+    assert (w2, h2) == (64, 32)
+    px2 = np.frombuffer(raw2[DMDS_HEADER_SIZE : DMDS_HEADER_SIZE + n2 * w2 * h2 * 2], dtype="<u2").reshape(
+        (n2, h2, w2)
+    )
+    # Entire header interior (`y = 1..9, x = 2..62`) scrolls while `neon_border` at `x = 0` & `x = 63` stays intact
+    assert np.array_equal(px2[0, :, 0], px2[12, :, 0])
+    assert np.array_equal(px2[0, :, 63], px2[12, :, 63])
+    assert not np.array_equal(px2[0, 1:9, 2:62], px2[12, 1:9, 2:62])

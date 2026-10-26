@@ -14,14 +14,14 @@
 
 ## 🎬 Demostración en Vivo sobre Matriz LED HUB75 e Interfaz Web
 
-### 🕹️ Secuencias Reales en Matriz LED HUB75 (Generadas en Vivo mediante la API Showcase)
+### 🕹️ Secuencias Reales en Matriz LED HUB75 128×32 (Generadas en Vivo mediante la API Showcase)
 
-Cada título ensambla automáticamente una emisión RGB565 multicapítulo adaptada a la resolución exacta de su panel:
-**`1. Ficha Informativa Animada`** (carátula, insignia de sistema, año, puntuación y texto deslizante) $\to$ **`2. Panoramas Verticales de Carátula y Marquee`** $\to$ **`3. Barrido de Captura In-Game`** $\to$ **`4. Vídeo de Gameplay / Tráiler Encuadrado por IA`**.
+Cada título ensambla automáticamente una emisión RGB565 multicapítulo adaptada a la resolución exacta de su panel (`128×32` DMD clásico `4:1` abajo):
+**`1. Ficha Informativa Animada`** (carátula, insignia de sistema, desplazamiento automático de año/puntuación y texto deslizante) $\to$ **`2. Panoramas Verticales de Carátula y Marquee`** $\to$ **`3. Barrido de Captura In-Game`** $\to$ **`4. Vídeo de Gameplay / Tráiler Encuadrado por IA`**.
 
-| **Garou: Mark of the Wolves (`Neo Geo`)** | **Super Street Fighter II X / Turbo (`CPS2`)** | **Metal Slug X (`Neo Geo`)** |
+| **Garou: Mark of the Wolves (`Neo Geo` • `128×32`)** | **Super Street Fighter II X / Turbo (`CPS2` • `128×32`)** | **Metal Slug X (`Neo Geo` • `128×32`)** |
 | :---: | :---: | :---: |
-| ![Garou: Mark of the Wolves Demo DMD HUB75](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 Demo DMD HUB75](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo Demo DMD HUB75](demo/dmd_metal_slug_x_neogeo.gif) |
+| ![Garou: Mark of the Wolves Demo DMD HUB75 128x32](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 Demo DMD HUB75 128x32](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo Demo DMD HUB75 128x32](demo/dmd_metal_slug_x_neogeo.gif) |
 | `Classic Split` • `Tinted` • `auto_action` + `pixel_art` | `Badge Header` • `Neon Border` • `auto_action` + `pixel_art` | `Classic Split` • `Poster Wash` • `auto_action` + `pixel_art` |
 
 ### 🖥️ Centro de Control Web Multilingüe (`ES` / `EN` / `FR`)

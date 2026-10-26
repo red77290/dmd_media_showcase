@@ -14,14 +14,14 @@
 
 ## 🎬 Aperçu Réel sur Matrice LED HUB75 & Interface Web
 
-### 🕹️ Séquences Réelles sur Matrice LED HUB75 (Générées en Direct via l'API Showcase)
+### 🕹️ Séquences Réelles sur Matrice LED HUB75 128×32 (Générées en Direct via l'API Showcase)
 
-Chaque œuvre assemble automatiquement une diffusion RGB565 multi-chapitres adaptée à la géométrie exacte de votre panneau :
-**`1. Fiche Info Animée`** (jaquette, badge système, année, note & défilement fluide) $\to$ **`2. Panoramas Verticaux Jaquette & Marquee`** $\to$ **`3. Balayage Capture In-Game`** $\to$ **`4. Vidéo Gameplay / Trailer Cadrée par IA`**.
+Chaque œuvre assemble automatiquement une diffusion RGB565 multi-chapitres adaptée à la géométrie exacte de votre panneau (`128×32` DMD classique `4:1` ci-dessous) :
+**`1. Fiche Info Animée`** (jaquette, badge système, défilement auto année/note & synopsis fluide) $\to$ **`2. Panoramas Verticaux Jaquette & Marquee`** $\to$ **`3. Balayage Capture In-Game`** $\to$ **`4. Vidéo Gameplay / Trailer Cadrée par IA`**.
 
-| **Garou: Mark of the Wolves (`Neo Geo`)** | **Super Street Fighter II X / Turbo (`CPS2`)** | **Metal Slug X (`Neo Geo`)** |
+| **Garou: Mark of the Wolves (`Neo Geo` • `128×32`)** | **Super Street Fighter II X / Turbo (`CPS2` • `128×32`)** | **Metal Slug X (`Neo Geo` • `128×32`)** |
 | :---: | :---: | :---: |
-| ![Garou: Mark of the Wolves Démo DMD HUB75](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 Démo DMD HUB75](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo Démo DMD HUB75](demo/dmd_metal_slug_x_neogeo.gif) |
+| ![Garou: Mark of the Wolves Démo DMD HUB75 128x32](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 Démo DMD HUB75 128x32](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo Démo DMD HUB75 128x32](demo/dmd_metal_slug_x_neogeo.gif) |
 | `Classic Split` • `Tinted` • `auto_action` + `pixel_art` | `Badge Header` • `Neon Border` • `auto_action` + `pixel_art` | `Classic Split` • `Poster Wash` • `auto_action` + `pixel_art` |
 
 ### 🖥️ Centre de Contrôle Web Multilingue (`FR` / `EN` / `ES`)
