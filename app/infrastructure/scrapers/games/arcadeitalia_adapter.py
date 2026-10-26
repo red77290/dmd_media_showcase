@@ -306,7 +306,25 @@ class ArcadeItaliaAdapter(IScraperSource):
             if s and s.lower() != "all" and resolve_canonical_system(s) in RETRO_SYSTEM_CATALOG
         ]
         if not req_systems:
-            req_systems = ["arcade", "mame", "neogeo", "cps1", "cps2", "snes", "nes", "megadrive"]
+            req_systems = [
+                "arcade",
+                "mame",
+                "neogeo",
+                "cps1",
+                "cps2",
+                "cps3",
+                "fbneo",
+                "snes",
+                "nes",
+                "megadrive",
+                "mastersystem",
+                "pcengine",
+                "psx",
+                "saturn",
+                "dreamcast",
+                "n64",
+                "gba",
+            ]
 
         arcade_systems = [s for s in req_systems if is_arcade_system(s)]
         console_systems = [s for s in req_systems if not is_arcade_system(s)]

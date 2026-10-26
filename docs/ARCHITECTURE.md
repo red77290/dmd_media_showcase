@@ -97,6 +97,8 @@ Instead of hardcoding category names in DMD firmware or frontend code:
 
 ## 4. Real-Time MQTT Handshake, `N+1` Pipelining & UDP `DMDF` Protocol
 
+> **Crash & Container-Restart Resilience (`RetainedClientConfigStore`):** Every Mode 1 retained `dmd_showcase/clients/{dmd_id}/config` payload published to the Embedded MQTT Broker (`:1883`) is atomically persisted to `./data/mqtt_retained_clients.json`. On server or Docker restart, `ShowcaseMqttGateway` reloads all persisted DMD rotation slots into `EmbeddedMqttBroker.retained` and triggers `N / N+1` background pre-warming immediately while keeping `online=False` until live client traffic arrives.
+
 ```mermaid
 sequenceDiagram
     participant DMD as DMD Client (ESP32 / RPi)

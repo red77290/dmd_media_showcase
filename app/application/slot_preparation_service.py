@@ -174,7 +174,11 @@ class SlotPreparationService:
             await on_hello(dmd_id, payload)
             return
 
-        self.state.client_online[dmd_id] = True
+        is_restored = bool(payload.get("_restored_retained"))
+        if is_restored:
+            self.state.client_online.setdefault(dmd_id, False)
+        else:
+            self.state.client_online[dmd_id] = True
         width = int(payload.get("width") or 128)
         height = int(payload.get("height") or 32)
         top_lang = str(payload.get("lang") or "fr")
@@ -219,13 +223,17 @@ class SlotPreparationService:
                     await self.streamer.stop_stream(other_dmd_id)
 
         now_ts = time.time()
+        saved_at = float(payload.get("_saved_at") or 0.0)
         engines_map = payload.get("domains") or payload.get("engines")
         if isinstance(engines_map, dict):
             for dom_key, dom_cfg in engines_map.items():
                 if dom_key in VALID_DOMAINS and isinstance(dom_cfg, dict):
                     dom: DomainType = dom_key  # type: ignore[assignment]
                     self.state.client_transports[(dmd_id, dom)] = "MQTT+UDP"
-                    self.state.client_last_seen[(dmd_id, dom)] = now_ts
+                    if not is_restored:
+                        self.state.client_last_seen[(dmd_id, dom)] = now_ts
+                    elif saved_at > 0 and (dmd_id, dom) not in self.state.client_last_seen:
+                        self.state.client_last_seen[(dmd_id, dom)] = saved_at
                     criteria = parse_criteria_fn(dom, dom_cfg, top_lang)
                     await self.register_client_domain(dmd_id, dom, geometry, criteria)
         else:
@@ -233,7 +241,10 @@ class SlotPreparationService:
             if dom_raw in VALID_DOMAINS:
                 dom_single: DomainType = dom_raw  # type: ignore[assignment]
                 self.state.client_transports[(dmd_id, dom_single)] = "MQTT+UDP"
-                self.state.client_last_seen[(dmd_id, dom_single)] = now_ts
+                if not is_restored:
+                    self.state.client_last_seen[(dmd_id, dom_single)] = now_ts
+                elif saved_at > 0 and (dmd_id, dom_single) not in self.state.client_last_seen:
+                    self.state.client_last_seen[(dmd_id, dom_single)] = saved_at
                 criteria = parse_criteria_fn(dom_single, payload, top_lang)
                 await self.register_client_domain(dmd_id, dom_single, geometry, criteria)
 
@@ -594,6 +605,8 @@ class SlotPreparationService:
         if (dmd_id, domain) in self.state.client_configs:
             self.state.client_transports[(dmd_id, domain)] = "MQTT+UDP"
             self.state.client_last_seen[(dmd_id, domain)] = time.time()
+        if ev_type in ("start_card", "start_stream", "client_online"):
+            self.state.client_online[dmd_id] = True
 
         if ev_type == "start_card":
             pkg = await self.claim_next_package(dmd_id, domain, item_id=item_id)
