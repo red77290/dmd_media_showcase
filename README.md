@@ -14,14 +14,14 @@
 
 ## 🎬 Live HUB75 DMD Output & Web Control Center
 
-### 🕹️ Real HUB75 LED Matrix Sequences (Generated Live via the Showcase API)
+### 🕹️ Real 128×32 HUB75 LED Matrix Sequences (Generated Live via the Showcase API)
 
-Every title automatically assembles a complete multi-chapter RGB565 broadcast tailored to your panel geometry:
-**`1. Animated Info Card`** (boxart, system badge, year, rating & smooth ticker) $\to$ **`2. Vertical Boxart & Marquee Panoramas`** $\to$ **`3. In-Game Screenshot Scan`** $\to$ **`4. AI-Framed Gameplay / Trailer Video`**.
+Every title automatically assembles a complete multi-chapter RGB565 broadcast tailored to your panel geometry (`128×32` classic `4:1` DMD shown below):
+**`1. Animated Info Card`** (boxart, system badge, auto-scrolling year/rating & smooth ticker) $\to$ **`2. Vertical Boxart & Marquee Panoramas`** $\to$ **`3. In-Game Screenshot Scan`** $\to$ **`4. AI-Framed Gameplay / Trailer Video`**.
 
-| **Garou: Mark of the Wolves (`Neo Geo`)** | **Super Street Fighter II X / Turbo (`CPS2`)** | **Metal Slug X (`Neo Geo`)** |
+| **Garou: Mark of the Wolves (`Neo Geo` • `128×32`)** | **Super Street Fighter II X / Turbo (`CPS2` • `128×32`)** | **Metal Slug X (`Neo Geo` • `128×32`)** |
 | :---: | :---: | :---: |
-| ![Garou: Mark of the Wolves HUB75 DMD Demo](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 HUB75 DMD Demo](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo HUB75 DMD Demo](demo/dmd_metal_slug_x_neogeo.gif) |
+| ![Garou: Mark of the Wolves 128x32 HUB75 DMD Demo](demo/dmd_garou_motw_neogeo.gif) | ![Super Street Fighter II X CPS2 128x32 HUB75 DMD Demo](demo/dmd_ssf2x_cps2.gif) | ![Metal Slug X Neo Geo 128x32 HUB75 DMD Demo](demo/dmd_metal_slug_x_neogeo.gif) |
 | `Classic Split` • `Tinted` • `auto_action` + `pixel_art` | `Badge Header` • `Neon Border` • `auto_action` + `pixel_art` | `Classic Split` • `Poster Wash` • `auto_action` + `pixel_art` |
 
 ### 🖥️ Multilingual Web Control Center (`EN` / `FR` / `ES`)

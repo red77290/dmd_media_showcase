@@ -702,9 +702,14 @@ def build_card_stream_sync(
     clean_title = _sanitize_card_text(title) or "SHOWCASE"
     if layout == "minimal_arcade":
         clean_title = clean_title.upper()
-    clean_badge = (_sanitize_card_text(badge) or "DMD").upper()[:10] if show_badge else ""
-    clean_year = _sanitize_card_text(year)[:6] if show_year else ""
-    clean_rating = _sanitize_card_text(rating)[:5] if show_rating else ""
+    clean_badge = (_sanitize_card_text(badge) or "DMD").upper()[:14] if show_badge else ""
+    raw_year = _sanitize_card_text(year) if show_year else ""
+    if len(raw_year) > 4 and raw_year[:4].isdigit() and raw_year[4] in "-/. ":
+        clean_year = raw_year[:4]
+    else:
+        clean_year = raw_year[:6]
+    raw_rating = _sanitize_card_text(rating).lstrip("*★ ").strip() if show_rating else ""
+    clean_rating = raw_rating[:8]
 
     if layout == "minimal_arcade" or not include_synopsis:
         clean_body = ""
@@ -716,6 +721,8 @@ def build_card_stream_sync(
     if not isinstance(font, ImageFont.FreeTypeFont):
         clean_title = clean_title.encode("latin-1", "replace").decode("latin-1")
         clean_badge = clean_badge.encode("latin-1", "replace").decode("latin-1")
+        clean_year = clean_year.encode("latin-1", "replace").decode("latin-1")
+        clean_rating = clean_rating.encode("latin-1", "replace").decode("latin-1")
         clean_body = clean_body.encode("latin-1", "replace").decode("latin-1")
 
     raw_poster_img: Optional[Image.Image] = None
@@ -788,14 +795,14 @@ def build_card_stream_sync(
                 text_x = side + 4
                 text_w = max(16, width - text_x - 2)
                 top_y = -100
-                title_y = header_bar_h + (6 if height >= 64 else 1)
-                body_y = header_bar_h + (24 if height >= 64 else 11)
+                title_y = header_bar_h + (6 if height >= 64 else 0)
+                body_y = header_bar_h + (24 if height >= 64 else 10)
         else:
             text_x = 3
             text_w = max(16, width - 6)
             top_y = -100
-            title_y = header_bar_h + (6 if height >= 64 else 1)
-            body_y = header_bar_h + (24 if height >= 64 else 11)
+            title_y = header_bar_h + (6 if height >= 64 else 0)
+            body_y = header_bar_h + (24 if height >= 64 else 10)
     elif is_tate:
         text_x = 2
         text_w = max(16, width - 4)
@@ -855,7 +862,7 @@ def build_card_stream_sync(
         else:
             top_y = 1
             title_y = 11
-            body_y = 21
+            body_y = 20 if theme == "neon_border" else 21
 
     dummy_draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
     if font_style == "arcade_pixel":
@@ -875,13 +882,50 @@ def build_card_stream_sync(
     px_per_sec = _resolve_scroll_px_per_sec(text_scroll_speed)
     px_per_frame = max(0.75, px_per_sec / float(eff_fps))
 
+    meta_bits = " ".join(b for b in (clean_year, f"*{clean_rating}" if clean_rating else "") if b)
+    raw_badge_w = (_measure_w(clean_badge) + 6) if clean_badge else 0
+    meta_w = _measure_w(meta_bits) if meta_bits else 0
+
+    if header_bar_h > 0:
+        banner_container_w = max(8, width - (2 if theme == "neon_border" else 1))
+        banner_align_meta_right = True
+    elif top_y >= 0:
+        banner_container_w = max(8, text_w)
+        banner_align_meta_right = False
+    else:
+        banner_container_w = 0
+        banner_align_meta_right = False
+
+    banner_gap = 4 if (clean_badge and meta_bits) else 0
+    banner_unit_w = raw_badge_w + banner_gap + meta_w
+    banner_sep_gap = 14
+    banner_mode = "none"
+    banner_scroll_dist = 0
+
+    if banner_container_w > 0 and (clean_badge or meta_bits):
+        if banner_unit_w <= banner_container_w:
+            banner_mode = "static"
+        elif clean_badge and meta_bits:
+            avail_after_badge = banner_container_w - (raw_badge_w + banner_gap)
+            if raw_badge_w <= banner_container_w and avail_after_badge >= 28:
+                banner_mode = "scroll_meta"
+                banner_scroll_dist = meta_w + banner_sep_gap
+            else:
+                banner_mode = "scroll_full"
+                banner_scroll_dist = banner_unit_w + banner_sep_gap
+        else:
+            banner_mode = "scroll_full"
+            banner_scroll_dist = banner_unit_w + banner_sep_gap
+
     scroll_dist = max(
         0,
         (title_px - text_w + 16) if title_px > text_w else 0,
         (body_px + text_w // 2) if (clean_body and body_y >= 0 and body_px > 0) else 0,
+        banner_scroll_dist,
     )
     eff_hold_s = max(0.2, min(5.0, float(card_hold_s)))
     hold_intro_frames = max(3, int(round(eff_fps * eff_hold_s)))
+    banner_hold_frames = min(hold_intro_frames, max(2, int(round(eff_fps * 0.35))))
     hold_outro_frames = max(4, int(round(eff_fps * 0.5)))
     scroll_frames = int(scroll_dist / px_per_frame) if scroll_dist > 0 else int(eff_fps * 2.0)
     total_frames = max(
@@ -889,7 +933,88 @@ def build_card_stream_sync(
         min(int(eff_fps * 16.0), hold_intro_frames + scroll_frames + hold_outro_frames),
     )
 
-    meta_bits = " ".join(b for b in (clean_year, f"*{clean_rating}" if clean_rating else "") if b)
+    def _render_banner_region(
+        target_img: Image.Image,
+        box_x: int,
+        box_y: int,
+        box_w: int,
+        pill_h: int,
+        text_dy: int,
+        b_scroll_px: int,
+    ) -> None:
+        if banner_mode == "none" or box_w <= 0:
+            return
+        crop_y0 = max(0, box_y - 1)
+        crop_y1 = min(target_img.height, box_y + pill_h + 2)
+        if crop_y1 <= crop_y0:
+            return
+        rel_y = box_y - crop_y0
+
+        if banner_mode == "static":
+            sub = target_img.crop((box_x, crop_y0, box_x + box_w, crop_y1))
+            bdraw = ImageDraw.Draw(sub)
+            if font_style == "arcade_pixel":
+                bdraw.fontmode = "1"
+            if clean_badge:
+                bdraw.rectangle([0, rel_y, raw_badge_w - 1, rel_y + pill_h - 1], fill=accent)
+                bdraw.text((3, rel_y + text_dy), clean_badge, fill=(255, 255, 255), font=font)
+            if meta_bits:
+                if banner_align_meta_right and clean_badge:
+                    mx = max(raw_badge_w + banner_gap, box_w - meta_w - 1)
+                elif clean_badge:
+                    mx = raw_badge_w + banner_gap
+                else:
+                    mx = 2 if banner_align_meta_right else 0
+                bdraw.text((mx, rel_y + text_dy), meta_bits, fill=(255, 214, 102), font=font)
+            target_img.paste(sub, (box_x, crop_y0))
+            return
+
+        if banner_mode == "scroll_meta":
+            pdraw = ImageDraw.Draw(target_img)
+            if font_style == "arcade_pixel":
+                pdraw.fontmode = "1"
+            pdraw.rectangle(
+                [box_x, box_y, box_x + raw_badge_w - 1, box_y + pill_h - 1],
+                fill=accent,
+            )
+            pdraw.text((box_x + 3, box_y + text_dy), clean_badge, fill=(255, 255, 255), font=font)
+
+            mx0 = box_x + raw_badge_w + banner_gap
+            mw_avail = box_w - (raw_badge_w + banner_gap)
+            if mw_avail > 2 and meta_bits:
+                msub = target_img.crop((mx0, crop_y0, mx0 + mw_avail, crop_y1))
+                mdraw = ImageDraw.Draw(msub)
+                if font_style == "arcade_pixel":
+                    mdraw.fontmode = "1"
+                cycle = max(1, meta_w + banner_sep_gap)
+                shift = b_scroll_px % cycle
+                for rx in (-shift, -shift + cycle):
+                    mdraw.text((rx, rel_y + text_dy), meta_bits, fill=(255, 214, 102), font=font)
+                target_img.paste(msub, (mx0, crop_y0))
+            return
+
+        # `scroll_full`: scroll `[BADGE] + gap + meta_bits` seamlessly across narrow viewports
+        full_x = max(box_x, 1 if (header_bar_h > 0 and theme == "neon_border") else box_x)
+        full_w = max(4, box_w - (full_x - box_x))
+        fsub = target_img.crop((full_x, crop_y0, full_x + full_w, crop_y1))
+        fdraw = ImageDraw.Draw(fsub)
+        if font_style == "arcade_pixel":
+            fdraw.fontmode = "1"
+        cycle = max(1, banner_unit_w + banner_sep_gap)
+        shift = b_scroll_px % cycle
+        for rx in (-shift, -shift + cycle):
+            cur_x = rx
+            if clean_badge:
+                fdraw.rectangle(
+                    [cur_x, rel_y, cur_x + raw_badge_w - 1, rel_y + pill_h - 1],
+                    fill=accent,
+                )
+                fdraw.text((cur_x + 3, rel_y + text_dy), clean_badge, fill=(255, 255, 255), font=font)
+                cur_x += raw_badge_w + banner_gap
+            if meta_bits:
+                fdraw.text((cur_x, rel_y + text_dy), meta_bits, fill=(255, 214, 102), font=font)
+        target_img.paste(fsub, (full_x, crop_y0))
+
     frames_np: List[np.ndarray] = []
 
     for idx in range(total_frames):
@@ -901,6 +1026,11 @@ def build_card_stream_sync(
         scroll_px = 0
         if idx > hold_intro_frames:
             scroll_px = int(round((idx - hold_intro_frames) * px_per_frame))
+        banner_scroll_px = (
+            int(round((idx - banner_hold_frames) * px_per_frame))
+            if idx > banner_hold_frames
+            else 0
+        )
 
         # Full-width top header bar for `badge_header` layout
         if header_bar_h > 0:
@@ -908,17 +1038,15 @@ def build_card_stream_sync(
                 [0, 0, width - 1, header_bar_h - 1],
                 fill=(max(12, accent[0] // 3), max(12, accent[1] // 3), max(14, accent[2] // 3)),
             )
-            hx = 2
-            if clean_badge:
-                bw = min(width - 4, _measure_w(clean_badge) + 6)
-                draw.rectangle([0, 0, bw, header_bar_h - 1], fill=accent)
-                draw.text((3, 0 if header_bar_h <= 10 else 1), clean_badge, fill=(255, 255, 255), font=font)
-                hx = bw + 4
-            if meta_bits:
-                mw = _measure_w(meta_bits)
-                mx = max(hx, width - mw - 3)
-                if mx < width - 4:
-                    draw.text((mx, 0 if header_bar_h <= 10 else 1), meta_bits, fill=(255, 214, 102), font=font)
+            _render_banner_region(
+                canvas,
+                box_x=0,
+                box_y=0,
+                box_w=banner_container_w,
+                pill_h=header_bar_h,
+                text_dy=0 if header_bar_h <= 10 else 1,
+                b_scroll_px=banner_scroll_px,
+            )
 
         # Render text region on a clipped sub-strip preserving any poster_wash background underneath
         strip = canvas.crop((text_x, 0, text_x + text_w, height))
@@ -927,14 +1055,15 @@ def build_card_stream_sync(
             sdraw.fontmode = "1"
 
         if top_y >= 0:
-            mx_offset = 0
-            if clean_badge:
-                badge_w = min(text_w - 2, _measure_w(clean_badge) + 6)
-                sdraw.rectangle([0, top_y, badge_w, top_y + 9], fill=accent)
-                sdraw.text((3, top_y - 1), clean_badge, fill=(255, 255, 255), font=font)
-                mx_offset = badge_w + 4
-            if meta_bits and mx_offset < text_w - 4:
-                sdraw.text((mx_offset, top_y - 1), meta_bits, fill=(255, 214, 102), font=font)
+            _render_banner_region(
+                strip,
+                box_x=0,
+                box_y=top_y,
+                box_w=banner_container_w,
+                pill_h=10,
+                text_dy=-1,
+                b_scroll_px=banner_scroll_px,
+            )
 
         # Title line (static if fits, smooth horizontal scroll otherwise)
         if title_y >= 0 and title_y + 7 <= height:
