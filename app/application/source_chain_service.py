@@ -8,14 +8,18 @@ no title is ever repeated.
 
 from __future__ import annotations
 
-from collections import OrderedDict
 import logging
 import threading
-import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
+from app.domain.aggregates.artifact_cache import BoundedTtlCache
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
-from app.domain.ports.seen_repository import ISeenHistoryRepository
+from app.domain.ports import (
+    IScraperRegistryPort,
+    IScraperSource,
+    ISeenHistoryRepository,
+    default_port_registry,
+)
 from app.domain.taxonomy import (
     ReferentialConsolidator,
     build_game_fingerprint,
@@ -24,8 +28,6 @@ from app.domain.taxonomy import (
     resolve_canonical_genre,
     resolve_canonical_system,
 )
-from app.infrastructure.persistence.json_seen_repository import seen_repository
-from app.infrastructure.scrapers.registry import ScraperRegistry, scraper_registry
 
 logger = logging.getLogger("dmd_showcase.application.source_chain")
 
@@ -41,36 +43,29 @@ class DomainSourceChainService:
 
     def __init__(
         self,
-        registry: Optional[ScraperRegistry] = None,
+        registry: Optional[IScraperRegistryPort] = None,
         history_repo: Optional[ISeenHistoryRepository] = None,
     ) -> None:
-        self.registry = registry or scraper_registry
-        self.history_repo = history_repo or seen_repository
-        self._staged_candidates: OrderedDict[str, Tuple[float, MediaCandidate]] = OrderedDict()
+        self.registry: IScraperRegistryPort = (
+            registry if registry is not None else default_port_registry.resolve("scraper_registry")
+        )
+        self.history_repo: ISeenHistoryRepository = (
+            history_repo
+            if history_repo is not None
+            else default_port_registry.resolve("seen_repository")
+        )
+        self._staged_cache: BoundedTtlCache[str, MediaCandidate] = BoundedTtlCache(
+            ttl_seconds=self._STAGED_TTL_S,
+            max_entries=self._STAGED_MAX_ENTRIES,
+        )
         self._stage_lock = threading.RLock()
-
-    def _prune_staged_locked(self, now: float) -> None:
-        expired_ids = [
-            cid
-            for cid, (ts, _) in self._staged_candidates.items()
-            if (now - ts) > self._STAGED_TTL_S
-        ]
-        for cid in expired_ids:
-            self._staged_candidates.pop(cid, None)
-        while len(self._staged_candidates) > self._STAGED_MAX_ENTRIES:
-            self._staged_candidates.popitem(last=False)
 
     def stage_candidate(self, cand: MediaCandidate) -> None:
         """Stage a discovered `MediaCandidate` in the bounded TTL cache for instant queue resolution."""
         if cand is None or not cand.id:
             return
-        now = time.monotonic()
         with self._stage_lock:
-            self._prune_staged_locked(now)
-            self._staged_candidates[cand.id] = (now, cand)
-            self._staged_candidates.move_to_end(cand.id)
-            while len(self._staged_candidates) > self._STAGED_MAX_ENTRIES:
-                self._staged_candidates.popitem(last=False)
+            self._staged_cache.put(cand.id, cand)
         self._stage_candidate_fp(cand.domain, cand)
 
     def get_staged_candidate(self, candidate_id: str) -> Optional[MediaCandidate]:
@@ -78,18 +73,8 @@ class DomainSourceChainService:
         cid = (candidate_id or "").strip()
         if not cid:
             return None
-        now = time.monotonic()
         with self._stage_lock:
-            self._prune_staged_locked(now)
-            entry = self._staged_candidates.get(cid)
-            if entry is None:
-                return None
-            ts, cand = entry
-            if (now - ts) > self._STAGED_TTL_S:
-                self._staged_candidates.pop(cid, None)
-                return None
-            self._staged_candidates.move_to_end(cid)
-            return cand
+            return self._staged_cache.get(cid)
 
     @staticmethod
     def _candidate_matches_criteria(cand: MediaCandidate, criteria: FilterCriteria) -> bool:
@@ -108,7 +93,9 @@ class DomainSourceChainService:
             if s and s.strip().lower() != "all"
         }
         if req_systems:
-            if cand.id.startswith("games_adb_") and not any(is_arcade_system(s) for s in req_systems):
+            if cand.id.startswith("games_adb_") and not any(
+                is_arcade_system(s) for s in req_systems
+            ):
                 return False
             raw_cand_sys = str(meta.get("system") or "").strip()
             if raw_cand_sys:
@@ -166,7 +153,7 @@ class DomainSourceChainService:
 
     async def _collect_from_chain(
         self,
-        chain: List,
+        chain: List[IScraperSource],
         criteria: FilterCriteria,
         working_seen: Set[str],
         count: int,
@@ -306,12 +293,8 @@ class DomainSourceChainService:
             return unseen[:clamped_limit]
 
         domain = criteria.domain
-        has_systems = any(
-            s and s.strip().lower() != "all" for s in (criteria.systems or [])
-        )
-        has_genres = any(
-            g and g.strip().lower() != "all" for g in (criteria.genres or [])
-        )
+        has_systems = any(s and s.strip().lower() != "all" for s in (criteria.systems or []))
+        has_genres = any(g and g.strip().lower() != "all" for g in (criteria.genres or []))
         enforce_games_criteria = has_systems or has_genres
 
         collected: List[MediaCandidate] = []
@@ -324,7 +307,9 @@ class DomainSourceChainService:
                 domain == "games"
                 and has_systems
                 and source.source_id != "arcadeitalia"
-                and not ReferentialConsolidator.source_supports_criteria(source.source_id, criteria)
+                and not ReferentialConsolidator.source_supports_criteria(
+                    source.source_id, criteria
+                )
             ):
                 continue
             needed = clamped_limit - len(collected)
@@ -339,7 +324,9 @@ class DomainSourceChainService:
                 for cand in batch or []:
                     if cand is None or not cand.id or cand.id in seen_keys:
                         continue
-                    if enforce_games_criteria and not self._candidate_matches_criteria(cand, criteria):
+                    if enforce_games_criteria and not self._candidate_matches_criteria(
+                        cand, criteria
+                    ):
                         continue
                     fp = (
                         build_game_fingerprint(
@@ -394,7 +381,9 @@ class DomainSourceChainService:
                 )
         return None
 
-    def available_filters(self, domain: DomainType, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:
+    def available_filters(
+        self, domain: DomainType, lang: str = "fr"
+    ) -> Dict[str, List[Dict[str, str]]]:
         return self.registry.available_filters(domain=domain, lang=lang)
 
 

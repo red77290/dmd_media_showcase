@@ -455,6 +455,9 @@ def _sign_and_optionally_notarize_macos(app_bundle: Path, dmg_path: Path) -> Non
 
 
 def _base_pyinstaller_args(name: str) -> List[str]:
+    sep = ";" if sys.platform == "win32" else ":"
+    static_src = ROOT / "app" / "infrastructure" / "web" / "static"
+    asyncapi_src = ROOT / "docs" / "asyncapi.yaml"
     return [
         sys.executable,
         "-m",
@@ -464,6 +467,10 @@ def _base_pyinstaller_args(name: str) -> List[str]:
         "--onedir",
         "--name",
         name,
+        "--add-data",
+        f"{static_src}{sep}app/infrastructure/web/static",
+        "--add-data",
+        f"{asyncapi_src}{sep}docs",
         "--collect-submodules",
         "app",
         "--collect-submodules",

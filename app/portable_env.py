@@ -53,6 +53,32 @@ def get_internal_bin_dir() -> Path:
     return root / "bin"
 
 
+def get_resource_path(rel_path: str) -> Path:
+    """
+    Resolve a bundled read-only resource path (`docs/asyncapi.yaml`, `app/infrastructure/web/static`, etc.)
+    across normal source checkouts, Docker containers, macOS `.app` bundles, and PyInstaller builds.
+    """
+    clean_rel = Path(rel_path)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / clean_rel
+        if cand.exists():
+            return cand
+    root = get_bundle_root()
+    for base in (
+        root,
+        root / "_internal",
+        root.parent / "Frameworks",
+        root.parent / "Resources",
+        Path(__file__).resolve().parent.parent,
+        Path.cwd(),
+    ):
+        cand = base / clean_rel
+        if cand.exists():
+            return cand
+    return Path(__file__).resolve().parent.parent / clean_rel
+
+
 def get_data_dir() -> Path:
     """Return the persistent `data` directory used for `server_config.json` and `seen_history.json`."""
     env_data = os.environ.get("DMD_DATA_DIR")

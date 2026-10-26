@@ -10,6 +10,7 @@ build
 dist
 data
 demo
-docs
+docs/*
+!docs/asyncapi.yaml
 tests
 .env

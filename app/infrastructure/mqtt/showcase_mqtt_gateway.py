@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from app import __version__
+from app.domain.ports.control_gateway import IMqttControlGatewayPort
 from app.domain.taxonomy import ReferentialConsolidator
 from app.infrastructure.mqtt.embedded_broker import (
     EmbeddedMqttBroker,
@@ -50,7 +51,7 @@ def _summarize_payload_for_log(data: Dict[str, Any]) -> str:
     return json.dumps(copy_dict, ensure_ascii=False)
 
 
-class ShowcaseMqttGateway:
+class ShowcaseMqttGateway(IMqttControlGatewayPort):
     """
     Unified MQTT Control Plane gateway for `dmd_media_showcase`.
     """
