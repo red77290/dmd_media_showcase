@@ -97,6 +97,7 @@ Open `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/`) in yo
 - **Hot-Tune Runtime, Workers & Video Limits in Real Time** (`2. Runtime, Workers & Video Limits`, persisted in `./data/server_config.json` with zero server restart):
   - Resize concurrent transcode workers (`max_concurrent_jobs`: `0 = Auto CPU-bounded` or `1..16`), executor isolation (`ProcessPoolExecutor` vs `ThreadPoolExecutor`), FFmpeg threads per job (`1..8`), OS CPU `nice` priority (`0..19`), queue capacity (`10..1000`), and live server `log_level`.
   - Enforce global ceilings on maximum video duration (`video_max_duration_limit_s`), master clip target (`server_master_clip_max_s`), max frame rate (`video_max_fps_limit`), source trailer download size (`ytdlp_max_filesize_mb`), panorama scroll duration (`panorama_duration_s`), default AI framing/colorimetry (`default_video_mode`, `default_color_boost`), cache directory, and session/batch TTLs.
+  - **Enable Persistent On-Demand Conversion Cache**: If your host has free disk space, toggle **Persistent On-Demand Conversion Cache** ON (and optionally set a max MB quota). Games requested on demand (such as from Recalbox / Batocera / RetroPie `FrontendSync`) are saved by `(System + Game + Panel Resolution + Card Style)` so relaunching a previously played game starts **instantly (`0 ms`)** without re-scraping or re-converting. Click **🗑 Evict On-Demand Cache** anytime to clear cached conversions in one click.
 - Configure **optional** Primary scraper credentials:
   - **ScreenScraper** (`user`, `pass`, `dev_id`, `dev_pass`) for `games`. Without credentials, `ArcadeItalia` (MAME HTTPS) + `Libretro+Wikidata` (Console SPARQL + GitHub Tree) operate automatically with zero configuration.
   - **TMDB API Key / v4 Read Access Token** (`tmdb_api_key`) and **TheTVDB v4 API Key** (`tvdb_api_key`) for `movies`, `series`, and `anime`. Without keys, `Apple iTunes`, `TVMaze`, `Jikan + AnimeThemes`, and `Wikipedia Interwiki` operate automatically.
@@ -126,4 +127,15 @@ Open `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/`) in yo
 For dedicated marquee/topper builds on `ESP32_STD` (no PSRAM) or `ESP32-S3` without a local WebUI (~180 lines of C++ listening on UDP `:4210`):
 1. Flash the reference firmware skeleton from **[ESP32 Integration & Passive Receiver Guide](ESP32_INTEGRATION.md)** (announces geometry & LAN IP via `POST /api/v1/clients/hello` or MQTT `dmd_showcase/clients/{dmd_id}/hello`).
 2. Open `http://dmdmediashowcase.local:8890/`, select the discovered DMD board, choose its broadcast content language (`lang`), enable domains/categories, and save its profile to `./data/dmd_profiles.json` — the server renders even Phase 1 Info Cards directly into the RGB565 UDP `DMDF` stream!
+
+### 3.3 Pairing Showcase with Recalbox / Batocera / RetroPie (`FrontendSync` In-Game Showcase)
+
+When your DMD (`ArcadeMatrix` ESP32 or `ArcadeMatrix_RPi`) is paired with a retro console, Showcase automatically enriches game launches without slowing down menu browsing:
+1. **Install the Console Sync Script Once**: Point your Recalbox, Batocera (`v33+`), or RetroPie sync script to **your DMD's IP address**. The console asks the DMD dynamically which MQTT broker to use — so you never need to reinstall scripts when turning Showcase ON or OFF.
+2. **Enable In-Game Showcase on the DMD**: In your DMD WebUI (`System -> MQTT & API -> 🎮 FrontendSync`), enable **Share Showcase MQTT Broker** (frees local RAM on the DMD by sharing Showcase's `:1883` broker) and **In-Game Showcase (Card + Gameplay Video)**.
+3. **Choose Your Cycle & Card Design**:
+   - **Menu Browsing (`0 ms`)**: Scrolling games displays local Pixelcade marquees immediately.
+   - **Launching a Game**: Your DMD displays the classic marquee immediately while Showcase prepares the game's **Animated Info Card + Panoramas + Gameplay Video** in the background and smoothly takes over once ready (`Play Once`, `Alternate Marquee & Showcase`, or `Loop`).
+   - **Card Style**: Either keep **Inherit DMD Profile from Showcase Studio** (configure your Games card once in Showcase's Card Studio) or select **Custom Override on DMD** directly inside `FrontendSync`.
+4. **Instant Replay Cache**: Turn on **Persistent On-Demand Conversion Cache** in Showcase (`2. Runtime, Workers & Video Limits`) so previously played games launch instantaneously on future sessions, and use **🗑️ Evict Showcase Cache** (in Showcase or on the DMD) anytime you want to refresh cached card styles.
 

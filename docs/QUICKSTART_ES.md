@@ -95,6 +95,7 @@ El montaje **`${DMD_DATA_PATH:-./data}:/app/data`** en `docker-compose.yml` util
 
 Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en su navegador para:
 - **Ajustar en caliente Runtime, Workers y Límites de Vídeo en Tiempo Real** (`2. Runtime, Workers y Límites de Vídeo`, guardado en `./data/server_config.json` sin reiniciar el servidor): número de workers concurrentes (`max_concurrent_jobs`), modo de ejecutor (`ProcessPoolExecutor` / `ThreadPoolExecutor`), hilos FFmpeg, prioridad CPU `nice`, duración máxima de vídeo (`video_max_duration_limit_s`), FPS máximos (`video_max_fps_limit`), duración de panoramas (`panorama_duration_s`), tamaño máximo de descarga, caché, TTLs, puerto MQTT, mDNS y nivel de log en vivo.
+- **Activar la Caché Persistente de Conversiones On-Demand**: Si dispone de espacio en disco, active **Caché Persistente de Conversiones On-Demand** (con cuota máxima opcional en MB). Los juegos solicitados bajo demanda (como desde Recalbox / Batocera / RetroPie `FrontendSync`) se guardan por `(Sistema + Juego + Resolución + Estilo de Tarjeta)` para arrancar **al instante (`0 ms`)** en futuras partidas sin volver a buscar ni convertir, con vaciado en un clic mediante **🗑 Vaciar Caché On-Demand**.
 - Configurar credenciales **opcionales** de scrapers primarios (`ScreenScraper`, `TMDB`). Sin credenciales, los adaptadores sin clave (`ArcadeItalia`, `Libretro+Wikidata`, `iTunes`, `TVMaze`, `Jikan+AnimeThemes`, `AniList`) funcionan automáticamente.
 - Elegir entre el **Broker MQTT Integrado** (`:1883`) o un **Broker MQTT Externo**.
 - **Gestionar Perfiles DMD en el Servidor (`./data/dmd_profiles.json`)**: Configurar listas de reproducción (`games`, `movies`, `series`, `anime`), filtros (`systems`, `genres`, `decades`), ajustes de vídeo/color e idioma de emisión (`lang`) para receptores ESP32 pasivos o híbridos (`PUT /api/v1/clients/{dmd_id}/profile`).
@@ -121,4 +122,15 @@ Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en s
 Para marquesinas o toppers dedicados en `ESP32_STD` (sin PSRAM) o `ESP32-S3` sin WebUI local (~180 líneas de C++ escuchando en UDP `:4210`):
 1. Flashee el esqueleto de referencia de la **[Guía de Integración ESP32 y Receptor Pasivo](ESP32_INTEGRATION_ES.md)** (anuncia automáticamente geometría e IP LAN mediante `POST /api/v1/clients/hello` o MQTT `dmd_showcase/clients/{dmd_id}/hello`).
 2. Abra `http://dmdmediashowcase.local:8890/`, seleccione el panel detectado, elija su idioma de emisión (`lang`), active dominios/categorías y guarde su perfil en `./data/dmd_profiles.json` — ¡el servidor renderiza incluso la Ficha Informativa de la Fase 1 directamente dentro del stream UDP `DMDF` RGB565!
+
+### 3.3 Vincular Showcase con Recalbox / Batocera / RetroPie (`FrontendSync` Showcase en Juego)
+
+Cuando su DMD (`ArcadeMatrix` ESP32 o `ArcadeMatrix_RPi`) está conectado a una consola retro, Showcase enriquece automáticamente las partidas sin ralentizar la navegación por menús:
+1. **Instalar el script en la consola una sola vez**: Apunte el script de Recalbox, Batocera (`v33+`) o RetroPie **únicamente a la IP de su DMD**. La consola consulta dinámicamente al DMD qué broker MQTT utilizar, por lo que nunca tendrá que reinstalar el script al encender o apagar Showcase.
+2. **Activar Showcase en Juego en el DMD**: En la WebUI de su DMD (`Sistema -> MQTT & API -> 🎮 FrontendSync`), active **Usar Broker MQTT de Showcase si está activo** (libera RAM local en el DMD compartiendo el broker `:1883` de Showcase) y **Showcase en Juego (Tarjeta + Vídeo Gameplay)**.
+3. **Elegir el Ciclo y el Diseño de Tarjeta**:
+   - **Navegación por Menús (`0 ms`)**: Desplazarse por juegos muestra al instante las marquesinas Pixelcade locales.
+   - **Al Lanzar un Juego**: El DMD muestra la marquesina clásica de inmediato mientras Showcase prepara en segundo plano la **Ficha Informativa Animada + Panoramas + Vídeo de Gameplay** y toma el relevo suavemente cuando está lista (`Una vez`, `Alternar Marquesina y Showcase` o `Bucle`).
+   - **Estilo de Tarjeta**: Mantenga **Heredar perfil DMD desde Showcase Studio** (configurado visualmente en el Studio de Showcase) o seleccione **Personalizado en el DMD** directamente en `FrontendSync`.
+4. **Caché de Inicio Instantáneo**: Active **Caché Persistente de Conversiones On-Demand** en Showcase (`2. Runtime, Workers y Límites de Vídeo`) para que los juegos ya jugados arranquen al instante en sesiones futuras, y pulse **🗑️ Vaciar Caché de Showcase** (en Showcase o desde el DMD) cuando quiera regenerar las tarjetas tras cambiar su estilo.
 
