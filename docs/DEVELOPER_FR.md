@@ -90,7 +90,8 @@ Chaque adaptateur implémente `IScraperSource` (`app/domain/ports/scraper_source
 Le Control Center utilise des ES Modules natifs (`<script type="module" src="/static/js/app.js"></script>`) sans bundler lourd :
 - Maintenir la parité 100 % des clés de traduction entre `js/i18n/en.js`, `js/i18n/fr.js` et `js/i18n/es.js` (vérifiée automatiquement par pytest).
 - Centraliser tout état UI partagé dans `uiState` (`js/state.js`).
-- Tout gestionnaire d'événement HTML inline (`onclick="monAction()"` dans `index.html`) doit être enregistré dans `WINDOW_HANDLERS` au sein de `js/app.js` (vérifié automatiquement par `test_webui_static_es_modules_resolution_and_dom_handler_binding`).
+- Tout gestionnaire d'événement HTML inline (`onclick="monAction()"` dans `index.html` ou les templates JS dynamiques) doit être enregistré dans `WINDOW_HANDLERS` au sein de `js/app.js` (vérifié automatiquement par `test_webui_static_es_modules_resolution_and_dom_handler_binding`).
+- Respecter l'ordre strict de cascade CSS (`css/dashboard.css` → `css/studio.css` → `css/responsive.css`) : toutes les règles `@media` responsives résident dans `css/responsive.css` (chargé en dernier) et chaque tableau HTML est encapsulé dans `.table-wrap` (vérifié automatiquement par `test_webui_css_brace_balance_cascade_order_and_responsive_tables`).
 
 ---
 

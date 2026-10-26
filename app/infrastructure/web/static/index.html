@@ -6,6 +6,7 @@
   <title>DMD Media Showcase Server — Control Center</title>
   <link rel="stylesheet" href="/static/css/dashboard.css" />
   <link rel="stylesheet" href="/static/css/studio.css" />
+  <link rel="stylesheet" href="/static/css/responsive.css" />
 </head>
 <body>
   <div class="container">
@@ -108,8 +109,8 @@
         <p class="desc" data-i18n="dmd_clients_desc">
           Live view of HUB75 panels registered via MQTT or HTTP Polling, their orthogonal framing/color presets, active broadcast, and pre-computed N (Ready) and N+1 (Standby) slots.
         </p>
-        <div style="overflow-x:auto">
-          <table>
+        <div class="table-wrap">
+          <table class="clients-table">
             <thead>
               <tr>
                 <th data-i18n="th_dmd_id">DMD ID</th>
@@ -215,7 +216,7 @@
           💡 Select Systems, Genres &amp; Decades with visual tags (empty = All). Video duration, framing, color boost, and Mode 2B Card layout are configured per domain inside Studio — click any domain's Studio button on the right to customize it.
         </div>
 
-        <div style="overflow-x:auto;margin-top:12px">
+        <div class="table-wrap" style="margin-top:12px">
           <table class="playlist-table">
             <thead>
               <tr>
@@ -522,7 +523,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <span style="font-size:0.9rem;font-weight:700;color:#fff" data-i18n="studio_prof_bar_title">🎯 Domain Profiles on DMD:</span>
-            <select id="studio-top-dmd-select" onchange="onStudioTopDmdChange(this.value)" style="width:auto;min-width:250px;height:36px;line-height:34px;font-size:0.84rem;padding:0 32px 0 10px">
+            <select id="studio-top-dmd-select" onchange="onStudioTopDmdChange(this.value)" style="width:auto;min-width:220px;max-width:100%;height:36px;line-height:34px;font-size:0.84rem;padding:0 32px 0 10px">
               <option value="" data-i18n="studio_opt_no_dmd">— Select or connect a DMD —</option>
             </select>
             <button type="button" id="btn-studio-back-rotation" class="secondary mini-btn" onclick="returnToDmdRotationEditor()" style="display:none" data-i18n="btn_back_rotation">

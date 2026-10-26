@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Iterable, List, Set, Tuple
 
@@ -34,7 +36,11 @@ from app.domain.aggregates import (
 )
 from app.domain.entities import FilterCriteria, MediaCandidate, PanelGeometry
 from app.domain.taxonomy import SynonymCatalogResolver
-from app.infrastructure.web.dashboard_loader import STATIC_WEB_DIR, iter_static_js_files
+from app.infrastructure.web.dashboard_loader import (
+    STATIC_WEB_DIR,
+    iter_static_css_files,
+    iter_static_js_files,
+)
 from app.scheduler.executor_lifecycle import BoundedWorkerExecutorMixin
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -182,17 +188,89 @@ def test_webui_static_es_modules_resolution_and_dom_handler_binding():
 
     html = (STATIC_WEB_DIR / "index.html").read_text(encoding="utf-8")
     app_entry_js = (STATIC_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+    wh_match = re.search(r"const\s+WINDOW_HANDLERS\s*=\s*\{([^}]+)\}", app_entry_js, re.S)
+    assert wh_match, "Expected WINDOW_HANDLERS map in static/js/app.js"
+    window_handlers = {tok.strip() for tok in wh_match.group(1).split(",") if tok.strip()}
 
-    # Extract every inline handler call `on<event>="fnName(...)"` from index.html
+    # Extract every inline handler call `on<event>="fnName(...)"` from index.html AND dynamic JS templates
     inline_attr_calls: Set[str] = set()
-    for expr in re.findall(r'\bon(?:click|change|input|keydown|submit)="([^"]+)"', html):
-        for fn_match in re.findall(r"\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(", expr):
-            if fn_match not in {"event", "if", "return", "Number", "String", "Boolean"}:
-                inline_attr_calls.add(fn_match)
+    for src_doc in [html, *(p.read_text(encoding="utf-8") for p in js_files)]:
+        for expr in re.findall(r'\bon(?:click|change|input|keydown|submit)="([^"]+)"', src_doc):
+            for fn_match in re.findall(r"\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(", expr):
+                if fn_match not in {"event", "if", "for", "while", "return", "Number", "String", "Boolean"}:
+                    inline_attr_calls.add(fn_match)
 
-    assert inline_attr_calls, "Expected inline DOM event handlers in index.html"
-    missing_bindings = [fn for fn in sorted(inline_attr_calls) if fn not in app_entry_js]
+    assert len(inline_attr_calls) >= 60, "Expected >= 60 inline DOM & template event handlers"
+    missing_bindings = sorted(inline_attr_calls - window_handlers)
     assert not missing_bindings, f"DOM handlers missing from app.js WINDOW_HANDLERS: {missing_bindings}"
+
+    node_bin = shutil.which("node")
+    if node_bin:
+        app_url = (STATIC_WEB_DIR / "js" / "app.js").resolve().as_uri()
+        eval_res = subprocess.run(
+            [node_bin, "--input-type=module", "-e", f"await import({app_url!r});"],
+            capture_output=True,
+            text=True,
+        )
+        assert eval_res.returncode == 0, f"ES module evaluation failed in Node.js: {eval_res.stderr}"
+
+
+def test_webui_css_brace_balance_cascade_order_and_responsive_tables():
+    """
+    Verify CSS syntactic integrity (balanced braces, zero accidental unclosed selector nesting),
+    strict stylesheet cascade order (`dashboard.css` -> `studio.css` -> `responsive.css`),
+    and responsive table wrappers + sticky action columns so buttons never get clipped.
+    """
+    css_files = iter_static_css_files()
+    assert [p.name for p in css_files] == ["dashboard.css", "studio.css", "responsive.css"]
+
+    for css_path in css_files:
+        raw_css = css_path.read_text(encoding="utf-8")
+        clean_css = re.sub(r"/\*.*?\*/", "", raw_css, flags=re.S)
+        block_stack: List[Tuple[int, str]] = []
+        buf = ""
+        line_no = 1
+        for ch in clean_css:
+            if ch == "\n":
+                line_no += 1
+            if ch == "{":
+                header = buf.strip().splitlines()[-1].strip() if buf.strip() else ""
+                assert not (block_stack and not block_stack[-1][1].startswith("@")), (
+                    f"Unclosed CSS block in {css_path.name}:{block_stack[-1][0]} "
+                    f"('{block_stack[-1][1]}') swallowed '{header}' at line {line_no}"
+                )
+                block_stack.append((line_no, header))
+                buf = ""
+            elif ch == "}":
+                assert block_stack, f"Stray closing '}}' in {css_path.name}:{line_no}"
+                block_stack.pop()
+                buf = ""
+            else:
+                buf += ch
+        assert not block_stack, f"Unclosed '{{' at EOF in {css_path.name}: {block_stack}"
+
+    # Base stylesheets must not define @media rules that could be overridden by later base rules;
+    # all responsive @media breakpoints belong in responsive.css loaded last.
+    dash_css = (STATIC_WEB_DIR / "css" / "dashboard.css").read_text(encoding="utf-8")
+    studio_css = (STATIC_WEB_DIR / "css" / "studio.css").read_text(encoding="utf-8")
+    resp_css = (STATIC_WEB_DIR / "css" / "responsive.css").read_text(encoding="utf-8")
+    assert "@media" not in dash_css
+    assert "@media" not in studio_css
+    assert "@media (max-width: 960px)" in resp_css
+    assert "@media (max-width: 720px)" in resp_css
+
+    # Verify top-level modal backdrop hiding and responsive table / sticky-control invariants
+    assert re.search(r"^\.modal-backdrop\s*\{[^}]*display:\s*none;", dash_css, re.M | re.S)
+    assert ".table-wrap" in dash_css and "overflow-x: auto" in dash_css
+    assert "position: sticky;" in dash_css and "right: 0;" in dash_css
+    assert ".slot-pill" in dash_css and "text-overflow: ellipsis;" in dash_css
+
+    html = (STATIC_WEB_DIR / "index.html").read_text(encoding="utf-8")
+    table_count = len(re.findall(r"<table\b", html))
+    wrap_count = len(re.findall(r'<div\s+class="table-wrap"', html))
+    assert table_count >= 2 and wrap_count == table_count, (
+        f"Every <table> in index.html must be wrapped in .table-wrap ({wrap_count}/{table_count})"
+    )
 
 
 def test_generic_domain_aggregates_reusability_on_arbitrary_types():

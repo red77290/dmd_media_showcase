@@ -7,9 +7,12 @@
   gap: 18px;
   align-items: start;
 }
+.studio-grid > div {
+  min-width: 0;
+}
 .studio-search-bar {
   display: grid;
-  grid-template-columns: 150px 135px 155px 155px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(120px, 145px) minmax(115px, 135px) minmax(120px, 150px) minmax(120px, 150px) minmax(180px, 1fr) auto;
   gap: 10px;
   align-items: end;
 }
@@ -237,6 +240,7 @@ input[type="color"].studio-color {
   margin-top: 12px;
 }
 .studio-dom-tab {
+  min-width: 0;
   height: auto !important;
   padding: 10px 12px !important;
   border-radius: 10px !important;

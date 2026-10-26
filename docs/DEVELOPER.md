@@ -119,7 +119,8 @@ scraper_registry.register(CustomRetroAdapter())
 The Control Center WebUI uses standard native ES Modules (`<script type="module" src="/static/js/app.js"></script>`) with zero build-step overhead:
 - Add translations in lockstep across `js/i18n/en.js`, `js/i18n/fr.js`, and `js/i18n/es.js` (100% key parity is verified by pytest).
 - Keep shared mutable UI state inside `uiState` (`js/state.js`).
-- When adding an inline DOM event attribute (`onclick="myAction()"` in `index.html`), export `myAction` from its tab module and register it in `WINDOW_HANDLERS` inside `js/app.js` (verified automatically by `test_webui_static_es_modules_resolution_and_dom_handler_binding`).
+- When adding an inline DOM event attribute (`onclick="myAction()"` in `index.html` or dynamic JS templates), export `myAction` from its tab module and register it in `WINDOW_HANDLERS` inside `js/app.js` (verified automatically by `test_webui_static_es_modules_resolution_and_dom_handler_binding`).
+- Preserve the strict stylesheet cascade (`css/dashboard.css` → `css/studio.css` → `css/responsive.css`): keep all `@media` breakpoints in `css/responsive.css` (loaded last) and wrap all tables in `.table-wrap` (verified automatically by `test_webui_css_brace_balance_cascade_order_and_responsive_tables`).
 
 ---
 

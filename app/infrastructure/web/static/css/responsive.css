@@ -1,0 +1,120 @@
+/* DMD Media Showcase — Responsive Breakpoints (Loaded Last in Cascade Order) */
+
+@media (max-width: 1180px) {
+  .studio-search-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .studio-grid .form-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .slot-pill {
+    max-width: 145px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .studio-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 960px) {
+  body {
+    padding: 14px;
+  }
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .providers-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vault-grid {
+    grid-template-columns: 1fr;
+  }
+  .form-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cand-grid {
+    grid-template-columns: 1fr;
+  }
+  .studio-grid {
+    grid-template-columns: 1fr;
+  }
+  .studio-search-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .layout-cards-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .studio-dom-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    padding: 10px;
+  }
+  header {
+    padding: 14px 16px;
+  }
+  .header-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .tab-btn {
+    width: 100%;
+    text-align: center;
+    padding: 9px 10px;
+    font-size: 0.84rem;
+  }
+  .card {
+    padding: 14px;
+  }
+  .form-grid-2,
+  .form-grid-3,
+  .studio-grid .form-grid-3,
+  .kpi-grid,
+  .providers-grid,
+  .cand-grid,
+  .studio-dom-tabs,
+  .studio-search-bar {
+    grid-template-columns: 1fr;
+  }
+  .field.span-2 {
+    grid-column: span 1;
+  }
+  .studio-search-bar > button {
+    width: 100%;
+  }
+  #studio-top-dmd-select {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .tag-modal {
+    max-height: 92vh;
+  }
+  .tag-modal-head,
+  .tag-modal-body,
+  .tag-modal-foot {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+@media (max-width: 520px) {
+  .tabs {
+    grid-template-columns: 1fr;
+  }
+  .layout-cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .form-actions button {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+}

@@ -37,4 +37,7 @@ async def optional_api_key_security_middleware(request: Request, call_next) -> R
                     status_code=401,
                     media_type="application/json",
                 )
-    return await call_next(request)
+    response = await call_next(request)
+    if path in ("/", "/admin") or path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
