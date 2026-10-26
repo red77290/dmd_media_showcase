@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.infrastructure.http.dependencies import (
     build_connected_clients_snapshot,
     collect_http_sessions_with_ip,
+    get_on_demand_cache,
     get_orchestrator,
     get_profile_store,
 )
@@ -18,6 +19,7 @@ from app.models import (
     ClientControlRequest,
     ClientHelloPayload,
     DmdProfilePayload,
+    OnDemandCacheConfigPayload,
     QueueAddRequest,
 )
 
@@ -167,6 +169,36 @@ async def add_to_dmd_priority_queue(
     }
 
 
+@router.post(
+    "/api/v1/clients/{dmd_id}/queue/async",
+    status_code=202,
+    tags=["On-Demand & Voice Assistant"],
+)
+async def add_to_dmd_priority_queue_async(
+    dmd_id: str,
+    req: QueueAddRequest,
+) -> Dict[str, Any]:
+    """
+    Non-blocking asynchronous On-Demand enqueue endpoint (`202 Accepted` in `< 3 ms`).
+    - If a persistent conversion cache entry matches `(domain, systems, query, geometry, criteria)`,
+      promotes it immediately (`status='ready'`, `cache_hit=True`) with zero scraper lookup or transcoding.
+    - Otherwise schedules both scraper lookup and conversion asynchronously in the background and returns
+      immediately with `status='preparing'`.
+    """
+    co = get_orchestrator()
+    async_req = req.model_copy(update={"async_prepare": True})
+    try:
+        item = await co.enqueue_on_demand(dmd_id, async_req)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "status": "ready" if item.get("status") == "ready" else "accepted",
+        "dmd_id": dmd_id,
+        "item": item,
+        "queue": co.list_queue(dmd_id),
+    }
+
+
 @router.delete("/api/v1/clients/{dmd_id}/queue/{queue_id}", tags=["On-Demand & Voice Assistant"])
 async def remove_from_dmd_priority_queue(
     dmd_id: str,
@@ -196,3 +228,27 @@ async def control_dmd_client(
     """Send a real-time playback control (`skip`, `pause`, `resume`, `stop`) to `dmd_id`."""
     res = await get_orchestrator().control_client(dmd_id, req.action)
     return {"status": "ok", **res}
+
+
+@router.get("/api/v1/cache/on-demand", tags=["On-Demand & Voice Assistant"])
+async def get_on_demand_cache_stats() -> Dict[str, Any]:
+    """Inspect persistent request-keyed On-Demand conversion cache configuration, size, and items."""
+    return get_on_demand_cache().get_stats()
+
+
+@router.put("/api/v1/cache/on-demand/config", tags=["On-Demand & Voice Assistant"])
+async def update_on_demand_cache_config(
+    payload: OnDemandCacheConfigPayload,
+) -> Dict[str, Any]:
+    """Enable/disable the persistent On-Demand conversion cache or adjust its MiB quota."""
+    return get_on_demand_cache().update_settings(
+        enabled=payload.enabled,
+        max_mb=payload.max_mb,
+    )
+
+
+@router.post("/api/v1/cache/on-demand/evict", tags=["On-Demand & Voice Assistant"])
+@router.delete("/api/v1/cache/on-demand", tags=["On-Demand & Voice Assistant"])
+async def evict_on_demand_cache() -> Dict[str, Any]:
+    """Atomically purge all cached On-Demand conversions from disk."""
+    return get_on_demand_cache().evict_all()

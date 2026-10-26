@@ -321,5 +321,12 @@ export const I18N_ES = {
     upd_msg_os: "La versión v{latest} está disponible para {os} (instalada: v{current}).",
     upd_msg_docker: "La versión v{latest} está disponible para {os} (instalada: v{current}) — actualiza la imagen o consulta la release.",
     upd_btn_download: "⬇ Descargar ({asset})",
-    upd_btn_release: "Ver Release en GitHub ↗"
+    upd_btn_release: "Ver Release en GitHub ↗",
+    lbl_ondemand_cache_enabled: "Caché Persistente de Conversiones On-Demand",
+    opt_ondemand_cache_off: "Desactivado (Consume-Once efímero)",
+    opt_ondemand_cache_on: "Activado (Acceso 0 ms directo por Sistema + Juego)",
+    lbl_ondemand_cache_max_mb: "Cuota Máx. Caché Persistente On-Demand (MiB — 0 = Ilimitado)",
+    btn_evict_ondemand_cache: "🗑 Vaciar Caché On-Demand",
+    pill_ondemand_cache_stats: "{n} en caché • {mb} MB",
+    msg_ondemand_cache_evicted: "✓ {n} conversión(es) On-Demand eliminada(s) ({mb} MB liberados)"
 };

@@ -43,6 +43,7 @@ import {
   saveDmdProfile
 } from './tabs/profile_editor.js';
 import {
+  evictOnDemandCache,
   loadHealthAndConfig,
   refreshAll,
   resetHistory,
@@ -140,6 +141,7 @@ const WINDOW_HANDLERS = {
   dismissUpdateBanner,
   enqueueCandidate,
   enqueueStudioSim,
+  evictOnDemandCache,
   jumpToQueueFromInspector,
   jumpToQueueStudio,
   jumpToStudioChapter,

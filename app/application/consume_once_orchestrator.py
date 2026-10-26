@@ -52,6 +52,7 @@ from app.domain.ports import (
     IFrameStreamerPort,
     IMediaTranscoderPort,
     IMqttControlGatewayPort,
+    IOnDemandCachePort,
     ISeenHistoryRepository,
     default_port_registry,
 )
@@ -73,6 +74,7 @@ class ConsumeOnceOrchestrator:
         mqtt_gateway: Optional[IMqttControlGatewayPort] = None,
         profile_store: Optional[IDmdProfileRepository] = None,
         card_renderer: Optional[ICardPreviewRendererPort] = None,
+        on_demand_cache: Optional[IOnDemandCachePort] = None,
     ) -> None:
         self.chain_service: DomainSourceChainService = chain_service or source_chain_service
         self.seen_repo: ISeenHistoryRepository = (
@@ -105,6 +107,11 @@ class ConsumeOnceOrchestrator:
             if card_renderer is not None
             else default_port_registry.resolve("card_preview_renderer")
         )
+        self.on_demand_cache: IOnDemandCachePort = (
+            on_demand_cache
+            if on_demand_cache is not None
+            else default_port_registry.resolve("on_demand_cache")
+        )
 
         self.state = ShowcaseRuntimeState()
 
@@ -129,6 +136,7 @@ class ConsumeOnceOrchestrator:
             profile_store=self.profile_store,
             resolve_target_slot_fn=self.clients.resolve_target_slot_dmd_id,
             schedule_hook=lambda dmd_id, dom: self._schedule_preparation(dmd_id, dom),
+            on_demand_cache=self.on_demand_cache,
         )
         self.slots = SlotPreparationService(
             state=self.state,

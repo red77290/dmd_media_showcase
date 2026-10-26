@@ -39,6 +39,10 @@ def get_server_config_store() -> Any:
     return get_main_module().server_config_store
 
 
+def get_on_demand_cache() -> Any:
+    return get_main_module().on_demand_cache_store
+
+
 def get_source_chain() -> Any:
     return get_main_module().source_chain_service
 

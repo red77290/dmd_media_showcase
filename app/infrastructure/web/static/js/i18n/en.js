@@ -321,5 +321,12 @@ export const I18N_EN = {
     upd_msg_os: "Version v{latest} is available for {os} (installed: v{current}).",
     upd_msg_docker: "Version v{latest} is available for {os} (installed: v{current}) — pull the latest image or view release notes.",
     upd_btn_download: "⬇ Download ({asset})",
-    upd_btn_release: "View GitHub Release ↗"
+    upd_btn_release: "View GitHub Release ↗",
+    lbl_ondemand_cache_enabled: "Persistent On-Demand Conversion Cache",
+    opt_ondemand_cache_off: "Disabled (Ephemeral Consume-Once)",
+    opt_ondemand_cache_on: "Enabled (Instant 0ms Hit by System + Title)",
+    lbl_ondemand_cache_max_mb: "Persistent On-Demand Cache Quota (MiB — 0 = Unlimited)",
+    btn_evict_ondemand_cache: "🗑 Evict On-Demand Cache",
+    pill_ondemand_cache_stats: "{n} cached • {mb} MB",
+    msg_ondemand_cache_evicted: "✓ Evicted {n} cached On-Demand conversion(s) ({mb} MB freed)"
 };

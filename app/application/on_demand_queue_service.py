@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 import uuid
 
 from app.application.concurrency import AsyncTaskSupervisor
-from app.application.criteria_parser import parse_domain_criteria
+from app.application.criteria_parser import assemble_prepared_package, parse_domain_criteria
 from app.application.showcase_state import QueuedOnDemandEntry, ShowcaseRuntimeState
 from app.application.source_chain_service import DomainSourceChainService
 from app.application.studio_preview_service import StudioPreviewService
@@ -27,11 +27,17 @@ from app.domain.entities import (
     PanelGeometry,
     PreparedShowcasePackage,
 )
+from app.domain.on_demand_cache_key import (
+    build_on_demand_request_cache_key,
+    candidate_from_cache_dict,
+    candidate_to_cache_dict,
+)
 from app.domain.ports import (
     IDmdProfileRepository,
     IFrameStreamerPort,
     IMediaTranscoderPort,
     IMqttControlGatewayPort,
+    IOnDemandCachePort,
 )
 
 logger = logging.getLogger("dmd_showcase.application.priority_queue")
@@ -51,6 +57,7 @@ class OnDemandQueueService:
         profile_store: IDmdProfileRepository,
         resolve_target_slot_fn: Callable[[str, DomainType], str],
         schedule_hook: Callable[[str, DomainType], None],
+        on_demand_cache: Optional[IOnDemandCachePort] = None,
     ) -> None:
         self.state = state
         self.chain_service = chain_service
@@ -61,6 +68,7 @@ class OnDemandQueueService:
         self.profile_store = profile_store
         self._resolve_target_slot = resolve_target_slot_fn
         self._schedule_hook = schedule_hook
+        self.on_demand_cache = on_demand_cache
 
     def list_queue(self, dmd_id: str) -> List[Dict[str, Any]]:
         q = self.state.priority_queues.get(dmd_id)
@@ -141,6 +149,10 @@ class OnDemandQueueService:
             if not pkg.consumed:
                 self.state.active_packages.pop(pkg.item_id, None)
                 shutil.rmtree(pkg.item_dir, ignore_errors=True)
+            else:
+                await self.streamer.stop_stream(target.target_slot_dmd_id)
+                self.state.active_packages.pop(pkg.item_id, None)
+                shutil.rmtree(pkg.item_dir, ignore_errors=True)
         return True
 
     async def activate_ready_priority_entry(
@@ -186,9 +198,11 @@ class OnDemandQueueService:
                 f"dmd_showcase/clients/{entry.target_slot_dmd_id}/{entry.domain}/ready",
                 {
                     "ready": True,
+                    "queue_id": entry.queue_id,
                     "item_id": pkg.item_id,
                     "domain": entry.domain,
                     "on_demand": True,
+                    "cache_hit": entry.cache_hit,
                     "card": pkg.card.to_dict(),
                 },
                 retain=True,
@@ -199,6 +213,7 @@ class OnDemandQueueService:
             eof_msg = {
                 "event": "stream_eof",
                 "action": "preempt_play_now",
+                "queue_id": entry.queue_id,
                 "item_id": pkg.item_id,
                 "domain": entry.domain,
             }
@@ -216,8 +231,10 @@ class OnDemandQueueService:
                 f"dmd_showcase/clients/{entry.target_slot_dmd_id}/command",
                 {
                     "action": "play_now",
+                    "queue_id": entry.queue_id,
                     "domain": entry.domain,
                     "item_id": pkg.item_id,
+                    "cache_hit": entry.cache_hit,
                     "card": pkg.card.to_dict(),
                 },
                 retain=False,
@@ -241,6 +258,8 @@ class OnDemandQueueService:
             (prof and prof.get("config_source") == "server")
             or dmd_id in self.state.server_managed_ids
         )
+        if prof is None and dmd_id.endswith("_sync"):
+            prof = self.profile_store.get_profile(dmd_id[:-5])
         target_slot_dmd_id = (
             dmd_id
             if is_server_managed
@@ -346,6 +365,10 @@ class OnDemandQueueService:
                     "color_boost": cached_sim.criteria.color_boost,
                 }
             )
+
+        override_render_card = getattr(req, "render_card_in_stream", None)
+        if override_render_card is not None:
+            render_card = bool(override_render_card)
 
         raw_merged["lang"] = base_lang
         raw_merged["render_card_in_stream"] = render_card
@@ -460,6 +483,82 @@ class OnDemandQueueService:
 
         cand: Optional[MediaCandidate] = cached_sim.candidate if cached_sim is not None else None
         req_candidate_id = str(getattr(req, "candidate_id", "") or "")
+        req_async_prepare = bool(getattr(req, "async_prepare", False))
+
+        req_cache_key = ""
+        req_render_sig = ""
+        if cached_sim is None and not req_candidate_id and req_query.strip():
+            cache_spec = build_on_demand_request_cache_key(
+                domain=eff_domain,
+                raw_systems=criteria.systems,
+                raw_query=req_query,
+                geometry=geometry,
+                criteria=criteria,
+            )
+            req_cache_key = cache_spec.cache_key
+            req_render_sig = cache_spec.render_signature
+
+            # Fast-Path (0 ms Request-Keyed Persistent Cache Hit): skip BOTH scraper search AND transcode
+            if self.on_demand_cache is not None and self.on_demand_cache.is_enabled():
+                item_id = f"pkg_{eff_domain}_{uuid.uuid4().hex[:8]}_cached"
+                item_dir = (
+                    settings.cache_dir
+                    / "consume_once"
+                    / target_slot_dmd_id
+                    / eff_domain
+                    / item_id
+                )
+                cached_pkg = self.on_demand_cache.checkout_to_dir(
+                    cache_key=req_cache_key,
+                    dest_dir=item_dir,
+                    expected_signature=req_render_sig,
+                )
+                if cached_pkg is not None:
+                    restored_cand = candidate_from_cache_dict(cached_pkg.candidate_dict)
+                    restored_package = assemble_prepared_package(
+                        item_id=item_id,
+                        domain=eff_domain,
+                        dmd_id=target_slot_dmd_id,
+                        cand=restored_cand,
+                        geometry=geometry,
+                        criteria=criteria,
+                        item_dir=item_dir,
+                        files_map=cached_pkg.files_map,
+                    )
+                    entry = QueuedOnDemandEntry(
+                        queue_id=f"q_{uuid.uuid4().hex[:10]}",
+                        dmd_id=dmd_id,
+                        target_slot_dmd_id=target_slot_dmd_id,
+                        domain=eff_domain,
+                        candidate=restored_cand,
+                        criteria=criteria,
+                        geometry=geometry,
+                        mode=req_mode,
+                        mark_seen=req_mark_seen,
+                        from_studio_sim=from_studio,
+                        cache_hit=True,
+                        raw_query=req_query.strip(),
+                        cache_key=req_cache_key,
+                        render_signature=req_render_sig,
+                        status="ready",
+                        package=restored_package,
+                    )
+                    q = self.state.priority_queues.setdefault(dmd_id, deque())
+                    if req_mode == "play_now":
+                        q.appendleft(entry)
+                    else:
+                        q.append(entry)
+                    await self.activate_ready_priority_entry(
+                        entry, restored_package, is_server_managed=is_server_managed
+                    )
+                    logger.info(
+                        "[ORCHESTRATOR] Instant On-Demand cache hit '%s' ('%s') -> '%s' queue (zero search & zero transcode)",
+                        req_cache_key,
+                        restored_cand.title,
+                        dmd_id,
+                    )
+                    return entry.to_dict()
+
         if cand is None and req_candidate_id:
             cand = self.chain_service.get_staged_candidate(req_candidate_id)
             if cand is not None and req_lang and cand.lang != criteria.lang and req_query:
@@ -470,6 +569,46 @@ class OnDemandQueueService:
                     (c for c in localized if c.id == req_candidate_id),
                     localized[0] if localized else cand,
                 )
+
+        if cand is None and req_async_prepare and req_query.strip():
+            placeholder_cand = MediaCandidate(
+                id="pending",
+                domain=eff_domain,
+                title=req_query.strip(),
+                year="",
+                badge=eff_domain.upper(),
+                badge_color="#FF6D00",
+                subtitle="",
+                rating="",
+                synopsis="",
+                lang=criteria.lang,
+            )
+            entry = QueuedOnDemandEntry(
+                queue_id=f"q_{uuid.uuid4().hex[:10]}",
+                dmd_id=dmd_id,
+                target_slot_dmd_id=target_slot_dmd_id,
+                domain=eff_domain,
+                candidate=placeholder_cand,
+                criteria=criteria,
+                geometry=geometry,
+                mode=req_mode,
+                mark_seen=req_mark_seen,
+                from_studio_sim=from_studio,
+                raw_query=req_query.strip(),
+                cache_key=req_cache_key,
+                render_signature=req_render_sig,
+                status="preparing",
+            )
+            q = self.state.priority_queues.setdefault(dmd_id, deque())
+            if req_mode == "play_now":
+                q.appendleft(entry)
+            else:
+                q.append(entry)
+            loop = asyncio.get_running_loop()
+            entry.prep_task = loop.create_task(
+                self.prepare_priority_entry(entry, is_server_managed=is_server_managed)
+            )
+            return entry.to_dict()
 
         if cand is None:
             if req_candidate_id and not req_query.strip():
@@ -504,6 +643,9 @@ class OnDemandQueueService:
             mode=req_mode,
             mark_seen=req_mark_seen,
             from_studio_sim=from_studio,
+            raw_query=req_query.strip(),
+            cache_key=req_cache_key,
+            render_signature=req_render_sig,
             status="preparing",
         )
         q = self.state.priority_queues.setdefault(dmd_id, deque())
@@ -528,6 +670,32 @@ class OnDemandQueueService:
         is_server_managed: bool,
     ) -> None:
         try:
+            if entry.candidate.id == "pending" and entry.raw_query:
+                found = await self.chain_service.search_candidates(
+                    criteria=entry.criteria,
+                    query=entry.raw_query,
+                    limit=1,
+                )
+                if not found:
+                    one = await self.chain_service.search_on_demand(
+                        domain=entry.domain,
+                        query=entry.raw_query,
+                        lang=entry.criteria.lang,
+                    )
+                    if one is not None:
+                        found = [one]
+                q_now = self.state.priority_queues.get(entry.dmd_id)
+                if not found or q_now is None or entry not in q_now:
+                    if q_now is not None and entry in q_now:
+                        q_now.remove(entry)
+                    logger.info(
+                        "[ORCHESTRATOR] Async On-Demand query '%s' yielded no match (queue_id='%s')",
+                        entry.raw_query,
+                        entry.queue_id,
+                    )
+                    return
+                entry.candidate = found[0]
+
             pkg = await self.state.build_package_from_candidate(
                 transcoder=self.transcoder,
                 dmd_id=entry.target_slot_dmd_id,
@@ -541,6 +709,29 @@ class OnDemandQueueService:
                 if pkg is not None:
                     shutil.rmtree(pkg.item_dir, ignore_errors=True)
                 return
+
+            if (
+                self.on_demand_cache is not None
+                and self.on_demand_cache.is_enabled()
+                and entry.cache_key
+            ):
+                sys_label = ",".join(entry.criteria.systems) if entry.criteria.systems else ""
+                self.on_demand_cache.store_package(
+                    cache_key=entry.cache_key,
+                    source_dir=pkg.item_dir,
+                    files_map=pkg.files_map,
+                    candidate_dict=candidate_to_cache_dict(entry.candidate),
+                    meta={
+                        "domain": entry.domain,
+                        "system": sys_label,
+                        "query": entry.raw_query,
+                        "title": entry.candidate.title,
+                        "width": entry.geometry.width,
+                        "height": entry.geometry.height,
+                        "duration_s": pkg.card.stream_duration_s,
+                        "render_signature": entry.render_signature,
+                    },
+                )
 
             await self.activate_ready_priority_entry(
                 entry, pkg, is_server_managed=is_server_managed
