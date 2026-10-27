@@ -20,15 +20,20 @@ from app.domain.taxonomy import (
 )
 from app.infrastructure.persistence.server_config_store import server_config_store
 from app.infrastructure.scrapers.catalog_metadata import GAME_GENRES, SYSTEM_METADATA
+from app.infrastructure.scrapers.games.arcade_aliases import expand_retro_query_titles
 from app.infrastructure.scrapers.games.screenscraper_tokens import (
     STRICT_HARDWARE_SS_IDS,
     pick_discovery_token,
 )
 from app.infrastructure.scrapers.games.screenscraper_xml_parser import (
+    detect_screenscraper_api_error,
     extract_jeux_from_response,
     extract_node_text,
+    is_screenscraper_in_cooldown,
     parse_jeu_infos_xml,
     parse_screenscraper_game_node,
+    record_screenscraper_cooldown,
+    reset_screenscraper_cooldown,
 )
 from app.infrastructure.scrapers.http_utils import create_async_http_client
 
@@ -40,17 +45,22 @@ _WARNED_MISSING_DEVID = False
 
 class ScreenScraperAdapter(IScraperSource):
     """
-    Primary `IScraperSource` for `games` using ScreenScraper API v2 (`jeuRecherche.php` & `jeuInfos.php`).
+    `IScraperSource` for `games` using ScreenScraper API v2 (`jeuRecherche.php` & `jeuInfos.php`).
     """
 
     source_id: str = "screenscraper"
+    display_name: str = "ScreenScraper"
     domain: DomainType = "games"
     role: str = "primary"
 
     parse_jeu_infos_xml = staticmethod(parse_jeu_infos_xml)
+    reset_circuit_breaker = staticmethod(reset_screenscraper_cooldown)
 
     def __init__(self) -> None:
         self._recent_tokens: Dict[Tuple[str, str], Deque[str]] = {}
+
+    def is_in_cooldown(self) -> bool:
+        return is_screenscraper_in_cooldown()
 
     def _credentials(self) -> Dict[str, str]:
         cfg = server_config_store.get_all()
@@ -86,35 +96,22 @@ class ScreenScraperAdapter(IScraperSource):
                 {"id": "1980s", "label": "1980s"},
                 {"id": "1990s", "label": "1990s"},
                 {"id": "2000s", "label": "2000s"},
+                {"id": "2010s", "label": "2010s"},
             ],
         }
 
     def _parse_game_node(
-        self,
-        jeu: Dict[str, Any],
-        sys_key: str,
-        lang: str,
-        criteria: Optional[FilterCriteria] = None,
+        self, jeu: Dict[str, Any], sys_key: str, lang: str, criteria: Optional[FilterCriteria] = None
     ) -> Optional[MediaCandidate]:
         return parse_screenscraper_game_node(
-            jeu=jeu,
-            sys_key=sys_key,
-            lang=lang,
-            criteria=criteria,
-            source_id=self.source_id,
+            jeu=jeu, sys_key=sys_key, lang=lang, criteria=criteria, source_id=self.source_id
         )
 
     def _pick_discovery_token(
-        self,
-        sys_key: str,
-        req_genres: List[str],
-        used_tokens: Set[Tuple[str, str]],
+        self, sys_key: str, req_genres: List[str], used_tokens: Set[Tuple[str, str]]
     ) -> str:
         return pick_discovery_token(
-            sys_key=sys_key,
-            req_genres=req_genres,
-            used_tokens=used_tokens,
-            recent_tokens=self._recent_tokens,
+            sys_key=sys_key, req_genres=req_genres, used_tokens=used_tokens, recent_tokens=self._recent_tokens
         )
 
     async def fetch_random_unseen(
@@ -123,7 +120,7 @@ class ScreenScraperAdapter(IScraperSource):
         seen_ids: Set[str],
         count: int = 1,
     ) -> List[MediaCandidate]:
-        if not self.is_configured():
+        if not self.is_configured() or self.is_in_cooldown():
             return []
 
         creds = self._credentials()
@@ -146,7 +143,7 @@ class ScreenScraperAdapter(IScraperSource):
 
         async with create_async_http_client(timeout=6.0) as client:
             for _ in range(max_attempts):
-                if len(results) >= count:
+                if len(results) >= count or self.is_in_cooldown():
                     break
                 sys_key = _SYS_RNG.choice(valid_systems)
                 sys_meta = SYSTEM_METADATA[sys_key]
@@ -170,6 +167,10 @@ class ScreenScraperAdapter(IScraperSource):
                         "https://api.screenscraper.fr/api2/jeuRecherche.php",
                         params=params,
                     )
+                    api_err = detect_screenscraper_api_error(resp)
+                    if api_err:
+                        record_screenscraper_cooldown(api_err)
+                        break
                     if resp.status_code != 200:
                         continue
                     jeux = extract_jeux_from_response(resp)
@@ -227,7 +228,8 @@ class ScreenScraperAdapter(IScraperSource):
                             staged_keys.update(dedup_keys)
                             overflow_candidates.append((cand, dedup_keys))
                 except Exception as exc:
-                    logger.debug("[ScreenScraper] Discovery error: %s", exc)
+                    logger.warning("[ScreenScraper] Discovery request failed: %s", exc)
+                    break
 
         if len(results) < count and overflow_candidates:
             _SYS_RNG.shuffle(overflow_candidates)
@@ -248,7 +250,7 @@ class ScreenScraperAdapter(IScraperSource):
         limit: int = 8,
     ) -> List[MediaCandidate]:
         q_clean = (query or "").strip()
-        if not self.is_configured() or not q_clean or limit <= 0:
+        if not self.is_configured() or self.is_in_cooldown() or not q_clean or limit <= 0:
             return []
 
         target_limit = max(1, int(limit))
@@ -262,11 +264,11 @@ class ScreenScraperAdapter(IScraperSource):
         results: List[MediaCandidate] = []
         seen_keys: Set[str] = set()
 
-        def _base_params(system_id: Optional[str] = None) -> Dict[str, str]:
+        def _base_params(q_text: str, system_id: Optional[str] = None) -> Dict[str, str]:
             p: Dict[str, str] = {
                 "softname": "dmd-media-showcase",
                 "output": "json",
-                "recherche": q_clean,
+                "recherche": q_text,
             }
             if system_id:
                 p["systemeid"] = system_id
@@ -332,51 +334,68 @@ class ScreenScraperAdapter(IScraperSource):
                 seen_keys.update(dedup_keys)
                 results.append(cand)
 
+        async def _run_query_pass(client: Any, q_text: str) -> bool:
+            if len(valid_systems) == 1:
+                only_sys = valid_systems[0]
+                ss_id = str(SYSTEM_METADATA[only_sys]["ss_id"])
+                resp = await client.get(
+                    "https://api.screenscraper.fr/api2/jeuRecherche.php",
+                    params=_base_params(q_text, system_id=ss_id),
+                )
+                err = detect_screenscraper_api_error(resp)
+                if err:
+                    record_screenscraper_cooldown(err)
+                    return False
+                if resp.status_code == 200:
+                    _ingest_jeux(extract_jeux_from_response(resp), only_sys)
+                return True
+
+            resp = await client.get(
+                "https://api.screenscraper.fr/api2/jeuRecherche.php",
+                params=_base_params(q_text),
+            )
+            err = detect_screenscraper_api_error(resp)
+            if err:
+                record_screenscraper_cooldown(err)
+                return False
+            if resp.status_code == 200:
+                _ingest_jeux(extract_jeux_from_response(resp), "")
+
+            if valid_systems and len(results) < target_limit:
+                queried_ss_ids: Set[str] = set()
+                for sys_key in valid_systems:
+                    if len(results) >= target_limit or len(queried_ss_ids) >= 3:
+                        break
+                    ss_id = str(SYSTEM_METADATA[sys_key]["ss_id"])
+                    if ss_id in queried_ss_ids:
+                        continue
+                    queried_ss_ids.add(ss_id)
+                    sub_resp = await client.get(
+                        "https://api.screenscraper.fr/api2/jeuRecherche.php",
+                        params=_base_params(q_text, system_id=ss_id),
+                    )
+                    sub_err = detect_screenscraper_api_error(sub_resp)
+                    if sub_err:
+                        record_screenscraper_cooldown(sub_err)
+                        return False
+                    if sub_resp.status_code == 200:
+                        _ingest_jeux(extract_jeux_from_response(sub_resp), sys_key)
+            return True
+
         try:
             async with create_async_http_client(timeout=6.0) as client:
-                if len(valid_systems) == 1:
-                    only_sys = valid_systems[0]
-                    ss_id = str(SYSTEM_METADATA[only_sys]["ss_id"])
-                    resp = await client.get(
-                        "https://api.screenscraper.fr/api2/jeuRecherche.php",
-                        params=_base_params(system_id=ss_id),
-                    )
-                    if resp.status_code == 200:
-                        _ingest_jeux(extract_jeux_from_response(resp), only_sys)
-                else:
-                    resp = await client.get(
-                        "https://api.screenscraper.fr/api2/jeuRecherche.php",
-                        params=_base_params(),
-                    )
-                    if resp.status_code == 200:
-                        _ingest_jeux(extract_jeux_from_response(resp), "")
-
-                    if valid_systems and len(results) < target_limit:
-                        queried_ss_ids: Set[str] = set()
-                        for sys_key in valid_systems:
-                            if len(results) >= target_limit or len(queried_ss_ids) >= 3:
+                ok = await _run_query_pass(client, q_clean)
+                if ok and not results:
+                    for expanded in expand_retro_query_titles(q_clean)[:2]:
+                        if expanded.lower() != q_clean.lower():
+                            if not await _run_query_pass(client, expanded) or results:
                                 break
-                            ss_id = str(SYSTEM_METADATA[sys_key]["ss_id"])
-                            if ss_id in queried_ss_ids:
-                                continue
-                            queried_ss_ids.add(ss_id)
-                            sub_resp = await client.get(
-                                "https://api.screenscraper.fr/api2/jeuRecherche.php",
-                                params=_base_params(system_id=ss_id),
-                            )
-                            if sub_resp.status_code == 200:
-                                _ingest_jeux(extract_jeux_from_response(sub_resp), sys_key)
         except Exception as exc:
-            logger.debug("[ScreenScraper] Search error for '%s': %s", q_clean, exc)
+            logger.warning("[ScreenScraper] Search error for '%s': %s", q_clean, exc)
 
         return results[:target_limit]
 
     async def search_by_query(self, query: str, lang: str = "fr") -> Optional[MediaCandidate]:
-        cands = await self.search_candidates(
-            query=query,
-            criteria=FilterCriteria(
-                domain="games", systems=[], genres=[], decades=[], lang=lang
-            ),
-            limit=1,
-        )
+        criteria = FilterCriteria(domain="games", systems=[], genres=[], decades=[], lang=lang)
+        cands = await self.search_candidates(query=query, criteria=criteria, limit=1)
         return cands[0] if cands else None

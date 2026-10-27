@@ -36,6 +36,8 @@ ENV_MAP: Dict[str, str] = {
     "SCREENSCRAPER_DEV_ID": "screenscraper_dev_id",
     "SCREENSCRAPER_DEV_PASS": "screenscraper_dev_pass",
     "TVDB_API_KEY": "tvdb_api_key",
+    "IGDB_CLIENT_ID": "igdb_client_id",
+    "IGDB_CLIENT_SECRET": "igdb_client_secret",
 }
 
 

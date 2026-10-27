@@ -40,6 +40,8 @@ RUN --mount=type=secret,id=VAULT_MASTER_SECRET,required=false \
     --mount=type=secret,id=TVDB_API_KEY,required=false \
     --mount=type=secret,id=SCREENSCRAPER_DEV_ID,required=false \
     --mount=type=secret,id=SCREENSCRAPER_DEV_PASS,required=false \
+    --mount=type=secret,id=IGDB_CLIENT_ID,required=false \
+    --mount=type=secret,id=IGDB_CLIENT_SECRET,required=false \
     apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev python3-dev && \
     pip install --upgrade pip setuptools && \
     python3 scripts/compile_prod_vault.py && \

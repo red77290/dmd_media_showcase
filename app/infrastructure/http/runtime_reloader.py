@@ -17,16 +17,18 @@ from app.infrastructure.http.dependencies import (
     get_mqtt_gateway,
     get_orchestrator,
 )
+from app.security.log_redactor import install_secret_log_redaction
 
 
 def apply_live_log_level(level_name: str) -> str:
-    """Update root and `dmd_showcase*` logger verbosity in place."""
+    """Update root and `dmd_showcase*` logger verbosity in place while keeping HTTP secrets redacted."""
     resolved_name = str(level_name or "INFO").strip().upper()
     lvl = getattr(logging, resolved_name, logging.INFO)
     logging.getLogger().setLevel(lvl)
     for name, lg in list(logging.Logger.manager.loggerDict.items()):
         if isinstance(lg, logging.Logger) and name.startswith("dmd_showcase"):
             lg.setLevel(lvl)
+    install_secret_log_redaction()
     return logging.getLevelName(lvl)
 
 

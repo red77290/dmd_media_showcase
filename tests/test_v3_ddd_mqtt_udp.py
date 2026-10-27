@@ -68,14 +68,15 @@ def _make_png_bytes(w: int = 128, h: int = 180) -> bytes:
     return buf.getvalue()
 
 
-def test_ddd_scraper_registry_and_hd_youtube_selector():
-    """Verify each domain has strictly 2 dedicated `IScraperSource` adapters (Primary + Fallback) and HD YouTube format."""
+def test_ddd_scraper_registry_and_hd_youtube_selector(tmp_path: Path, monkeypatch):
+    """Verify each domain registers its canonical ordered `IScraperSource` adapters and HD YouTube format."""
+    monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "reg_data"))
     reg = ScraperRegistry()
     expected = {
-        "games": ["screenscraper", "arcadeitalia"],
+        "games": ["igdb", "screenscraper", "arcadeitalia", "libretro_wikidata"],
         "movies": ["tmdb_movies", "itunes_movies"],
         "series": ["tmdb_series", "tvdb_series", "tvmaze"],
-        "anime": ["jikan_animethemes", "anilist"],
+        "anime": ["jikan", "anilist"],
     }
     for domain, expected_sources in expected.items():
         chain = reg.get_chain(domain)  # type: ignore[arg-type]
@@ -83,8 +84,9 @@ def test_ddd_scraper_registry_and_hd_youtube_selector():
         for idx, src in enumerate(chain):
             assert isinstance(src, IScraperSource)
             assert src.source_id == expected_sources[idx]
+            assert bool(src.display_name)
         assert chain[0].role == "primary"
-        assert chain[1].role == "fallback"
+        assert chain[-1].role == "fallback"
 
     # Verify clean HD (720p/1080p) YouTube format selector is enforced
     assert "height<=1080" in HD_YTDLP_FORMAT
@@ -1228,10 +1230,12 @@ def test_three_tier_credential_resolution_and_public_config_sanitization(tmp_pat
     assert eff["screenscraper_dev_id"] == "vault_dev_id"
     assert eff["screenscraper_dev_pass"] == "vault_dev_pass"
 
-    # Public config must never expose vault or dev keys
+    # Public config must never expose vault or dev keys in plaintext
     pub = store.get_public_admin_config()
-    assert "screenscraper_dev_id" not in pub
-    assert "screenscraper_dev_pass" not in pub
+    assert pub["screenscraper_dev_id"] == ""
+    assert pub["screenscraper_dev_pass"] == ""
+    assert pub["igdb_client_id"] == ""
+    assert pub["igdb_client_secret"] == ""
     assert pub["tmdb_api_key"] == ""
     assert pub["tvdb_api_key"] == ""
 

@@ -149,6 +149,7 @@ class LibretroWikidataAdapter(IScraperSource):
     """
 
     source_id: str = "libretro_wikidata"
+    display_name: str = "Libretro + Wikidata"
     domain: DomainType = "games"
     role: str = "fallback"
 

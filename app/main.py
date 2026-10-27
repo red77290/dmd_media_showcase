@@ -53,6 +53,7 @@ from app.infrastructure.scrapers.registry import scraper_registry
 from app.infrastructure.web.dashboard_loader import STATIC_WEB_DIR
 from app.models import DomainType
 from app.scheduler.worker_pool import batch_manager
+from app.security.log_redactor import install_secret_log_redaction
 
 __all__ = [
     "ALL_SHOWCASE_DOMAINS",
@@ -81,6 +82,7 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
+install_secret_log_redaction()
 logger = logging.getLogger("dmd_showcase.http")
 
 ALL_SHOWCASE_DOMAINS: Tuple[DomainType, ...] = ("games", "movies", "series", "anime")

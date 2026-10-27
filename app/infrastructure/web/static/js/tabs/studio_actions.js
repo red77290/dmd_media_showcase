@@ -8,7 +8,7 @@ import {
   shortDomainDisplayName,
   uiState
 } from '../state.js';
-import { controlDmd } from './overview.js';
+import { controlDmd, renderSourceBadge } from './overview.js';
 import { renderPlaylistEditorRows } from './profile_editor.js';
 import { loadHealthAndConfig } from './runtime_config.js';
 import {
@@ -106,6 +106,11 @@ export function findTargetDmdMeta(dmdId) {
   const cli = (uiState.lastClients || []).find(c => c && c.dmd_id === dmdId);
   const prof = (uiState.lastDmdProfiles || []).find(p => p && p.dmd_id === dmdId);
   if (!cli && !prof) return null;
+  const activeTitle = (cli && (cli.playing_title || cli.active_title)) || '';
+  const playingTitle = activeTitle || (cli && cli.ready_title) || '';
+  const playingSource = cli
+    ? (activeTitle ? (cli.playing_source || cli.last_played_source || '') : (cli.ready_source || cli.playing_source || ''))
+    : '';
   return {
     dmd_id: dmdId,
     width: Number((prof && prof.width) || (cli && cli.width) || 128),
@@ -113,7 +118,8 @@ export function findTargetDmdMeta(dmdId) {
     lang: (prof && prof.lang) || (cli && cli.lang) || 'fr',
     config_source: (prof && prof.config_source) || (cli && cli.config_source) || 'client',
     supports_local_card: prof ? prof.supports_local_card !== false : (cli ? cli.supports_local_card !== false : true),
-    playing_title: (cli && (cli.playing_title || cli.active_title || cli.ready_title)) || '',
+    playing_title: playingTitle,
+    playing_source: playingSource,
     udp_streaming: Boolean(cli && cli.udp_streaming),
     card_style: (prof && prof.card_style) || null,
     domain_styles: (prof && prof.domain_styles) || null
@@ -161,8 +167,9 @@ export function renderStudioActiveDmdBanner() {
   const modeLbl = meta.config_source === 'server'
     ? (meta.supports_local_card === false ? t('mode_badge_2b') : t('mode_badge_2a'))
     : t('mode_badge_client');
+  const srcPill = meta.playing_source ? ` ${renderSourceBadge(meta.playing_source)}` : '';
   const playStr = meta.playing_title
-    ? `▶ <b>${esc(meta.playing_title)}</b>`
+    ? `▶ <b>${esc(meta.playing_title)}</b>${srcPill}`
     : esc(t('studio_dmd_idle'));
   let mismatchHtml = '';
   if (meta.width !== uiState.studioWidth || meta.height !== uiState.studioHeight) {
@@ -269,12 +276,14 @@ export async function loadStudioDmdQueue() {
     box.innerHTML = items.map((it, i) => {
       const stClass = it.status === 'ready' || it.status === 'playing' ? 'ok' : 'warn';
       const safeQid = esc(it.queue_id).replace(/'/g, "\\'");
+      const srcPill = renderSourceBadge(it.source_used || it.source_id);
       const simPill = it.from_studio_sim ? ` <span class="pill ok">${esc(t('pill_sim_studio'))}</span>` : '';
       return `<div class="queue-item-row">
         <div class="queue-item-meta">
           <b>#${i + 1} — ${esc(it.title)}</b>
           <span class="pill info">${esc((it.domain || '').toUpperCase())}</span>
-          <span class="pill ${stClass}">${esc(it.status)}</span>${simPill}
+          <span class="pill ${stClass}">${esc(it.status)}</span>
+          ${srcPill}${simPill}
         </div>
         <button type="button" class="danger mini-btn" onclick="removeQueueItem('${safeDmd}', '${safeQid}')">✕</button>
       </div>`;

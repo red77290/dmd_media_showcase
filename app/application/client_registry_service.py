@@ -167,11 +167,38 @@ class ClientRegistryService:
                 or now < self.state.last_claimed_until.get(key, 0.0)
             )
             last_title = self.state.last_played_titles.get(key)
+            last_source = self.state.last_played_sources.get(key, "")
             playing_title = (
                 consumed_pkg.card.title
                 if consumed_pkg is not None
                 else (last_title if is_playing_now else None)
             )
+            playing_source = (
+                (consumed_pkg.card.source_used or consumed_pkg.candidate.source_id or "")
+                if consumed_pkg is not None
+                else (last_source if is_playing_now else "")
+            )
+            ready_source = (
+                (ready_pkg.card.source_used or ready_pkg.candidate.source_id or "")
+                if ready_pkg is not None
+                else ""
+            )
+            standby_source = (
+                (standby_pkg.card.source_used or standby_pkg.candidate.source_id or "")
+                if standby_pkg is not None
+                else ""
+            )
+            preparing_source = self.state.preparing_sources.get(key, "")
+            if not preparing_source:
+                for q_entry in self.state.priority_queues.get(dmd_id) or ():
+                    if (
+                        q_entry.domain == domain
+                        and q_entry.status == "preparing"
+                        and q_entry.candidate.id != "pending"
+                        and q_entry.candidate.source_id
+                    ):
+                        preparing_source = q_entry.candidate.source_id
+                        break
             last_seen = self.state.client_last_seen.get(key)
             q_len = queue_length_fn(dmd_id)
             cfg_source = str(
@@ -219,12 +246,17 @@ class ClientRegistryService:
                     "decades": list(crit.decades),
                     "active_title": playing_title or last_title,
                     "playing_title": playing_title,
+                    "playing_source": playing_source,
                     "last_played_title": last_title,
+                    "last_played_source": last_source,
                     "is_playing": is_playing_now,
                     "udp_streaming": is_domain_streaming,
                     "ready_title": ready_pkg.card.title if ready_pkg else None,
+                    "ready_source": ready_source,
                     "standby_title": standby_pkg.card.title if standby_pkg else None,
+                    "standby_source": standby_source,
                     "preparing": AsyncTaskSupervisor.is_task_live(prep_task),
+                    "preparing_source": preparing_source,
                     "queue_length": q_len,
                     "last_seen_ago_s": int(max(0.0, now - last_seen)) if last_seen else None,
                 }
@@ -267,14 +299,21 @@ class ClientRegistryService:
                     "decades": list(first_slot.get("decades") or []),
                     "active_title": None,
                     "playing_title": None,
+                    "playing_source": "",
                     "last_played_title": None,
+                    "last_played_source": "",
                     "is_playing": False,
                     "udp_streaming": False,
                     "ready_title": pf_pkg.card.title if pf_pkg else None,
+                    "ready_source": (pf_pkg.card.source_used or pf_pkg.candidate.source_id or "")
+                    if pf_pkg
+                    else "",
                     "standby_title": None,
+                    "standby_source": "",
                     "preparing": AsyncTaskSupervisor.is_task_live(
                         self.state.director_prefetch_tasks.get(dmd_id)
                     ),
+                    "preparing_source": self.state.preparing_sources.get((dmd_id, dom), ""),  # type: ignore[arg-type]
                     "queue_length": queue_length_fn(dmd_id),
                     "last_seen_ago_s": None,
                 }

@@ -87,16 +87,11 @@ GENRE_RESOLVERS_BY_DOMAIN: Dict[DomainType, SynonymCatalogResolver] = {
 
 _PASSTHROUGH_UNLISTED_SYSTEM_SLUGS = frozenset(
     {
-        "mega_cd",
-        "sega_cd",
-        "sega_mega_cd",
-        "sega_32x",
-        "32x",
-        "mega_drive_32x",
-        "genesis_32x",
-        "playstation_2",
-        "sony_playstation_2",
-        "ps2",
+        "playstation_3",
+        "sony_playstation_3",
+        "ps3",
+        "xbox_360",
+        "wii",
     }
 )
 

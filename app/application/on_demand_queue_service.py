@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import inspect
 import logging
 import shutil
 from typing import Any, Callable, Dict, List, Optional
@@ -621,9 +622,18 @@ class OnDemandQueueService:
                 limit=1,
             )
             if not found and req_query.strip():
-                one = await self.chain_service.search_on_demand(
-                    domain=eff_domain, query=req_query.strip(), lang=criteria.lang
-                )
+                od_sig = inspect.signature(self.chain_service.search_on_demand)
+                if "criteria" in od_sig.parameters:
+                    one = await self.chain_service.search_on_demand(
+                        domain=eff_domain,
+                        query=req_query.strip(),
+                        lang=criteria.lang,
+                        criteria=criteria,
+                    )
+                else:
+                    one = await self.chain_service.search_on_demand(
+                        domain=eff_domain, query=req_query.strip(), lang=criteria.lang
+                    )
                 if one is not None:
                     found = [one]
             if not found:
@@ -677,11 +687,20 @@ class OnDemandQueueService:
                     limit=1,
                 )
                 if not found:
-                    one = await self.chain_service.search_on_demand(
-                        domain=entry.domain,
-                        query=entry.raw_query,
-                        lang=entry.criteria.lang,
-                    )
+                    od_sig = inspect.signature(self.chain_service.search_on_demand)
+                    if "criteria" in od_sig.parameters:
+                        one = await self.chain_service.search_on_demand(
+                            domain=entry.domain,
+                            query=entry.raw_query,
+                            lang=entry.criteria.lang,
+                            criteria=entry.criteria,
+                        )
+                    else:
+                        one = await self.chain_service.search_on_demand(
+                            domain=entry.domain,
+                            query=entry.raw_query,
+                            lang=entry.criteria.lang,
+                        )
                     if one is not None:
                         found = [one]
                 q_now = self.state.priority_queues.get(entry.dmd_id)

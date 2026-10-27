@@ -17,7 +17,7 @@
 ### 🕹️ Séquences Réelles sur Matrice LED HUB75 128×32 (Générées en Direct via l'API Showcase)
 
 Chaque œuvre assemble automatiquement une diffusion RGB565 multi-chapitres adaptée à la géométrie exacte de votre panneau (`128×32` DMD classique `4:1` ci-dessous) :
-**`1. Fiche Info Animée`** (jaquette, badge système, défilement auto année/note & synopsis fluide) $\to$ **`2. Panoramas Verticaux Jaquette & Marquee`** $\to$ **`3. Balayage Capture In-Game`** $\to$ **`4. Vidéo Gameplay / Trailer Cadrée par IA`**.
+**`1. Fiche Info Animée`** (jaquette, badge système, défilement auto année/note & synopsis fluide) $\to$ **`2. Panoramas Zoom-to-Cover Jaquette & Marquee`** $\to$ **`3. Balayage Capture In-Game`** $\to$ **`4. Vidéo Gameplay / Trailer Cadrée par IA`**.
 
 | **Garou: Mark of the Wolves (`Neo Geo` • `128×32`)** | **Super Street Fighter II X / Turbo (`CPS2` • `128×32`)** | **Metal Slug X (`Neo Geo` • `128×32`)** |
 | :---: | :---: | :---: |
@@ -29,24 +29,31 @@ Chaque œuvre assemble automatiquement une diffusion RGB565 multi-chapitres adap
 | **1. Vue d'Ensemble Live & Matrices HUB75 Connectées** | **2. Studio Card & Simulateur LED HUB75 Temps Réel** |
 | :---: | :---: |
 | [![Vue d'ensemble et matrices DMD connectées](demo/ui_overview_live.png)](demo/ui_overview_live.png) | [![Studio Card Mode 2B et Simulateur HUB75](demo/ui_card_studio.png)](demo/ui_card_studio.png) |
-| Télémétrie MQTT (`:1883`) + UDP en direct, slots pré-calculés `Ready (N)` & `Standby (N+1)` sur les 4 domaines, historique Consume-Once et sources `[Primaire, Fallback]`. | Profils dédiés par domaine (`Games`, `Movies`, `Series`, `Anime`), 5 mises en page pixel-art (YOKO & TATE), simulateur LED SMD temps réel et injection `0 ms` en file active. |
+| Télémétrie MQTT (`:1883`) + UDP en direct, slots pré-calculés `Ready (N)` & `Standby (N+1)` avec badges de source live (`🔗 igdb+screenscraper`), historique Consume-Once et chaînes scrapers multi-sources configurables à chaud. | Profils dédiés par domaine (`Games`, `Movies`, `Series`, `Anime`), 5 mises en page pixel-art (YOKO & TATE), simulateur LED SMD temps réel et injection `0 ms` en file active. |
 | **3. Recherche Multi-Catalogues & File Prioritaire On-Demand** | **4. Profils DMD Passifs & Sélecteur Visuel de Tags** |
 | [![Recherche Catalogue et File On-Demand](demo/ui_ondemand_search.png)](demo/ui_ondemand_search.png) | [![Rotation DMD Passive et Tags Multi-Sélection](demo/ui_passive_rotation.png)](demo/ui_passive_rotation.png) |
-| Recherche localisée (Jeux, Films, Séries, Anime) dans la langue souhaitée et envoi immédiat via `Queue Next` (`FIFO`) ou préemption directe `Play Now`. | Configuration visuelle de rotations Mode 2A/2B par puces multi-sélection (Systèmes, Genres & Décennies) avec raccourci direct vers chaque profil Studio. |
+| Recherche localisée (Jeux dont raccourcis joueurs `sf2x`, `3s`, `kof98`, Films, Séries, Anime) dans la langue souhaitée et envoi immédiat via `Queue Next` (`FIFO`) ou préemption directe `Play Now`. | Configuration visuelle de rotations Mode 2A/2B par puces multi-sélection (Systèmes, Genres & Décennies) avec raccourci direct vers chaque profil Studio. |
 
 ---
 
 ## ✨ Fonctionnalités Clés
 
-- **4 Domaines Showcase (`games`, `movies`, `series`, `anime`)** :
-  - **Retro Games** : 30 systèmes Arcade, Consoles, Portables et Micro-ordinateurs (`ScreenScraper` Primaire $\to$ `ArcadeItalia` MAME HTTPS + `Libretro+Wikidata` SPARQL Console en Fallback sans clé).
-  - **Movies** : Cinéma Classique & Blockbusters (`TMDB` Primaire $\to$ `Apple iTunes` Fallback).
-  - **TV Series** : Séries TV Cultes & Modernes (`TMDB` Primaire $\to$ `TVMaze` Fallback).
-  - **Anime / Manga** : Openings (`OP`), Endings (`ED`) sans crédits et Trailers (`Jikan + AnimeThemes` Primaire $\to$ `AniList` Fallback).
+- **4 Domaines Showcase & Chaînes Multi-Sources Configurables (`games`, `movies`, `series`, `anime`)** :
+  - **Retro & Arcade Games (`55+` / `66` Systèmes Canoniques)** : Systèmes Arcade (`MAME`, `CPS-1/2/3`, `Neo-Geo`, `NAOMI`, `Atomiswave`, `Model 2/3`), Consoles, Portables et Micro-ordinateurs propulsés par **4 sources indépendantes sélectionnables** :
+    1. **`igdb`** (`IGDB API v4` via OAuth2 Twitch gratuit — 200+ plateformes, recherche instantanée par acronyme/alias via `alternative_names`, tirage aléatoire par offset, jaquettes/artworks & trailers).
+    2. **`screenscraper`** (`ScreenScraper` — wheels/marquees détourés, captures pixel-art, extraits vidéo `.mp4`, avec détection automatique de quota/surcharge HTTP-200 en texte brut et disjoncteur de cooldown).
+    3. **`arcadeitalia`** (scraper HTTPS sans clé de référence MAME/CPS/Neo-Geo/NAOMI avec table d'alias intégrée résolvant `sf2x`, `3s`, `kof98`, `garou` en une seule requête).
+    4. **`libretro_wikidata`** (source console/portable/micro de premier plan sans clé combinant Wikidata SPARQL, `libretro-thumbnails` vérifiés, synopsis Wikipédia localisés et vidéos Archive.org).
+  - **Movies** : Cinéma Classique & Blockbusters (`tmdb_movies` $\to$ `itunes_movies` sans clé).
+  - **TV Series** : Séries TV Cultes & Modernes (`tmdb_series` $\to$ `tvdb_series` $\to$ `tvmaze` sans clé).
+  - **Anime / Manga** : Openings (`OP`), Endings (`ED`) sans crédits et Trailers (`jikan` + `AnimeThemes` $\to$ `anilist` sans clé).
+- **Priorité Multi-Sources à Chaud & Agrégation Inter-Sources (`source_policies`)** :
+  - Réordonnez la priorité (`#1 Primaire -> #2 Secondaire -> #3 Tertiaire -> ...`) et activez/désactivez chaque source par domaine en direct depuis le Dashboard Web (**Vue d'Ensemble** et **Clés API & Scrapers**), persisté dans `./data/server_config.json`. Dès qu'une source renvoie `0` résultat, expire, entre en cooldown ou ne couvre pas le système demandé, l'exécution bascule de manière déterministe vers la source active suivante.
+  - Choisissez par domaine entre **`enrich_missing` (Agrégation Multi-Sources, par défaut)** — où la source Primaire résout l'identité canonique et les alias (ex. `IGDB` résolvant `"sf2x"` sur `cps2` $\to$ `"Super Street Fighter II Turbo"` / `ssf2t`) tandis que `CandidateAggregator` exécute une passe secondaire bornée (`<= 3.0s`) pour récupérer les assets DMD manquants (marquees/wheels détourés, snaps pixel-art, flux directs `.mp4`/`.webm`/`.m4v`, synopsis localisés) avec attribution combinée transparente (`source_used="igdb+screenscraper"`, `"igdb+arcadeitalia"`, `"tmdb_movies+itunes_movies"`) — et **`fallback_only` (Fallback Strict)**.
 - **Référentiels Dynamiques Consolidés** : Expose des référentiels de catégories localisés (`fr`, `en`, `es`, `de`, `it`) et indépendants des sources (`GET /api/v1/{domain}/filters?lang=fr` & MQTT `dmd_showcase/catalog/{domain}/referential`) avec filtrage relationnel `Système -> Genres & Décennies supportés` afin que le WebUI du DMD n'ait jamais de listes figées en dur.
 - **Plan de Contrôle MQTT Temps Réel (`:1883`) + Streaming UDP `DMDF` via `ffmpeg -re`** :
   - Broker MQTT 3.1.1 embarqué zéro-configuration (`retain=True` + `Last Will and Testament`).
-  - Streaming UDP `DMDF` cadencé matériellement par `ffmpeg -re` directement vers l'IP LAN réelle du DMD (`client_ip` / `udp_ip`, contournant le NAT Docker Bridge).
+  - Streaming UDP `DMDF` cadencé matériellement par `ffmpeg -re` directement vers l'IP LAN réelle du DMD (`client_ip` / `udp_ip`, contournant le NAT Docker Bridge), avec télémétrie en direct de la source par slot (`playing_source`, `ready_source`, `standby_source`, `preparing_source`).
 - **Protocole Consume-Once Strict & Pipelining `N+1` en Tâche de Fond** :
   - Mémorise chaque œuvre présentée dans `./data/seen_history.json` (zéro répétition jusqu'à épuisement du catalogue).
   - Prépare l'œuvre suivante (`N+1`) en tâche de fond dès que l'œuvre `N` commence l'affichage de sa fiche (`start_card`), et purge les fichiers de `N` dès `stream_eof`.
@@ -54,11 +61,10 @@ Chaque œuvre assemble automatiquement une diffusion RGB565 multi-chapitres adap
   - Supporte à la fois les DMD multi-moteurs complets (`ArcadeMatrix`) **et** les récepteurs passifs UDP `:4210` ultra-légers (~180 lignes C++, zéro UI, zéro PSRAM sur `ESP32_STD`, `supports_local_card: false` où même la Fiche Info de Phase 1 est rendue dans le flux RGB565) configurés centralement dans `./data/dmd_profiles.json`.
   - Recherche catalogue localisée (`GET /api/v1/{domain}/search`), file prioritaire asynchrone par DMD (`POST /api/v1/clients/{dmd_id}/queue/async`, `enqueue_next` / `play_now`), contrôles temps réel `Skip` / `Pause` / `Resume` / `Stop` et intégration **`FrontendSync`** (`mark_seen: false` pour Recalbox / Batocera / RetroPie / RetroBat / LaunchBox / Playnite).
 - **Cache Persistant des Conversions On-Demand & Purge en 1 Clic** :
-  - Cache disque persistant optionnel (`Dashboard Admin -> 2. Runtime, Workers & Limites Vidéo -> Cache Persistant des Conversions On-Demand`) indexé par **`(Système + Jeu + Résolution du Panneau + Style Carte/Vidéo)`** avec quota disque configurable (Mo).
-  - Les jeux déjà lancés contournent intégralement la recherche scraper et le transcodage vidéo et sont injectés **instantanément (`0 ms`)** dans la file du DMD lors des prochaines parties.
-  - Bouton **🗑 Vider le Cache On-Demand** disponible à la fois dans l'interface Showcase et dans l'onglet `FrontendSync` du DMD (`POST /api/v1/cache/on-demand/evict`) pour purger les conversions en un clic lorsque vous changez de thème ou de mise en page.
-- **Propulsé par `dmd_gif_converter`** : Cadrage vidéo orthogonal (`auto_action` IA Let Me Handle It, `panorama` balayage haut-bas, `center_crop`) et colorimétrie LED HUB75 (`auto` Smart Color Boost IA, `pixel_art`, `anime`, `cinema`), redimensionnement Lanczos + `unsharp`, et panoramas verticaux fluides (`Jaquette`, `Marquee`, `Captures`) sur toutes les géométries Paysage (`128x32`, `128x64`, `256x64`), Carré (`64x64`) et TATE (`64x128`, `32x128`).
-- **Notification de Mise à Jour Sensible à l'OS** : Vérification légère intégrée (`GET /api/v1/system/update-check`) affichant une bannière discrète dans la Web UI dès qu'une nouvelle release GitHub officielle est disponible pour votre environnement actif (`macOS .dmg`, `Windows .zip`, `Linux .tar.gz` ou `Docker`) avec lien direct vers la release et l'installeur correspondant.
+  - Cache disque persistant optionnel (`Dashboard Admin -> 2. Runtime, Workers & Limites Vidéo -> Cache Persistant des Conversions On-Demand`) indexé par **`(Système + Jeu + Résolution du Panneau + Style Carte/Vidéo)`** avec quota disque configurable (Mo) pour une relance instantanée (`0 ms`, purge en 1 clic via `POST /api/v1/cache/on-demand/evict`).
+- **Propulsé par `dmd_gif_converter` (`>= 8.0.4`)** : Cadrage vidéo orthogonal (`auto_action` IA Let Me Handle It, `panorama`, `center_crop`), colorimétrie LED HUB75 (`auto` Smart Color Boost IA, `pixel_art`, `anime`, `cinema`), redimensionnement Lanczos + `unsharp`, et **panoramas zoom-to-cover uniformes déterministes** sans bandes noires — **YOKO** (`128x32`, `128x64`, `256x64`) défilant de **haut en bas**, et **TATE** (`64x128`, `32x128`) défilant de **gauche à droite**.
+- **Coffre-Fort d'Identifiants à 3 Niveaux & Caviardage Automatique des Logs HTTP** : Résolution `1. Surcharges WebUI server_config.json` $\to$ `2. Variables .env / docker-compose` $\to$ `3. Coffre natif C compilé en CI/CD (_prod_vault)`, protégée par `SecretRedactingLogFilter` (`httpx`/`httpcore` bridés à `WARNING`) garantissant qu'aucun secret API ou mot de passe URL ne fuite dans les logs conteneur.
+- **Notification de Mise à Jour Sensible à l'OS** : Vérification légère intégrée (`GET /api/v1/system/update-check`) affichant une bannière discrète dans la Web UI dès qu'une nouvelle release GitHub officielle est disponible pour votre environnement actif (`macOS .dmg`, `Windows .zip`, `Linux .tar.gz` ou `Docker`).
 
 ---
 
@@ -74,6 +80,8 @@ Téléchargez le fichier [`docker-compose.yml`](docker-compose.yml) prêt à l'e
 curl -fsSLO https://raw.githubusercontent.com/red77290/dmd_media_showcase/main/docker-compose.yml
 docker compose up -d
 ```
+
+> **Build Local depuis les Sources (`git clone`) :** Dans un dépôt cloné localement, [`docker-compose.override.yml`](docker-compose.override.yml) est chargé automatiquement afin que `docker compose up -d --build` compile vos sources locales et la dernière version de `dmd_gif_converter` au lieu de tirer l'image distante.
 
 <details>
 <summary>📄 Afficher le <code>docker-compose.yml</code> autonome</summary>
@@ -122,9 +130,9 @@ docker run -d \
   ghcr.io/red77290/dmd_media_showcase:latest
 ```
 
-> **Persistance des Données (`/app/data`)** : Stocke `server_config.json`, `dmd_profiles.json` (profils DMD pilotés par le serveur et langue de diffusion), `seen_history.json` et `referentials/`. Le montage `${DMD_DATA_PATH:-./data}:/app/data` cible un dossier hôte (personnalisable via `DMD_DATA_PATH` dans `.env`) **insensible à `docker compose down -v`**, tandis que `-v dmd_showcase_data:/app/data` utilise un volume nommé géré par Docker pour Portainer.
+> **Persistance des Données (`/app/data`)** : Stocke `server_config.json` (identifiants scrapers, réglages runtime et politiques multi-sources `source_policies`), `dmd_profiles.json` (profils DMD pilotés par le serveur et langue de diffusion), `seen_history.json` et `referentials/`. Le montage `${DMD_DATA_PATH:-./data}:/app/data` cible un dossier hôte (personnalisable via `DMD_DATA_PATH` dans `.env`) **insensible à `docker compose down -v`**, tandis que `-v dmd_showcase_data:/app/data` utilise un volume nommé géré par Docker pour Portainer.
 
-- **Dashboard Web d'Administration** : `http://dmdmediashowcase.local:8890/` (ou `http://<ip-serveur>:8890/` — configuration optionnelle des clés TMDB / ScreenScraper et remise à zéro de `seen_history.json`)
+- **Dashboard Web d'Administration** : `http://dmdmediashowcase.local:8890/` (ou `http://<ip-serveur>:8890/` — ordonnancement des chaînes multi-sources, clés optionnelles IGDB / ScreenScraper / TMDB / TheTVDB et remise à zéro de `seen_history.json`)
 - **Swagger UI Interactif** : `http://dmdmediashowcase.local:8890/docs`
 - **Broker MQTT Embarqué** : `mqtt://dmdmediashowcase.local:1883`
 - **Auto-Découverte Réseau Local (mDNS)** : Annonce automatiquement `dmdmediashowcase.local` (`224.0.0.251:5353`) afin que votre DMD (`ArcadeMatrix` ESP32 ou `ArcadeMatrix_RPi`) le détecte sans saisir d'adresse IP. Il suffit d'activer le toggle Showcase dans la Web UI du DMD (`Settings -> Showcase Server`), de vérifier le témoin **`🟢 Communication OK`**, puis d'ajouter les moteurs Showcase à votre rotation !
@@ -139,10 +147,10 @@ Téléchargez le paquet correspondant à votre OS depuis **[GitHub Releases](htt
 ### Exemple Rapide de Vérification
 
 ```bash
-# 1. Vérifier l'état du serveur, du pool de workers et du broker MQTT
+# 1. Vérifier l'état du serveur, les chaînes multi-sources actives, les workers et le port MQTT
 curl -s http://localhost:8890/api/v1/health | jq .
 
-# 2. Récupérer le référentiel consolidé en français pour Retro Games (Systèmes -> Genres & Décennies)
+# 2. Récupérer le référentiel consolidé en français pour Retro Games (55+ Systèmes -> Genres & Décennies)
 curl -s "http://localhost:8890/api/v1/games/filters?lang=fr" | jq '.systems[0], .genres[:3]'
 ```
 

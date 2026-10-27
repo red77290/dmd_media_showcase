@@ -53,6 +53,7 @@ class TvMazeAdapter(IScraperSource):
     """
 
     source_id: str = "tvmaze"
+    display_name: str = "TVMaze"
     domain: DomainType = "series"
     role: str = "fallback"
 

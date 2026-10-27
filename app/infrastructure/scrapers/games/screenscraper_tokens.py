@@ -164,9 +164,10 @@ NON_CPS_TITLE_TOKENS: Tuple[str, ...] = (
     "mortal kombat",
 )
 
-SS_ID_TO_SYS_KEY: Dict[str, str] = {
-    str(meta["ss_id"]): k for k, meta in SYSTEM_METADATA.items() if meta.get("ss_id") != 75
-}
+SS_ID_TO_SYS_KEY: Dict[str, str] = {}
+for _k, _meta in SYSTEM_METADATA.items():
+    if _meta.get("ss_id") != 75:
+        SS_ID_TO_SYS_KEY.setdefault(str(_meta["ss_id"]), _k)
 
 
 def pick_discovery_token(

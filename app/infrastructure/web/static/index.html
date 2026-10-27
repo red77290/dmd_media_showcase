@@ -245,9 +245,12 @@
       </div>
 
       <div class="card">
-        <h2 data-i18n="chains_title">Metadata &amp; Trailer Sources ([Primary, Fallback])</h2>
+        <h2>
+          <span data-i18n="chains_title">Scraper Chains, Priority &amp; Multi-Source Aggregation</span>
+          <span id="status-msg-sources-ov" class="toast"></span>
+        </h2>
         <p class="desc" data-i18n="chains_desc">
-          Each domain queries its Primary source first and seamlessly switches to its Fallback source if unconfigured or rate-limited.
+          Select the Primary (#1) and Secondary (#2) scraper per domain, reorder fallback chains, enable/disable sources, and choose between Multi-Source Aggregation (enrich missing art, trailers &amp; text) or Strict Fallback.
         </p>
         <div class="providers-grid" id="providers-grid"></div>
       </div>
@@ -909,23 +912,30 @@
         </p>
         <div class="vault-grid">
           <div class="vault-box">
+            <div class="vault-title">IGDB API v4 (Twitch / Amazon — Games)</div>
+            <div id="vault-igdb" class="pill warn">Checking...</div>
+            <div class="vault-note" data-i18n="vault_igdb_note">
+              Twitch / IGDB v4 OAuth credentials for multi-language game metadata, aliases, artworks, and video trailers.
+            </div>
+          </div>
+          <div class="vault-box">
             <div class="vault-title">ScreenScraper Dev API (devid / devpassword)</div>
             <div id="vault-ss-dev" class="pill warn">Checking...</div>
-            <div style="color:var(--muted);font-size:0.78rem;margin-top:8px" data-i18n="vault_ss_note">
-              Developer credentials required by ScreenScraper API v2. When absent, the server automatically fails over to ArcadeItalia.
+            <div class="vault-note" data-i18n="vault_ss_note">
+              Developer credentials required by ScreenScraper API v2. When absent, the server automatically fails over to IGDB / ArcadeItalia.
             </div>
           </div>
           <div class="vault-box">
             <div class="vault-title">TMDB API v3/v4 (Movies &amp; TV Series)</div>
             <div id="vault-tmdb" class="pill warn">Checking...</div>
-            <div style="color:var(--muted);font-size:0.78rem;margin-top:8px" data-i18n="vault_tmdb_note">
+            <div class="vault-note" data-i18n="vault_tmdb_note">
               Default key active via .env or Prod Vault. Can optionally be overridden below with your own personal key.
             </div>
           </div>
           <div class="vault-box">
             <div class="vault-title">TheTVDB API v4 (Series, Anime &amp; Movies)</div>
             <div id="vault-tvdb" class="pill warn">Checking...</div>
-            <div style="color:var(--muted);font-size:0.78rem;margin-top:8px" data-i18n="vault_tvdb_note">
+            <div class="vault-note" data-i18n="vault_tvdb_note">
               Default key active via .env or Prod Vault for localized synopses and official trailers.
             </div>
           </div>
@@ -935,8 +945,36 @@
       <div class="card">
         <h2 data-i18n="user_keys_title">User Credentials &amp; Optional Overrides</h2>
         <p class="desc" data-i18n="user_keys_desc">
-          Enter your free ScreenScraper member account (SSID / password) to use your player quota. TMDB and TheTVDB fields are optional when an .env or Prod Vault key is already active.
+          Configure IGDB (Twitch), ScreenScraper player &amp; developer credentials, TMDB, and TheTVDB keys. Optional override fields fall back to .env or Prod Vault when left empty.
         </p>
+
+        <div class="keys-subsec-title" data-i18n="sec_igdb_keys_title">IGDB API v4 (Twitch / Amazon — Games Discovery &amp; Alias Search)</div>
+        <div class="form-grid-2">
+          <div class="field">
+            <label class="label-with-badge">
+              <span data-i18n="lbl_igdb_client_id">IGDB Twitch Client ID</span>
+              <small id="vault-badge-igdb_client_id" class="vault-field-badge"></small>
+            </label>
+            <div class="input-row">
+              <input type="password" id="igdb_client_id" data-i18n-placeholder="ph_igdb_client_id" placeholder="Twitch Developer Client ID (or leave empty for .env / Vault)" />
+              <button type="button" class="icon-btn" onclick="togglePwd('igdb_client_id')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('igdb_client_id')">✕</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label-with-badge">
+              <span data-i18n="lbl_igdb_client_secret">IGDB Twitch Client Secret</span>
+              <small id="vault-badge-igdb_client_secret" class="vault-field-badge"></small>
+            </label>
+            <div class="input-row">
+              <input type="password" id="igdb_client_secret" data-i18n-placeholder="ph_igdb_client_secret" placeholder="Twitch Developer Client Secret (or leave empty for .env / Vault)" />
+              <button type="button" class="icon-btn" onclick="togglePwd('igdb_client_secret')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('igdb_client_secret')">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="keys-subsec-title" data-i18n="sec_ss_keys_title">ScreenScraper API v2 (Player Quota &amp; Optional Developer Override)</div>
         <div class="form-grid-2">
           <div class="field">
             <label data-i18n="lbl_ss_user">ScreenScraper Player Account — Username (SSID)</label>
@@ -951,7 +989,36 @@
             </div>
           </div>
           <div class="field">
-            <label data-i18n="lbl_tmdb_override">Custom TMDB Key (Optional — leave empty to use .env / Prod Vault)</label>
+            <label class="label-with-badge">
+              <span data-i18n="lbl_ss_dev_id">ScreenScraper Dev ID (devid — Optional Override)</span>
+              <small id="vault-badge-screenscraper_dev_id" class="vault-field-badge"></small>
+            </label>
+            <div class="input-row">
+              <input type="password" id="screenscraper_dev_id" data-i18n-placeholder="ph_ss_dev_id" placeholder="Uses .env / Prod Vault devid when left empty" />
+              <button type="button" class="icon-btn" onclick="togglePwd('screenscraper_dev_id')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('screenscraper_dev_id')">✕</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label-with-badge">
+              <span data-i18n="lbl_ss_dev_pass">ScreenScraper Dev Password (devpassword — Optional Override)</span>
+              <small id="vault-badge-screenscraper_dev_pass" class="vault-field-badge"></small>
+            </label>
+            <div class="input-row">
+              <input type="password" id="screenscraper_dev_pass" data-i18n-placeholder="ph_ss_dev_pass" placeholder="Uses .env / Prod Vault devpassword when left empty" />
+              <button type="button" class="icon-btn" onclick="togglePwd('screenscraper_dev_pass')">👁️</button>
+              <button type="button" class="icon-btn" onclick="clearField('screenscraper_dev_pass')">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="keys-subsec-title" data-i18n="sec_cinema_keys_title">Cinema &amp; Series APIs (TMDB &amp; TheTVDB v4)</div>
+        <div class="form-grid-2">
+          <div class="field">
+            <label class="label-with-badge">
+              <span data-i18n="lbl_tmdb_override">Custom TMDB Key (Optional — leave empty to use .env / Prod Vault)</span>
+              <small id="vault-badge-tmdb_api_key" class="vault-field-badge"></small>
+            </label>
             <div class="input-row">
               <input type="password" id="tmdb_api_key" data-i18n-placeholder="ph_vault_default" placeholder="Uses built-in / .env key when left empty" />
               <button type="button" class="icon-btn" onclick="togglePwd('tmdb_api_key')">👁️</button>
@@ -959,7 +1026,10 @@
             </div>
           </div>
           <div class="field">
-            <label data-i18n="lbl_tvdb_override">Custom TheTVDB v4 Key (Optional — leave empty to use .env / Prod Vault)</label>
+            <label class="label-with-badge">
+              <span data-i18n="lbl_tvdb_override">Custom TheTVDB v4 Key (Optional — leave empty to use .env / Prod Vault)</span>
+              <small id="vault-badge-tvdb_api_key" class="vault-field-badge"></small>
+            </label>
             <div class="input-row">
               <input type="password" id="tvdb_api_key" data-i18n-placeholder="ph_vault_default" placeholder="Uses built-in / .env key when left empty" />
               <button type="button" class="icon-btn" onclick="togglePwd('tvdb_api_key')">👁️</button>
@@ -971,6 +1041,17 @@
           <button onclick="saveConfig()" data-i18n="btn_save">Save Server Configuration</button>
           <span id="status-msg-keys" class="toast"></span>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>
+          <span data-i18n="chains_keys_title">Scraper Source Priority &amp; Multi-Source Aggregation</span>
+          <span id="status-msg-sources-keys" class="toast"></span>
+        </h2>
+        <p class="desc" data-i18n="chains_keys_desc">
+          Choose the Primary (#1) and Secondary (#2) scraper for each domain, reorder fallback chains, enable/disable sources, and switch between Multi-Source Aggregation and Strict Fallback.
+        </p>
+        <div class="providers-grid" id="keys-providers-grid"></div>
       </div>
     </div>
 

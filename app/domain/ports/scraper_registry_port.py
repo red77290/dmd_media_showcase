@@ -33,3 +33,12 @@ class IScraperRegistryPort(ABC):
     @abstractmethod
     def available_filters(self, domain: DomainType, lang: str = "fr") -> Dict[str, Any]:
         """Return the consolidated, localized referential specification for `domain`."""
+
+    def get_domain_policy(self, domain: DomainType) -> Dict[str, Any]:
+        """Return the active source ordering, disabled set, and `aggregation_mode` for `domain`."""
+        chain = self.get_chain(domain)
+        return {
+            "ordered_sources": [s.source_id for s in chain],
+            "disabled_sources": [],
+            "aggregation_mode": "enrich_missing",
+        }

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     screenscraper_dev_id: str = ""
     screenscraper_dev_pass: str = ""
     tvdb_api_key: str = ""
+    igdb_client_id: str = ""
+    igdb_client_secret: str = ""
 
     # Home-Lab HTTP (default open) & Future Scalable Online HTTPS / API Key Security
     showcase_api_key: str = ""

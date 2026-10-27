@@ -204,6 +204,14 @@ class ConsumeOnceOrchestrator:
         return self.state.last_played_titles
 
     @property
+    def last_played_sources(self) -> Dict[Tuple[str, DomainType], str]:
+        return self.state.last_played_sources
+
+    @property
+    def preparing_sources(self) -> Dict[Tuple[str, DomainType], str]:
+        return self.state.preparing_sources
+
+    @property
     def last_claimed_until(self) -> Dict[Tuple[str, DomainType], float]:
         return self.state.last_claimed_until
 

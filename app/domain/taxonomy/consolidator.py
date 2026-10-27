@@ -48,9 +48,9 @@ class ReferentialConsolidator:
             for sys_id, smeta in RETRO_SYSTEM_CATALOG.items():
                 seen_sys.add(sys_id)
                 supported_sources = (
-                    ["screenscraper", "arcadeitalia", "libretro_wikidata"]
+                    ["igdb", "screenscraper", "arcadeitalia", "libretro_wikidata"]
                     if smeta.get("is_arcade")
-                    else ["screenscraper", "libretro_wikidata"]
+                    else ["igdb", "screenscraper", "libretro_wikidata"]
                 )
                 systems_out.append(
                     {
@@ -75,7 +75,7 @@ class ReferentialConsolidator:
                             "is_arcade": False,
                             "genres": list(_ALL_CONSOLE_GENRES),
                             "decades": ["1980s", "1990s", "2000s"],
-                            "sources": ["screenscraper", "libretro_wikidata"],
+                            "sources": ["igdb", "screenscraper", "libretro_wikidata"],
                         }
                     )
 
@@ -101,7 +101,7 @@ class ReferentialConsolidator:
                 "sources": sources_info or [],
                 "systems": systems_out,
                 "genres": genres_out,
-                "decades": decades_list[:4],
+                "decades": decades_list[:5],
             }
 
         genre_cat = (

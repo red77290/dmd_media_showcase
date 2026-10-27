@@ -106,8 +106,11 @@ class GamesProvider(BaseMediaProvider):
         self,
         query: str,
         lang: str = "fr",
+        criteria: Optional[FilterCriteria] = None,
     ) -> Optional[RawMediaCandidate]:
-        cand = await source_chain_service.search_on_demand("games", query, lang=lang)
+        cand = await source_chain_service.search_on_demand(
+            "games", query, lang=lang, criteria=criteria
+        )
         return candidate_to_raw(cand) if cand else None
 
     def available_filters(self, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:

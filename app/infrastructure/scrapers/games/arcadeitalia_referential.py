@@ -61,12 +61,31 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             "ninjamas", "kizuna", "savagere", "karnovr", "shocktro", "shocktr2",
             "sengoku", "sengoku2", "sengoku3", "pulstar", "blazstar", "viewpoin",
             "lastreso", "twinspri", "aerofig2", "aerofig3", "strik1945p", "preisle2",
-            "zedblade", "androdu", "alpham2", "windjamm", "ssideki", "ssideki2",
+            "zedblade", "androdu", "alpham2", "wjammers", "windjamm", "ssideki", "ssideki2",
             "ssideki3", "ssideki4", "turfmast", "neocup98", "2020bb", "strhoop",
             "tophuntr", "spinmast", "maglord", "bjourney", "cyberlip", "nam1975",
             "mutnat", "roboarmy", "burningf", "eightman", "pbobble", "pbobble2",
             "magicald", "magdrop2", "magdrop3", "puzzledp", "joyjoy", "moneyid",
             "gururin", "panicbom", "overtop", "neodrift", "thrashr",
+        ],
+        "naomi": [
+            "mvsc2", "cvs2", "ikaruga", "ggxx", "vf4", "totd", "hotd2",
+            "crazytax", "doa2", "pstone", "pstone2", "capvs", "bdrdown",
+        ],
+        "atomiswave": [
+            "mslug6", "kofxi", "ngbc", "hokuto", "ggisuka", "dolphin", "demofist",
+        ],
+        "model2": [
+            "daytona", "vf2", "vcop", "vcop2", "hotd", "srallyc", "fvipers", "doa", "zerogun",
+        ],
+        "model3": [
+            "scud", "daytona2", "vf3", "srally2", "la_machin", "swtrilgy", "spikeout",
+        ],
+        "zn": [
+            "sfex", "sfex2", "sfex2p", "rvschola", "strider2", "techromn", "plsmaswd", "ts2",
+        ],
+        "pgm": [
+            "kov", "kov2", "kovsh", "dmnfrnt", "martmast", "orlegend", "ddp2", "svg", "ket",
         ],
     }
 
@@ -97,6 +116,12 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
         "cps1": _AUTHORITATIVE_SYSTEM_ROMS["cps1"],
         "cps2": _AUTHORITATIVE_SYSTEM_ROMS["cps2"],
         "cps3": _AUTHORITATIVE_SYSTEM_ROMS["cps3"],
+        "naomi": _AUTHORITATIVE_SYSTEM_ROMS["naomi"],
+        "atomiswave": _AUTHORITATIVE_SYSTEM_ROMS["atomiswave"],
+        "model2": _AUTHORITATIVE_SYSTEM_ROMS["model2"],
+        "model3": _AUTHORITATIVE_SYSTEM_ROMS["model3"],
+        "zn": _AUTHORITATIVE_SYSTEM_ROMS["zn"],
+        "pgm": _AUTHORITATIVE_SYSTEM_ROMS["pgm"],
     }
 
     _GENRE_SEARCH_STEMS: Dict[str, Dict[str, List[str]]] = {
@@ -155,9 +180,9 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             "all": ["pbobble", "atetris", "columns", "klax", "spf2t", "puyopuy2", "pang", "mpang", "magdrop3"],
         },
         "sports": {
-            "neogeo": ["windjamm", "ssideki", "ssideki2", "ssideki3", "ssideki4", "turfmast", "neocup98", "2020bb", "strhoop"],
+            "neogeo": ["wjammers", "windjamm", "ssideki", "ssideki2", "ssideki3", "ssideki4", "turfmast", "neocup98", "2020bb", "strhoop"],
             "cps2": ["csclub"],
-            "all": ["windjamm", "nbajam", "ssideki2", "turfmast", "trackfld", "archrivl", "csclub"],
+            "all": ["wjammers", "windjamm", "nbajam", "ssideki2", "turfmast", "trackfld", "archrivl", "csclub"],
         },
         "racing": {
             "neogeo": ["overtop", "neodrift", "thrashr"],
@@ -197,7 +222,7 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             resp = await client.get(
                 "https://adb.arcadeitalia.net/lista_mame.php",
                 params={"ricerca": token, "arcade_only": "1", "cloni": "0", "lang": "en"},
-                timeout=5.0,
+                timeout=4.5,
             )
             if resp.status_code == 200 and resp.text:
                 for match in _ADB_ROM_LINK_RE.finditer(resp.text):
@@ -208,8 +233,14 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
                         and rom not in discovered
                     ):
                         discovered.append(rom)
+            elif resp.status_code != 200:
+                logger.warning(
+                    "[REFERENTIAL:arcadeitalia] lista_mame '%s' returned HTTP %s",
+                    token,
+                    resp.status_code,
+                )
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "[REFERENTIAL:arcadeitalia] lista_mame harvest for '%s' failed: %s", token, exc
             )
         return discovered
