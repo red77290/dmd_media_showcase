@@ -175,5 +175,8 @@ def candidate_from_cache_dict(data: Dict[str, Any]) -> MediaCandidate:
         youtube_url=data.get("youtube_url"),
         source_id=str(data.get("source_id") or "cache"),
         theme_palette=palette,
-        extra_meta={str(k): str(v) for k, v in (data.get("extra_meta") or {}).items()},
+        extra_meta={
+            str(k): (v if isinstance(v, (str, int, float, bool, list, dict)) else str(v))
+            for k, v in (data.get("extra_meta") or {}).items()
+        },
     )

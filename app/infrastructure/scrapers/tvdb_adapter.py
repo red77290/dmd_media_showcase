@@ -196,6 +196,7 @@ class TvdbSeriesAdapter(IScraperSource):
     """
 
     source_id: str = "tvdb_series"
+    display_name: str = "TheTVDB"
     domain: DomainType = "series"
     role: str = "fallback"
 

@@ -47,6 +47,7 @@ class ItunesMovieAdapter(IScraperSource):
     """
 
     source_id: str = "itunes_movies"
+    display_name: str = "Apple iTunes"
     domain: DomainType = "movies"
     role: str = "fallback"
 

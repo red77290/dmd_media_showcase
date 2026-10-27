@@ -4,6 +4,9 @@ import { CANONICAL_DOMAINS, uiState } from '../state.js';
 import { hydrateStudioDraftStylesFromCache, initStudioIfNeeded } from './studio_controls.js';
 import { loadTargetDmdQueue } from './tester_queue.js';
 import { loadHealthAndConfig } from './runtime_config.js';
+import { renderProviders, renderSourceBadge } from './source_chains.js';
+
+export { renderProviders, renderSourceBadge };
 
 export function switchTab(name) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -51,83 +54,108 @@ export function renderRuntimeSummary(cfg, h) {
   }
 }
 
-export function renderVaultStatus(vs) {
-  uiState.lastVaultStatus = vs || {};
-  const ssEl = document.getElementById('vault-ss-dev');
-  if (ssEl) {
-    if (uiState.lastVaultStatus.screenscraper_dev_active) {
-      ssEl.className = 'pill ok';
-      ssEl.textContent = t('vault_active');
-    } else {
-      ssEl.className = 'pill warn';
-      ssEl.textContent = t('vault_missing');
+function resolveVaultKeyState(vs, key, legacy = {}) {
+  const raw = vs ? vs[key] : undefined;
+  if (typeof raw === 'string' && raw) {
+    if (raw === 'user_override' || raw === 'env' || raw === 'prod_vault' || raw === 'missing') {
+      return raw;
     }
   }
+  if (legacy.userOverride && vs && vs[legacy.userOverride]) return 'user_override';
+  if (legacy.prodVault && vs && vs[legacy.prodVault]) return 'prod_vault';
+  if (legacy.active && vs && vs[legacy.active]) return 'env';
+  return 'missing';
+}
 
-  const tmdbEl = document.getElementById('vault-tmdb');
-  if (tmdbEl) {
-    if (uiState.lastVaultStatus.tmdb_user_override) {
-      tmdbEl.className = 'pill info';
-      tmdbEl.textContent = t('vault_override');
-    } else if (uiState.lastVaultStatus.tmdb_builtin_active) {
-      tmdbEl.className = 'pill ok';
-      tmdbEl.textContent = t('vault_active');
-    } else {
-      tmdbEl.className = 'pill warn';
-      tmdbEl.textContent = t('vault_missing');
-    }
-  }
-
-  const tvdbEl = document.getElementById('vault-tvdb');
-  if (tvdbEl) {
-    if (uiState.lastVaultStatus.tvdb_user_override) {
-      tvdbEl.className = 'pill info';
-      tvdbEl.textContent = t('vault_override');
-    } else if (uiState.lastVaultStatus.tvdb_builtin_active) {
-      tvdbEl.className = 'pill ok';
-      tvdbEl.textContent = t('vault_active');
-    } else {
-      tvdbEl.className = 'pill warn';
-      tvdbEl.textContent = t('vault_missing');
-    }
+function applyVaultSummaryPill(elId, states, fallbackActive = false, fallbackProd = false) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const allPresent = states.length > 0 && states.every(s => s !== 'missing');
+  if (allPresent && states.includes('user_override')) {
+    el.className = 'pill info';
+    el.textContent = t('vault_override');
+  } else if ((allPresent && states.includes('prod_vault')) || (!allPresent && fallbackProd)) {
+    el.className = 'pill ok';
+    el.textContent = t('vault_prod_active');
+  } else if (allPresent || fallbackActive) {
+    el.className = 'pill ok';
+    el.textContent = t('vault_active');
+  } else {
+    el.className = 'pill warn';
+    el.textContent = t('vault_missing');
   }
 }
 
-export function renderProviders(providers) {
-  uiState.lastProviders = providers || {};
-  const grid = document.getElementById('providers-grid');
-  if (!grid) return;
-  const rawKeys = Object.keys(uiState.lastProviders);
-  if (!rawKeys.length) {
-    grid.innerHTML = '';
-    return;
+function applyVaultFieldBadge(fieldId, state) {
+  const el = document.getElementById('vault-badge-' + fieldId);
+  if (!el) return;
+  if (state === 'user_override') {
+    el.className = 'vault-field-badge override';
+    el.textContent = t('vbadge_override');
+  } else if (state === 'prod_vault') {
+    el.className = 'vault-field-badge ok';
+    el.textContent = t('vbadge_prod_vault');
+  } else if (state === 'env') {
+    el.className = 'vault-field-badge ok';
+    el.textContent = t('vbadge_env');
+  } else {
+    el.className = 'vault-field-badge missing';
+    el.textContent = t('vbadge_missing');
   }
-  const orderedDomains = [
-    ...CANONICAL_DOMAINS.filter(d => d in uiState.lastProviders),
-    ...rawKeys.filter(d => !CANONICAL_DOMAINS.includes(d))
-  ];
-  grid.innerHTML = orderedDomains.map(dom => {
-    const rawChain = uiState.lastProviders[dom];
-    let chainList = [];
-    if (Array.isArray(rawChain)) {
-      chainList = rawChain;
-    } else if (typeof rawChain === 'string') {
-      chainList = rawChain.split('->').map(s => s.trim()).filter(Boolean).map((sid, idx) => ({
-        source_id: sid,
-        role: idx === 0 ? 'primary' : 'fallback',
-        configured: sid !== 'none'
-      }));
-    }
-    const items = chainList.map(p => {
-      const ok = Boolean(p.configured);
-      const roleLbl = p.role === 'primary' ? t('role_primary') : t('role_fallback');
-      return `<span class="pill ${ok ? 'ok' : 'warn'}">${esc(roleLbl)}: ${esc(p.source_id)} ${ok ? '✓' : '⚠️'}</span>`;
-    }).join(' ');
-    return `<div class="vault-box">
-      <div class="vault-title">${esc(dom.toUpperCase())}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${items}</div>
-    </div>`;
-  }).join('');
+}
+
+export function renderVaultStatus(vs) {
+  uiState.lastVaultStatus = vs || {};
+  const v = uiState.lastVaultStatus;
+
+  const igdbActiveFlag = Boolean(v.igdb_active || v.igdb_configured || v.igdb_builtin_active);
+  const igdbIdState = resolveVaultKeyState(v, 'igdb_client_id', {
+    userOverride: 'igdb_user_override',
+    prodVault: 'igdb_from_prod_vault',
+    active: v.igdb_active ? 'igdb_active' : (v.igdb_configured ? 'igdb_configured' : 'igdb_builtin_active')
+  });
+  const igdbSecretState = resolveVaultKeyState(v, 'igdb_client_secret', {
+    userOverride: 'igdb_user_override',
+    prodVault: 'igdb_from_prod_vault',
+    active: v.igdb_active ? 'igdb_active' : (v.igdb_configured ? 'igdb_configured' : 'igdb_builtin_active')
+  });
+  const ssDevIdState = resolveVaultKeyState(v, 'screenscraper_dev_id', {
+    userOverride: 'screenscraper_dev_user_override',
+    prodVault: 'screenscraper_dev_from_prod_vault',
+    active: 'screenscraper_dev_active'
+  });
+  const ssDevPassState = resolveVaultKeyState(v, 'screenscraper_dev_pass', {
+    userOverride: 'screenscraper_dev_user_override',
+    prodVault: 'screenscraper_dev_from_prod_vault',
+    active: 'screenscraper_dev_active'
+  });
+  const tmdbState = resolveVaultKeyState(v, 'tmdb_api_key', {
+    userOverride: 'tmdb_user_override',
+    prodVault: 'tmdb_from_prod_vault',
+    active: 'tmdb_builtin_active'
+  });
+  const tvdbState = resolveVaultKeyState(v, 'tvdb_api_key', {
+    userOverride: 'tvdb_user_override',
+    prodVault: 'tvdb_from_prod_vault',
+    active: 'tvdb_builtin_active'
+  });
+
+  applyVaultSummaryPill('vault-igdb', [igdbIdState, igdbSecretState], igdbActiveFlag, Boolean(v.igdb_from_prod_vault));
+  applyVaultSummaryPill(
+    'vault-ss-dev',
+    [ssDevIdState, ssDevPassState],
+    Boolean(v.screenscraper_dev_active),
+    Boolean(v.screenscraper_dev_from_prod_vault)
+  );
+  applyVaultSummaryPill('vault-tmdb', [tmdbState], Boolean(v.tmdb_builtin_active), Boolean(v.tmdb_from_prod_vault));
+  applyVaultSummaryPill('vault-tvdb', [tvdbState], Boolean(v.tvdb_builtin_active), Boolean(v.tvdb_from_prod_vault));
+
+  applyVaultFieldBadge('igdb_client_id', igdbIdState);
+  applyVaultFieldBadge('igdb_client_secret', igdbSecretState);
+  applyVaultFieldBadge('screenscraper_dev_id', ssDevIdState);
+  applyVaultFieldBadge('screenscraper_dev_pass', ssDevPassState);
+  applyVaultFieldBadge('tmdb_api_key', tmdbState);
+  applyVaultFieldBadge('tvdb_api_key', tvdbState);
 }
 
 export function renderClients(clients) {
@@ -156,24 +184,29 @@ export function renderClients(clients) {
 
     let playingCell = '—';
     if (c.paused) {
-      playingCell = `<span class="pill warn slot-pill">${esc(t('pill_paused'))}</span>`;
+      const pausedSrc = c.playing_title ? renderSourceBadge(c.playing_source) : '';
+      playingCell = `<div class="slot-cell-stack"><span class="pill warn slot-pill">${esc(t('pill_paused'))}</span>${pausedSrc}</div>`;
     } else if (c.udp_streaming) {
       const liveTitle = c.playing_title || c.active_title || 'Live';
-      playingCell = `<span class="pill ok slot-pill" title="${esc(liveTitle)}">${esc(t('pill_streaming'))} ${esc(liveTitle)}</span>`;
+      playingCell = `<div class="slot-cell-stack"><span class="pill ok slot-pill" title="${esc(liveTitle)}">${esc(t('pill_streaming'))} ${esc(liveTitle)}</span>${renderSourceBadge(c.playing_source)}</div>`;
     } else if (c.is_playing && c.playing_title) {
-      playingCell = `<span class="pill info slot-pill" title="${esc(c.playing_title)}">▶ ${esc(c.playing_title)}</span>`;
+      playingCell = `<div class="slot-cell-stack"><span class="pill info slot-pill" title="${esc(c.playing_title)}">▶ ${esc(c.playing_title)}</span>${renderSourceBadge(c.playing_source)}</div>`;
     } else if (c.playing_title) {
-      playingCell = `<span class="pill info slot-pill" title="${esc(c.playing_title)}">▶ ${esc(c.playing_title)}</span>`;
+      playingCell = `<div class="slot-cell-stack"><span class="pill info slot-pill" title="${esc(c.playing_title)}">▶ ${esc(c.playing_title)}</span>${renderSourceBadge(c.playing_source)}</div>`;
     } else if (c.last_played_title || c.active_title) {
       const prevTitle = c.last_played_title || c.active_title;
-      playingCell = `<span class="last-played slot-pill" title="${esc(prevTitle)}">↺ ${esc(prevTitle)}</span>`;
+      playingCell = `<div class="slot-cell-stack"><span class="last-played slot-pill" title="${esc(prevTitle)}">↺ ${esc(prevTitle)}</span>${renderSourceBadge(c.last_played_source || c.playing_source)}</div>`;
     }
     const readyCell = c.ready_title
-      ? `<span class="pill ok slot-pill" title="${esc(c.ready_title)}">✓ ${esc(c.ready_title)}</span>`
-      : (c.preparing ? `<span class="pill warn slot-pill">${esc(t('pill_preparing'))}</span>` : '—');
+      ? `<div class="slot-cell-stack"><span class="pill ok slot-pill" title="${esc(c.ready_title)}">✓ ${esc(c.ready_title)}</span>${renderSourceBadge(c.ready_source)}</div>`
+      : (c.preparing
+        ? `<div class="slot-cell-stack"><span class="pill warn slot-pill">${esc(t('pill_preparing'))}</span>${renderSourceBadge(c.preparing_source)}</div>`
+        : '—');
     const standbyCell = c.standby_title
-      ? `<span class="pill info slot-pill" title="${esc(c.standby_title)}">✓ ${esc(c.standby_title)}</span>`
-      : (c.ready_title && c.preparing ? `<span class="pill warn slot-pill">${esc(t('pill_preparing'))}</span>` : '—');
+      ? `<div class="slot-cell-stack"><span class="pill info slot-pill" title="${esc(c.standby_title)}">✓ ${esc(c.standby_title)}</span>${renderSourceBadge(c.standby_source)}</div>`
+      : (c.ready_title && c.preparing
+        ? `<div class="slot-cell-stack"><span class="pill warn slot-pill">${esc(t('pill_preparing'))}</span>${renderSourceBadge(c.preparing_source)}</div>`
+        : '—');
     const safeId = esc(c.dmd_id).replace(/'/g, "\\'");
     const pauseAct = c.paused ? 'resume' : 'pause';
     const pauseIcon = c.paused ? '▶' : '⏸';

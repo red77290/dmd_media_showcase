@@ -1,9 +1,9 @@
 """
 Application Service: `DomainSourceChainService`.
 
-Orchestrates the `[Primary, Fallback]` `IScraperSource` adapters for each domain (`games`,
-`movies`, `series`, `anime`) while enforcing strict `ISeenHistoryRepository` exclusion so
-no title is ever repeated.
+Orchestrates the configurable multi-source `IScraperSource` chain (`Chain of Responsibility`
++ `CandidateAggregator` cross-source enrichment) for each domain (`games`, `movies`,
+`series`, `anime`) while enforcing strict `ISeenHistoryRepository` exclusion.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import logging
 import threading
 from typing import Dict, List, Optional, Set
 
+from app.application.candidate_aggregator import CandidateAggregator
 from app.domain.aggregates.artifact_cache import BoundedTtlCache
 from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports import (
@@ -34,8 +35,9 @@ logger = logging.getLogger("dmd_showcase.application.source_chain")
 
 class DomainSourceChainService:
     """
-    Executes the 2-source `[Primary, Fallback]` chain for a domain and filters out
-    all previously consumed item IDs stored in `ISeenHistoryRepository`.
+    Executes the ordered multi-source chain for a domain, optionally enriches missing
+    DMD assets across secondary sources via `CandidateAggregator`, and filters out
+    previously consumed item IDs stored in `ISeenHistoryRepository`.
     """
 
     _STAGED_MAX_ENTRIES: int = 256
@@ -45,6 +47,7 @@ class DomainSourceChainService:
         self,
         registry: Optional[IScraperRegistryPort] = None,
         history_repo: Optional[ISeenHistoryRepository] = None,
+        aggregator: Optional[CandidateAggregator] = None,
     ) -> None:
         self.registry: IScraperRegistryPort = (
             registry if registry is not None else default_port_registry.resolve("scraper_registry")
@@ -54,6 +57,7 @@ class DomainSourceChainService:
             if history_repo is not None
             else default_port_registry.resolve("seen_repository")
         )
+        self.aggregator: CandidateAggregator = aggregator or CandidateAggregator()
         self._staged_cache: BoundedTtlCache[str, MediaCandidate] = BoundedTtlCache(
             ttl_seconds=self._STAGED_TTL_S,
             max_entries=self._STAGED_MAX_ENTRIES,
@@ -80,8 +84,7 @@ class DomainSourceChainService:
     def _candidate_matches_criteria(cand: MediaCandidate, criteria: FilterCriteria) -> bool:
         """
         Defense-in-depth validation ensuring no adapter ever leaks a wrong-system game
-        (e.g. Arcade/SNES/PS1 when `systems=['megadrive']`) or a Platformer / Beat 'em up
-        when `genres=['fighting']` (`vs_fighting`) is requested.
+        or a Platformer / Beat 'em up when `genres=['fighting']` (`vs_fighting`) is requested.
         """
         if criteria.domain != "games":
             return True
@@ -151,6 +154,21 @@ class DomainSourceChainService:
             self.history_repo.stage_candidate_fingerprint(domain, cand.id, {fp})
         return fp or None
 
+    async def _maybe_enrich_batch(
+        self,
+        candidates: List[MediaCandidate],
+        chain: List[IScraperSource],
+        criteria: FilterCriteria,
+        max_enrich: int = 3,
+    ) -> None:
+        if not candidates or len(chain) < 2:
+            return
+        policy = self.registry.get_domain_policy(criteria.domain)
+        if str(policy.get("aggregation_mode") or "enrich_missing") != "enrich_missing":
+            return
+        for cand in candidates[:max_enrich]:
+            await self.aggregator.enrich_candidate(cand, chain, criteria)
+
     async def _collect_from_chain(
         self,
         chain: List[IScraperSource],
@@ -161,12 +179,9 @@ class DomainSourceChainService:
         domain = criteria.domain
         collected: List[MediaCandidate] = []
         for source in chain:
-            if not source.is_configured():
+            if not source.is_configured() or source.is_in_cooldown():
                 continue
-            if (
-                not ReferentialConsolidator.source_supports_criteria(source.source_id, criteria)
-                and source.source_id != "arcadeitalia"
-            ):
+            if not ReferentialConsolidator.source_supports_criteria(source.source_id, criteria):
                 continue
             needed = count - len(collected)
             if needed <= 0:
@@ -218,8 +233,8 @@ class DomainSourceChainService:
         extra_exclude_ids: Optional[Set[str]] = None,
     ) -> List[MediaCandidate]:
         """
-        Acquire `count` unseen candidates for `criteria.domain` by querying the Primary
-        `IScraperSource` first, and falling back to the Fallback `IScraperSource` if needed.
+        Acquire `count` unseen candidates for `criteria.domain` by querying the ordered
+        `IScraperSource` chain and optionally enriching missing assets across secondary sources.
         """
         domain = criteria.domain
         chain = self.registry.get_chain(domain)
@@ -241,14 +256,6 @@ class DomainSourceChainService:
             count=count,
         )
 
-        # Guard against false catalog-exhaustion resets when stochastic single-page or
-        # single-system sampling happens to land on already-seen items:
-        # 1. Retry once with `persisted_seen` still enforced so random samplers get a second draw.
-        # 2. If still empty, probe `max(count, 3)` items without `persisted_seen`:
-        #    - If ANY returned candidate is genuinely unseen, return those unseen items WITHOUT
-        #      resetting `seen_history`.
-        #    - ONLY reset `seen_history` when the probe returns candidates and 100% of them
-        #      are already present in `persisted_seen` / `persisted_seen_fps`.
         if not results and persisted_seen:
             results = await self._collect_from_chain(
                 chain=chain,
@@ -306,6 +313,9 @@ class DomainSourceChainService:
                     results = probe_results[:count]
 
         final_results = results[:count]
+        await self._maybe_enrich_batch(
+            final_results, chain=chain, criteria=criteria, max_enrich=len(final_results)
+        )
         for cand in final_results:
             self.stage_candidate(cand)
         return final_results
@@ -317,8 +327,8 @@ class DomainSourceChainService:
         limit: int = 8,
     ) -> List[MediaCandidate]:
         """
-        Search or sample up to `limit` candidates honoring `criteria`, staging all returned
-        candidates without marking them consumed in `ISeenHistoryRepository`.
+        Search or sample up to `limit` candidates honoring `criteria`, enriching missing
+        assets when `aggregation_mode == 'enrich_missing'` and staging returned candidates.
         """
         clamped_limit = max(1, min(20, int(limit)))
         q_clean = (query or "").strip()
@@ -329,6 +339,7 @@ class DomainSourceChainService:
             return unseen[:clamped_limit]
 
         domain = criteria.domain
+        chain = self.registry.get_chain(domain)
         has_systems = any(s and s.strip().lower() != "all" for s in (criteria.systems or []))
         has_genres = any(g and g.strip().lower() != "all" for g in (criteria.genres or []))
         enforce_games_criteria = has_systems or has_genres
@@ -336,13 +347,12 @@ class DomainSourceChainService:
         collected: List[MediaCandidate] = []
         seen_keys: Set[str] = set()
 
-        for source in self.registry.get_chain(domain):
-            if not source.is_configured():
+        for source in chain:
+            if not source.is_configured() or source.is_in_cooldown():
                 continue
             if (
                 domain == "games"
                 and has_systems
-                and source.source_id != "arcadeitalia"
                 and not ReferentialConsolidator.source_supports_criteria(
                     source.source_id, criteria
                 )
@@ -377,7 +387,6 @@ class DomainSourceChainService:
                     seen_keys.add(cand.id)
                     if fp:
                         seen_keys.add(fp)
-                    self.stage_candidate(cand)
                     collected.append(cand)
                     if len(collected) >= clamped_limit:
                         break
@@ -391,30 +400,29 @@ class DomainSourceChainService:
                     exc,
                 )
 
-        return collected[:clamped_limit]
+        final_results = collected[:clamped_limit]
+        await self._maybe_enrich_batch(
+            final_results,
+            chain=chain,
+            criteria=criteria,
+            max_enrich=min(3, clamped_limit),
+        )
+        for cand in final_results:
+            self.stage_candidate(cand)
+        return final_results
 
     async def search_on_demand(
         self,
         domain: DomainType,
         query: str,
         lang: str = "fr",
+        criteria: Optional[FilterCriteria] = None,
     ) -> Optional[MediaCandidate]:
-        """Search across `[Primary, Fallback]` sources for an explicit on-demand query."""
-        for source in self.registry.get_chain(domain):
-            if not source.is_configured():
-                continue
-            try:
-                cand = await source.search_by_query(query=query, lang=lang)
-                if cand is not None:
-                    self.stage_candidate(cand)
-                    return cand
-            except Exception as exc:
-                logger.warning(
-                    "[SOURCE CHAIN] On-demand search on '%s' failed for '%s': %s",
-                    source.source_id,
-                    query,
-                    exc,
-                )
+        """Search across ordered domain sources (with cross-source enrichment) for an on-demand query."""
+        eff_criteria = criteria or FilterCriteria(domain=domain, lang=lang)
+        found = await self.search_candidates(criteria=eff_criteria, query=query, limit=1)
+        if found:
+            return found[0]
         return None
 
     def available_filters(

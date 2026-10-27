@@ -22,6 +22,8 @@ VAULT_SECRET_KEYS: Tuple[str, ...] = (
     "screenscraper_dev_id",
     "screenscraper_dev_pass",
     "tvdb_api_key",
+    "igdb_client_id",
+    "igdb_client_secret",
 )
 
 

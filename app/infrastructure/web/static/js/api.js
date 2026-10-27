@@ -58,8 +58,15 @@ export function clampFloatInput(id, minVal, maxVal, fallback) {
   return Math.max(minVal, Math.min(maxVal, raw));
 }
 
-export function showConfigToast(msg, isError = false) {
-  ['status-msg-runtime', 'status-msg-keys', 'status-msg-net'].forEach(id => {
+export function showConfigToast(msg, isError = false, targetIds = null) {
+  const ids = targetIds || [
+    'status-msg-runtime',
+    'status-msg-keys',
+    'status-msg-net',
+    'status-msg-sources-ov',
+    'status-msg-sources-keys'
+  ];
+  ids.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.style.color = isError ? 'var(--red)' : 'var(--green)';

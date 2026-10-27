@@ -18,8 +18,13 @@ class IScraperSource(ABC):
     """
 
     source_id: str
+    display_name: str = ""
     domain: DomainType
     role: str  # "primary" or "fallback"
+
+    def is_in_cooldown(self) -> bool:
+        """Return True if this source is temporarily backed off due to upstream quota or outage."""
+        return False
 
     @abstractmethod
     def is_configured(self) -> bool:

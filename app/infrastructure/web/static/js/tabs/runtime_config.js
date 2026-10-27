@@ -1,6 +1,6 @@
 import { apiFetch, clampFloatInput, clampIntInput, esc, isMaskedSecret, showConfigToast } from '../api.js';
 import { t } from '../i18n/index.js';
-import { uiState } from '../state.js';
+import { normalizeSourcePolicies, uiState } from '../state.js';
 import {
   renderClients,
   renderHealth,
@@ -11,6 +11,40 @@ import {
 } from './overview.js';
 import { loadStudioDmdQueue, renderStudioActiveDmdBanner } from './studio_actions.js';
 import { loadTargetDmdQueue } from './tester_queue.js';
+
+const SECRET_INPUT_IDS = [
+  'tmdb_api_key',
+  'tvdb_api_key',
+  'screenscraper_pass',
+  'igdb_client_id',
+  'igdb_client_secret',
+  'screenscraper_dev_id',
+  'screenscraper_dev_pass',
+  'showcase_api_key'
+];
+
+function readSecretFieldPayload(id) {
+  const el = document.getElementById(id);
+  if (!el) return undefined;
+  const raw = el.value.trim();
+  if (isMaskedSecret(raw)) {
+    return undefined;
+  }
+  if (raw === '') {
+    if (el.dataset.cleared === '1' || el.dataset.hadMasked === '1') {
+      return '';
+    }
+    return undefined;
+  }
+  return raw;
+}
+
+function resetSecretClearedFlags() {
+  SECRET_INPUT_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) delete el.dataset.cleared;
+  });
+}
 
 export function syncMqttModeUi() {
   const modeEl = document.getElementById('mqtt_mode');
@@ -33,6 +67,9 @@ export function syncMdnsUi() {
 export function hydrateConfigInputs(cfg, force) {
   if (!cfg) return;
   uiState.lastServerConfig = cfg;
+  if (cfg.source_policies && (force || Date.now() >= uiState.sourcePoliciesDirtyUntil)) {
+    uiState.lastSourcePolicies = normalizeSourcePolicies(uiState.lastProviders, cfg.source_policies);
+  }
   renderRuntimeSummary(cfg, uiState.lastHealth);
   if (uiState.configHydrated && !force) return;
   const fields = {
@@ -40,6 +77,10 @@ export function hydrateConfigInputs(cfg, force) {
     tvdb_api_key: cfg.tvdb_api_key || '',
     screenscraper_user: cfg.screenscraper_user || '',
     screenscraper_pass: cfg.screenscraper_pass || '',
+    screenscraper_dev_id: cfg.screenscraper_dev_id || '',
+    screenscraper_dev_pass: cfg.screenscraper_dev_pass || '',
+    igdb_client_id: cfg.igdb_client_id || '',
+    igdb_client_secret: cfg.igdb_client_secret || '',
     mqtt_mode: cfg.mqtt_mode || 'embedded',
     mqtt_port: String(cfg.mqtt_port != null ? cfg.mqtt_port : 1883),
     mqtt_external_url: cfg.mqtt_external_url || '',
@@ -70,13 +111,20 @@ export function hydrateConfigInputs(cfg, force) {
   Object.entries(fields).forEach(([id, val]) => {
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) {
+      if (!force && el.dataset.cleared === '1') return;
       el.value = val;
+      if (SECRET_INPUT_IDS.includes(id)) {
+        el.dataset.hadMasked = isMaskedSecret(val) ? '1' : '0';
+        delete el.dataset.cleared;
+      }
     }
   });
   syncMqttModeUi();
   syncMdnsUi();
   uiState.configHydrated = true;
 }
+
+export const populateConfigForm = hydrateConfigInputs;
 
 export async function loadHealthAndConfig(forceHydrate = false) {
   const [cfgRes, healthRes] = await Promise.allSettled([
@@ -87,11 +135,18 @@ export async function loadHealthAndConfig(forceHydrate = false) {
   if (cfgRes.status === 'fulfilled' && cfgRes.value.ok) {
     try {
       const d = await cfgRes.value.json();
+      const cfg = d.config || {};
       uiState.lastDmdProfiles = Array.isArray(d.dmd_profiles) ? d.dmd_profiles : [];
-      hydrateConfigInputs(d.config || {}, forceHydrate);
+      if (cfg.source_policies && (forceHydrate || Date.now() >= uiState.sourcePoliciesDirtyUntil)) {
+        uiState.lastSourcePolicies = normalizeSourcePolicies(d.providers || {}, cfg.source_policies);
+      } else if (Date.now() >= uiState.sourcePoliciesDirtyUntil) {
+        uiState.lastSourcePolicies = normalizeSourcePolicies(d.providers || {}, uiState.lastSourcePolicies);
+      }
+      hydrateConfigInputs(cfg, forceHydrate);
       renderOnDemandCacheStats(d.on_demand_cache || {});
-      renderVaultStatus(d.vault_status || {});
-      renderProviders(d.providers || {});
+      const mergedVault = Object.assign({}, cfg.vault_status || {}, d.vault_status || {});
+      renderVaultStatus(mergedVault);
+      renderProviders(d.providers || {}, uiState.lastSourcePolicies);
       renderClients(d.clients || []);
       renderSeen(d.seen_history || {});
       loadTargetDmdQueue();
@@ -118,17 +173,62 @@ export async function loadHealthAndConfig(forceHydrate = false) {
   }
 }
 
+export async function saveSourcePolicies() {
+  uiState.sourcePoliciesDirtyUntil = Date.now() + 2500;
+  renderProviders(uiState.lastProviders, uiState.lastSourcePolicies);
+  try {
+    const r = await apiFetch('/api/v1/admin/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_policies: uiState.lastSourcePolicies})
+    });
+    if (!r.ok) {
+      let errDetail = 'HTTP ' + r.status;
+      try {
+        const errJson = await r.json();
+        errDetail = typeof errJson.detail === 'string' ? errJson.detail : JSON.stringify(errJson.detail || errJson);
+      } catch (_) {}
+      uiState.sourcePoliciesDirtyUntil = 0;
+      showConfigToast('⚠️ ' + errDetail, true, ['status-msg-sources-ov', 'status-msg-sources-keys']);
+      loadHealthAndConfig(false);
+      return;
+    }
+    const resData = await r.json();
+    uiState.sourcePoliciesDirtyUntil = 0;
+    const nextCfg = resData.config || uiState.lastServerConfig || {};
+    uiState.lastServerConfig = nextCfg;
+    const nextProviders = resData.providers || uiState.lastProviders;
+    const nextPolicies = (nextCfg && nextCfg.source_policies) || uiState.lastSourcePolicies;
+    uiState.lastSourcePolicies = normalizeSourcePolicies(nextProviders, nextPolicies);
+    if (resData.vault_status || nextCfg.vault_status) {
+      renderVaultStatus(Object.assign({}, nextCfg.vault_status || {}, resData.vault_status || {}));
+    }
+    renderProviders(nextProviders, uiState.lastSourcePolicies);
+    showConfigToast(t('msg_sources_saved'), false, ['status-msg-sources-ov', 'status-msg-sources-keys']);
+  } catch (err) {
+    uiState.sourcePoliciesDirtyUntil = 0;
+    showConfigToast('⚠️ ' + (err.message || String(err)), true, ['status-msg-sources-ov', 'status-msg-sources-keys']);
+  }
+}
+
 export async function saveConfig() {
+  const showcaseKeyEl = document.getElementById('showcase_api_key');
+  const rawShowcaseInput = showcaseKeyEl ? showcaseKeyEl.value.trim() : '';
   const payload = {
-    tmdb_api_key: document.getElementById('tmdb_api_key').value.trim(),
-    tvdb_api_key: document.getElementById('tvdb_api_key').value.trim(),
+    tmdb_api_key: readSecretFieldPayload('tmdb_api_key'),
+    tvdb_api_key: readSecretFieldPayload('tvdb_api_key'),
     screenscraper_user: document.getElementById('screenscraper_user').value.trim(),
-    screenscraper_pass: document.getElementById('screenscraper_pass').value.trim(),
+    screenscraper_pass: readSecretFieldPayload('screenscraper_pass'),
+    screenscraper_dev_id: readSecretFieldPayload('screenscraper_dev_id'),
+    screenscraper_dev_pass: readSecretFieldPayload('screenscraper_dev_pass'),
+    igdb_client_id: readSecretFieldPayload('igdb_client_id'),
+    igdb_client_secret: readSecretFieldPayload('igdb_client_secret'),
+    source_policies: uiState.lastSourcePolicies,
     mqtt_mode: document.getElementById('mqtt_mode').value,
     mqtt_port: clampIntInput('mqtt_port', 1, 65535, 1883),
     mqtt_external_url: document.getElementById('mqtt_external_url').value.trim(),
     default_lang: document.getElementById('default_lang').value,
-    showcase_api_key: document.getElementById('showcase_api_key').value.trim(),
+    showcase_api_key: readSecretFieldPayload('showcase_api_key'),
     max_concurrent_jobs: clampIntInput('max_concurrent_jobs', 0, 16, 0),
     use_process_pool: document.getElementById('use_process_pool').value === 'true',
     ffmpeg_threads_per_job: clampIntInput('ffmpeg_threads_per_job', 1, 8, 1),
@@ -166,12 +266,13 @@ export async function saveConfig() {
     }
     const resData = await r.json();
     try {
-      if (payload.showcase_api_key === '') {
+      if (rawShowcaseInput === '') {
         localStorage.removeItem('dmd_showcase_api_key');
-      } else if (!isMaskedSecret(payload.showcase_api_key)) {
-        localStorage.setItem('dmd_showcase_api_key', payload.showcase_api_key);
+      } else if (!isMaskedSecret(rawShowcaseInput)) {
+        localStorage.setItem('dmd_showcase_api_key', rawShowcaseInput);
       }
     } catch (_) {}
+    resetSecretClearedFlags();
     const applied = resData.applied_live || {};
     const effW = applied.effective_max_workers != null ? applied.effective_max_workers : payload.max_concurrent_jobs;
     const maxD = Number(applied.video_max_duration_limit_s != null ? applied.video_max_duration_limit_s : payload.video_max_duration_limit_s).toFixed(1);
@@ -182,6 +283,9 @@ export async function saveConfig() {
     showConfigToast('⚠️ ' + (err.message || String(err)), true);
   }
 }
+
+export const saveServerConfig = saveConfig;
+export const saveApiKeys = saveConfig;
 
 export async function syncReferentials() {
   const st = document.getElementById('sync-status');

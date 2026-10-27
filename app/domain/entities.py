@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 DomainType = Literal["games", "movies", "series", "anime"]
 
@@ -103,7 +103,7 @@ class MediaCandidate:
     youtube_url: Optional[str] = None
     source_id: str = "live"
     theme_palette: Tuple[int, int, int] = (230, 74, 25)
-    extra_meta: Dict[str, str] = field(default_factory=dict)
+    extra_meta: Dict[str, Any] = field(default_factory=dict)
 
     def add_unique_snapshot(self, url: Optional[str]) -> None:
         if not url or not url.startswith(("http://", "https://")):

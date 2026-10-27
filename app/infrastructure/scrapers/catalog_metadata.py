@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from app.domain.taxonomy.systems import RETRO_SYSTEM_CATALOG
+
 TMDB_LANG_MAP: Dict[str, str] = {
     "fr": "fr-FR",
     "en": "en-US",
@@ -48,6 +50,20 @@ SYSTEM_METADATA: Dict[str, Dict[str, Any]] = {
     "intellivision": {"ss_id": 115, "badge": "INTV", "color": "#9E9D24", "palette": (158, 157, 36), "label": "Mattel Intellivision", "libretro": "Mattel_-_Intellivision", "search_hint": "Intellivision video game", "is_arcade": False},
     "vectrex": {"ss_id": 102, "badge": "VECTREX", "color": "#00E676", "palette": (0, 230, 118), "label": "GCE Vectrex", "libretro": "GCE_-_Vectrex", "search_hint": "Vectrex video game", "is_arcade": False},
 }
+
+for _sys_key, _smeta in RETRO_SYSTEM_CATALOG.items():
+    if _sys_key not in SYSTEM_METADATA:
+        _en_label = (_smeta.get("labels") or {}).get("en") or _sys_key.upper()
+        SYSTEM_METADATA[_sys_key] = {
+            "ss_id": int(_smeta.get("screenscraper_id") or 75),
+            "badge": str(_smeta.get("badge") or _sys_key[:6].upper()),
+            "color": str(_smeta.get("color") or "#FF6D00"),
+            "palette": tuple(_smeta.get("palette") or (255, 109, 0)),
+            "label": _en_label,
+            "libretro": str(_smeta.get("libretro_repo") or "MAME"),
+            "search_hint": f"{_en_label} video game",
+            "is_arcade": bool(_smeta.get("is_arcade")),
+        }
 
 GAME_GENRES: Dict[str, str] = {
     "action": "Action",

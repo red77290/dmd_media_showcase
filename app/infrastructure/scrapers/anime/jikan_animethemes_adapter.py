@@ -120,9 +120,13 @@ class JikanAnimeThemesAdapter(IScraperSource):
     timeouts fail over in `0ms` to `AniListAdapter` instead of burning `12-24s` per slot.
     """
 
-    source_id: str = "jikan_animethemes"
+    source_id: str = "jikan"
+    display_name: str = "Jikan + AnimeThemes"
     domain: DomainType = "anime"
     role: str = "primary"
+
+    def is_in_cooldown(self) -> bool:
+        return self._is_circuit_open()
 
     _FAILURE_THRESHOLD: int = 2
     _BACKOFF_SECONDS: float = 180.0

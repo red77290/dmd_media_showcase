@@ -384,6 +384,29 @@ GAME_GENRE_CATALOG: Dict[str, Dict[str, Any]] = {
     },
 }
 
+_IGDB_GENRE_IDS_BY_CANONICAL: Dict[str, Tuple[int, ...]] = {
+    "platform": (8,),
+    "action": (31,),
+    "fighting": (4,),
+    "beatemup": (25,),
+    "shootemup": (5,),
+    "runandgun": (5, 8),
+    "rpg": (12,),
+    "racing": (10,),
+    "puzzle": (9,),
+    "sports": (14,),
+    "strategy": (15, 16, 24),
+    "simulation": (13,),
+    "maze": (33,),
+    "adventure": (31, 2),
+    "pinball": (30,),
+    "lightgun": (5,),
+}
+
+for _gid, _igdb_ids in _IGDB_GENRE_IDS_BY_CANONICAL.items():
+    if _gid in GAME_GENRE_CATALOG:
+        GAME_GENRE_CATALOG[_gid]["igdb_genre_ids"] = list(_igdb_ids)
+
 
 _GAME_TITLE_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
 

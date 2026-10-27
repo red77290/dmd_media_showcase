@@ -34,8 +34,11 @@ class AnimeProvider(BaseMediaProvider):
         self,
         query: str,
         lang: str = "fr",
+        criteria: Optional[object] = None,
     ) -> Optional[RawMediaCandidate]:
-        cand = await source_chain_service.search_on_demand("anime", query, lang=lang)
+        cand = await source_chain_service.search_on_demand(
+            "anime", query, lang=lang, criteria=criteria  # type: ignore[arg-type]
+        )
         return candidate_to_raw(cand) if cand else None
 
     def available_filters(self, lang: str = "fr") -> Dict[str, List[Dict[str, str]]]:

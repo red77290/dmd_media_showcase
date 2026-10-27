@@ -301,11 +301,12 @@ export function renderStudioCandidateStrip() {
       : '';
     const snapTag = c.snapshot_count ? ` • 📸${Number(c.snapshot_count)}` : '';
     const vidTag = c.has_video ? ' • 🎬' : '';
+    const srcTag = (c.source_used || c.source_id) ? ` • ${c.source_used || c.source_id}` : '';
     return `<div class="studio-cand-pill${activeCls}" onclick="selectStudioCandidate(${idx})">
       ${imgHtml}
       <div style="min-width:0;overflow:hidden">
         <div style="font-weight:700;font-size:0.82rem;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.title)}</div>
-        <div style="font-size:0.72rem;color:var(--muted)">${esc(c.badge || c.domain.toUpperCase())} ${c.year ? '• ' + esc(c.year) : ''}${esc(snapTag)}${vidTag}</div>
+        <div style="font-size:0.72rem;color:var(--muted)">${esc(c.badge || c.domain.toUpperCase())} ${c.year ? '• ' + esc(c.year) : ''}${esc(srcTag)}${esc(snapTag)}${vidTag}</div>
       </div>
     </div>`;
   }).join('');

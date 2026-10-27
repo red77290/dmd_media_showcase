@@ -37,6 +37,8 @@ docker compose up -d
 docker logs -f dmd-media-showcase
 ```
 
+> **Compilación Local en un Clon Git (`docker-compose.override.yml`)**: Dentro de un repositorio clonado localmente, [`docker-compose.override.yml`](../docker-compose.override.yml) se carga automáticamente para que `docker compose up -d --build` compile `dmd-media-showcase:local` desde su árbol de código local (junto con la última versión de `dmd_gif_converter >= 8.0.4`) en lugar de descargar `ghcr.io/red77290/dmd_media_showcase:latest`.
+
 #### Opción 2 — Comando `docker run` Directo (Bind Mount del Host o Volumen con Nombre en Portainer)
 
 ```bash
@@ -66,7 +68,7 @@ docker run -d \
 #### Persistencia de Datos y Protección de Volúmenes (`/app/data`)
 
 Todos los archivos persistentes del servidor residen en `/app/data`:
-- `server_config.json`: Credenciales cifradas de scrapers, concurrencia de workers y límites de vídeo.
+- `server_config.json`: Credenciales personalizadas de scrapers, políticas multifuente por dominio (`source_policies`: `ordered_sources`, `disabled_sources`, `aggregation_mode`), concurrencia de workers y límites de vídeo.
 - `dmd_profiles.json`: Perfiles DMD gestionados en el servidor (`config_source: "server"`), listas de reproducción, filtros e idioma de emisión (`lang`).
 - `seen_history.json`: Historial Consume-Once por dominio (cero repeticiones).
 - `referentials/*.json`: Caché local de catálogos de categorías de los scrapers.
@@ -94,13 +96,21 @@ El montaje **`${DMD_DATA_PATH:-./data}:/app/data`** en `docker-compose.yml` util
 ## 2. Panel Web de Administración (`http://dmdmediashowcase.local:8890/`)
 
 Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en su navegador para:
-- **Ajustar en caliente Runtime, Workers y Límites de Vídeo en Tiempo Real** (`2. Runtime, Workers y Límites de Vídeo`, guardado en `./data/server_config.json` sin reiniciar el servidor): número de workers concurrentes (`max_concurrent_jobs`), modo de ejecutor (`ProcessPoolExecutor` / `ThreadPoolExecutor`), hilos FFmpeg, prioridad CPU `nice`, duración máxima de vídeo (`video_max_duration_limit_s`), FPS máximos (`video_max_fps_limit`), duración de panoramas (`panorama_duration_s`), tamaño máximo de descarga, caché, TTLs, puerto MQTT, mDNS y nivel de log en vivo.
+- **Reordenar en Caliente las Cadenas Multifuente y el Modo de Agregación** (editable en vivo tanto en **1. Vista General** como en **5. Claves API y Scrapers**, persistido en `./data/server_config.json`):
+  - Defina el orden de prioridad por dominio (`ordered_sources`: `#1 Primaria -> #2 Secundaria -> #3 Terciaria -> ...`) y habilite/deshabilite fuentes individuales (`disabled_sources`, manteniendo siempre al menos una fuente activa). Cuando la fuente Primaria devuelve `0` resultados, agota el tiempo de espera, entra en enfriamiento o no soporta el sistema solicitado, la búsqueda pasa de forma determinista a la siguiente fuente habilitada.
+  - Seleccione el `aggregation_mode` por dominio:
+    - **`enrich_missing` (Agregación Multifuente, por defecto)**: La fuente Primaria resuelve la identidad canónica, los alias y los metadatos (p. ej. `IGDB` resolviendo `"sf2x"` en `cps2` $\to$ `"Super Street Fighter II Turbo"` / `ssf2t`), y `CandidateAggregator` ejecuta un pase secundario acotado (`<= 3.0s`) en las fuentes secundarias activas (`ScreenScraper`, `ArcadeItalia`, `Apple iTunes`, `AnimeThemes`, etc.) para obtener recursos DMD faltantes (marquees/wheels recortados, capturas pixel-art, flujos directos `.mp4`/`.webm`/`.m4v`, sinopsis localizadas). Los elementos agregados muestran insignias combinadas (`🔗 igdb+screenscraper`, `🔗 igdb+arcadeitalia`, `🔗 tmdb_movies+itunes_movies`) en las ranuras DMD en vivo (`playing_source`, `ready_source`, `standby_source`, `preparing_source`) y en las colas prioritarias (`source_used`).
+    - **`fallback_only` (Respaldo Estricto)**: Las fuentes secundarias solo se consultan cuando la fuente Primaria devuelve `0` resultados o falla.
+- **Ajustar en caliente Runtime, Workers y Límites de Vídeo en Tiempo Real** (`2. Runtime, Workers y Límites de Vídeo`, guardado en `./data/server_config.json` sin reiniciar el servidor): número de workers concurrentes (`max_concurrent_jobs`), modo de ejecutor (`ProcessPoolExecutor` / `ThreadPoolExecutor`), hilos FFmpeg, prioridad CPU `nice`, duración máxima de vídeo (`video_max_duration_limit_s`), FPS máximos (`video_max_fps_limit`), duración de panoramas zoom-to-cover (`panorama_duration_s` — desplazamiento vertical en paneles YOKO, horizontal de izquierda a derecha en paneles TATE), tamaño máximo de descarga, caché, TTLs, puerto MQTT, mDNS y nivel de log en vivo.
 - **Activar la Caché Persistente de Conversiones On-Demand**: Si dispone de espacio en disco, active **Caché Persistente de Conversiones On-Demand** (con cuota máxima opcional en MB). Los juegos solicitados bajo demanda (como desde Recalbox / Batocera / RetroPie `FrontendSync`) se guardan por `(Sistema + Juego + Resolución + Estilo de Tarjeta)` para arrancar **al instante (`0 ms`)** en futuras partidas sin volver a buscar ni convertir, con vaciado en un clic mediante **🗑 Vaciar Caché On-Demand**.
-- Configurar credenciales **opcionales** de scrapers primarios (`ScreenScraper`, `TMDB`). Sin credenciales, los adaptadores sin clave (`ArcadeItalia`, `Libretro+Wikidata`, `iTunes`, `TVMaze`, `Jikan+AnimeThemes`, `AniList`) funcionan automáticamente.
+- **Configurar Credenciales Opcionales de Scrapers** (`5. Claves API y Scrapers` o `.env` — resolución en 3 niveles `server_config.json` $\to$ `.env` / variables del SO $\to$ bóveda nativa C `_prod_vault`, con redacción automática de logs mediante `SecretRedactingLogFilter` y `httpx`/`httpcore` en `WARNING`):
+  - **IGDB v4 (Portal de Desarrolladores de Twitch)**: `igdb_client_id` y `igdb_client_secret` (`IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET`, aplicación gratuita en `https://dev.twitch.tv/console/apps`) para `games` en los 66 sistemas retro/arcade canónicos (`55+` plataformas), búsqueda por alias (`alternative_names`) y descubrimiento aleatorio por offset.
+  - **ScreenScraper** (`screenscraper_user`, `screenscraper_pass`, `screenscraper_dev_id`, `screenscraper_dev_pass`) para `games` (marquees/wheels recortados, capturas pixel-art, vídeos `.mp4`, con detección automática de cuota/sobrecarga HTTP-200 y disyuntor de enfriamiento). Sin credenciales, **`ArcadeItalia`** (MAME/CPS/Neo-Geo/NAOMI HTTPS + alias cortos `sf2x`, `3s`, `kof98`, `garou`) y **`Libretro+Wikidata`** (SPARQL Consola/Portátil/Micro + `libretro-thumbnails` + vídeos de Archive.org) funcionan automáticamente sin configuración.
+  - **TMDB** (`tmdb_api_key` / `TMDB_API_KEY`) y **TheTVDB v4** (`tvdb_api_key` / `TVDB_API_KEY`) para `movies`, `series` y `anime`. Sin claves, `Apple iTunes`, `TVMaze`, `Jikan + AnimeThemes` y `AniList` operan automáticamente.
 - Elegir entre el **Broker MQTT Integrado** (`:1883`) o un **Broker MQTT Externo**.
 - **Gestionar Perfiles DMD en el Servidor (`./data/dmd_profiles.json`)**: Configurar listas de reproducción (`games`, `movies`, `series`, `anime`), filtros (`systems`, `genres`, `decades`), ajustes de vídeo/color e idioma de emisión (`lang`) para receptores ESP32 pasivos o híbridos (`PUT /api/v1/clients/{dmd_id}/profile`).
 - **Buscar en el Catálogo y Controlar la Cola Bajo Demanda / Reproducción en Vivo**: Buscar títulos localizados (`GET /api/v1/{domain}/search`), encolarlos en cualquier DMD con **`enqueue_next`** o **`play_now`** (`POST /api/v1/clients/{dmd_id}/queue`, incluido `FrontendSync` con `mark_seen: false`) y ejecutar **`Skip` / `Pause` / `Resume` / `Stop`** en tiempo real (`POST /api/v1/clients/{dmd_id}/control`).
-- Ver y restablecer el historial **`seen_history.json`** por dominio o globalmente.
+- Ver y restablecer el historial **`seen_history.json`** por dominio o globalmente, y sincronizar referenciales en vivo (`POST /api/v1/admin/referentials/sync`).
 
 ---
 
@@ -114,7 +124,7 @@ Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en s
    - Active el interruptor **Enable DMD Media Showcase Server** y haga clic en **Save Showcase Server** (o **Test Connection**).
    - Verifique que el indicador visual se ponga en verde: **`🟢 Comunicación OK`**.
 3. Añada cualquiera de los 4 motores Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`) a su rotación.
-4. La WebUI del DMD consulta automáticamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar dinámicamente las listas de **Sistemas**, **Géneros** y **Décadas**.
+4. La WebUI del DMD consulta automáticamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar dinámicamente las listas de **Sistemas** (`55+` plataformas), **Géneros** y **Décadas**.
 5. Ajuste la **Velocidad de desplazamiento de la sinopsis** (`1 = Lento` a `10 = Turbo`, hasta `160 px/s`) y guarde los cambios.
 
 ### 3.2 Receptores ESP32 Pasivos e Híbridos Gestionados en el Servidor (`config_source: "server"`)
@@ -133,4 +143,3 @@ Cuando su DMD (`ArcadeMatrix` ESP32 o `ArcadeMatrix_RPi`) está conectado a una 
    - **Al Lanzar un Juego**: El DMD muestra la marquesina clásica de inmediato mientras Showcase prepara en segundo plano la **Ficha Informativa Animada + Panoramas + Vídeo de Gameplay** y toma el relevo suavemente cuando está lista (`Una vez`, `Alternar Marquesina y Showcase` o `Bucle`).
    - **Estilo de Tarjeta**: Mantenga **Heredar perfil DMD desde Showcase Studio** (configurado visualmente en el Studio de Showcase) o seleccione **Personalizado en el DMD** directamente en `FrontendSync`.
 4. **Caché de Inicio Instantáneo**: Active **Caché Persistente de Conversiones On-Demand** en Showcase (`2. Runtime, Workers y Límites de Vídeo`) para que los juegos ya jugados arranquen al instante en sesiones futuras, y pulse **🗑️ Vaciar Caché de Showcase** (en Showcase o desde el DMD) cuando quiera regenerar las tarjetas tras cambiar su estilo.
-

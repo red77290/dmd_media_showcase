@@ -113,6 +113,8 @@ def build_connected_clients_snapshot() -> List[Dict[str, Any]]:
         sess_ip = meta[0] if meta and meta[0] not in ("unknown", "testclient") else ""
         last_seen_ago = int(max(0.0, now_ts - meta[1])) if meta else None
         cur_title = cur_items[0].title if cur_items else None
+        cur_source = cur_items[0].source_used if cur_items else ""
+        nxt_source = nxt_items[0].source_used if nxt_items else ""
         is_served = sess.current_batch.served_count > 0 and cur_title is not None
         clients.append(
             {
@@ -141,12 +143,17 @@ def build_connected_clients_snapshot() -> List[Dict[str, Any]]:
                 "decades": list(sess.request.decades),
                 "active_title": cur_title,
                 "playing_title": cur_title if is_served else None,
+                "playing_source": cur_source if is_served else "",
                 "last_played_title": cur_title,
+                "last_played_source": cur_source if is_served else "",
                 "is_playing": is_served,
                 "udp_streaming": False,
                 "ready_title": cur_title if sess.current_batch.is_ready else None,
+                "ready_source": cur_source if sess.current_batch.is_ready else "",
                 "standby_title": nxt_items[0].title if nxt_items else None,
+                "standby_source": nxt_source,
                 "preparing": not sess.current_batch.is_ready or sess.next_batch_creating,
+                "preparing_source": cur_source if not sess.current_batch.is_ready else nxt_source,
                 "last_seen_ago_s": last_seen_ago,
             }
         )

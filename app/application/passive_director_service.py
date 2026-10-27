@@ -408,6 +408,9 @@ class PassivePlaylistDirectorService:
                 now_ts = time.time()
                 self.state.client_last_seen[(dmd_id, pkg.domain)] = now_ts
                 self.state.last_played_titles[(dmd_id, pkg.domain)] = pkg.card.title
+                self.state.last_played_sources[(dmd_id, pkg.domain)] = (
+                    pkg.card.source_used or pkg.candidate.source_id or ""
+                )
 
                 if not supports_local_card:
                     pkg.consumed = True
