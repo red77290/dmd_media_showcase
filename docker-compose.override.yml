@@ -1,0 +1,11 @@
+# Automatically loaded alongside `docker-compose.yml` when running inside a local Git checkout.
+# Ensures `docker compose up -d --build` builds local source code + latest `dmd_gif_converter`
+# instead of pulling `ghcr.io/red77290/dmd_media_showcase:latest`.
+services:
+  dmd-media-showcase:
+    image: dmd-media-showcase:local
+    pull_policy: build
+    build:
+      context: .
+      args:
+        DMD_GIF_CONVERTER_REV: ${DMD_GIF_CONVERTER_REV:-main}
