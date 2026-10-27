@@ -4,6 +4,7 @@ Static Poster, Marquee & Scrolling Panorama Asset Builder (`app/infrastructure/r
 
 from __future__ import annotations
 
+import inspect
 import io
 import logging
 import time
@@ -18,9 +19,59 @@ from app.infrastructure.rendering.imaging_primitives import (
     generate_fallback_artwork,
     resolve_active_downloader,
 )
-from dmd_gif_converter import DmdMediaProcessor, rgb888_to_rgb565_le
+from dmd_gif_converter import (
+    DmdMediaProcessor,
+    extract_frames_from_gif,
+    rgb888_to_rgb565_le,
+    write_rgb565_stream,
+)
 
 logger = logging.getLogger("dmd_showcase.converter")
+
+
+def resolve_showcase_panorama_axis(
+    src_w: int,
+    src_h: int,
+    target_width: int,
+    target_height: int,
+    scroll_direction: str = "auto",
+) -> str:
+    """
+    Determine whether a Showcase panorama pans horizontally (`"horizontal"`, left-to-right)
+    or vertically (`"vertical"`, top-to-bottom):
+    - TATE panels (`target_height > target_width`, e.g. `64x128`, `32x128`) ALWAYS pan
+      left-to-right, zooming uniformly to cover the frame with zero black bars and centering
+      vertically if height overflows.
+    - YOKO panels (`target_width > target_height`, e.g. `128x32`, `128x64`, `256x64`) ALWAYS
+      pan top-to-bottom, zooming uniformly to cover the frame with zero black bars and centering
+      horizontally if width overflows.
+    - Square panels (`target_width == target_height`, e.g. `64x64`) pan left-to-right when
+      `src_w > src_h` and top-to-bottom otherwise.
+    """
+    raw = str(scroll_direction or "auto").strip().lower()
+    if raw in ("horizontal", "left_to_right", "ltr", "x"):
+        return "horizontal"
+    if raw in ("vertical", "top_to_bottom", "ttb", "y"):
+        return "vertical"
+    if target_width <= 0 or target_height <= 0:
+        return "vertical"
+    if target_height > target_width:
+        return "horizontal"
+    if target_width > target_height:
+        return "vertical"
+    if src_w > 0 and src_h > 0 and src_w > src_h:
+        return "horizontal"
+    return "vertical"
+
+
+def _composite_pil_to_opaque_rgb(pil_src: Image.Image) -> Image.Image:
+    """Composite transparent RGBA/palette artwork (e.g. arcade marquees) onto pure black RGB."""
+    if pil_src.mode in ("RGBA", "LA") or "transparency" in pil_src.info:
+        rgba = pil_src.convert("RGBA")
+        bg = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+        bg.alpha_composite(rgba)
+        return bg.convert("RGB")
+    return pil_src.convert("RGB")
 
 
 def convert_image_to_panorama_gif_and_stream(
@@ -32,21 +83,27 @@ def convert_image_to_panorama_gif_and_stream(
     fps: int = 20,
     duration_s: float = 4.0,
     color_boost: bool = True,
+    scroll_direction: str = "auto",
 ) -> Optional[Tuple[str, str, str]]:
     """
     Convert a static image (jacket, marquee, or snapshot) into:
-    1. Smooth sub-pixel top-to-bottom scrolling `.gif`
-    2. Binary `.rgb565.stream`
-    3. Static tall `.rgb565` pan surface
+    1. Aspect-ratio-preserving scrolling `.gif` (`left -> right` when wider than panel, else `top -> bottom`)
+    2. Binary `.rgb565.stream` (`DMDS`)
+    3. Static `.rgb565` pan surface
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     pan_h = height * 2 + 8
     src_img_path = out_dir / f"_src_{stem}.png"
+    rot_src_path = out_dir / f"_rot_src_{stem}.png"
 
     processor = DmdMediaProcessor()
     try:
         with Image.open(io.BytesIO(raw_image_bytes)) as pil_src:
-            pil_src.convert("RGB").save(src_img_path, format="PNG")
+            rgb_src = _composite_pil_to_opaque_rgb(pil_src)
+            src_w, src_h = rgb_src.size
+            rgb_src.save(src_img_path, format="PNG")
+
+        axis = resolve_showcase_panorama_axis(src_w, src_h, width, height, scroll_direction)
 
         _, static_rgb565_path = processor.process_pan_backdrop(
             input_image=src_img_path,
@@ -56,32 +113,106 @@ def convert_image_to_panorama_gif_and_stream(
             smart_color_boost=color_boost,
             stem=stem,
         )
-        res = processor.process_image_panorama(
-            input_image=src_img_path,
+
+        supports_native_direction = (
+            "scroll_direction" in inspect.signature(processor.process_image_panorama).parameters
+        )
+
+        if supports_native_direction or axis != "horizontal":
+            extra_kwargs = {"scroll_direction": axis} if supports_native_direction else {}
+            res = processor.process_image_panorama(
+                input_image=src_img_path,
+                output_dir=out_dir,
+                width=width,
+                height=height,
+                fps=max(15, fps),
+                duration_s=duration_s,
+                smart_color_boost=color_boost,
+                export_gif=True,
+                export_rgb565_stream=True,
+                stem=stem,
+                **extra_kwargs,
+            )
+            src_img_path.unlink(missing_ok=True)
+            if res.gif_path and res.rgb565_stream_path and res.frame_count > 0:
+                logger.info(
+                    "[CONVERTER] Built panorama '%s' via dmd_gif_converter pipeline (%dx%d, axis=%s, %d frames @ %dfps)",
+                    stem,
+                    width,
+                    height,
+                    axis,
+                    res.frame_count,
+                    res.fps,
+                )
+                return res.gif_path.name, res.rgb565_stream_path.name, static_rgb565_path.name
+            return None
+
+        # Compatibility fallback for older `dmd_gif_converter` wheels lacking `scroll_direction`:
+        # center-cap ultra-wide spans without distorting aspect ratio, rotate 90 deg CW so Left->Right
+        # maps to Top->Bottom, run FFmpeg Lanczos + Smart Color Boost, then rotate frames 90 deg CCW.
+        max_pan_dist_x = max(width * 4, round(width * 1.35 * max(2.5, float(duration_s))))
+        scaled_w_est = round(src_w * (float(height) / float(max(1, src_h))))
+        if scaled_w_est - width > max_pan_dist_x and scaled_w_est > 0:
+            keep_src_w = min(
+                src_w,
+                max(16, int(round((width + max_pan_dist_x) * (float(src_h) / float(height))))),
+            )
+            trim_left = max(0, (src_w - keep_src_w) // 2)
+            rgb_for_rot = rgb_src.crop((trim_left, 0, trim_left + keep_src_w, src_h))
+        else:
+            rgb_for_rot = rgb_src
+
+        rgb_for_rot.transpose(Image.Transpose.ROTATE_270).save(rot_src_path, format="PNG")
+        rot_res = processor.process_image_panorama(
+            input_image=rot_src_path,
             output_dir=out_dir,
-            width=width,
-            height=height,
+            width=height,
+            height=width,
             fps=max(15, fps),
             duration_s=duration_s,
             smart_color_boost=color_boost,
             export_gif=True,
-            export_rgb565_stream=True,
-            stem=stem,
+            export_rgb565_stream=False,
+            stem=f"_rot_{stem}",
         )
         src_img_path.unlink(missing_ok=True)
-        if res.gif_path and res.rgb565_stream_path and res.frame_count > 0:
-            logger.info(
-                "[CONVERTER] Built panorama '%s' via dmd_gif_converter pipeline (%dx%d, %d frames @ %dfps)",
-                stem,
-                width,
-                height,
-                res.frame_count,
-                res.fps,
-            )
-            return res.gif_path.name, res.rgb565_stream_path.name, static_rgb565_path.name
-        return None
+        rot_src_path.unlink(missing_ok=True)
+        if not rot_res.gif_path or not rot_res.gif_path.exists():
+            return None
+
+        rot_frames, eff_fps = extract_frames_from_gif(rot_res.gif_path)
+        rot_res.gif_path.unlink(missing_ok=True)
+        if not rot_frames:
+            return None
+
+        ltr_frames = [np.ascontiguousarray(np.rot90(f, k=1)) for f in rot_frames]
+        gif_out_path = out_dir / f"{stem}_{width}x{height}.gif"
+        stream_out_path = out_dir / f"{stem}_{width}x{height}.rgb565.stream"
+        pil_frames = [Image.fromarray(f, mode="RGB") for f in ltr_frames]
+        frame_dur_ms = max(20, int(round(1000.0 / max(1, eff_fps))))
+        pil_frames[0].save(
+            gif_out_path,
+            format="GIF",
+            save_all=True,
+            append_images=pil_frames[1:],
+            duration=frame_dur_ms,
+            loop=0,
+            disposal=2,
+        )
+        write_rgb565_stream(ltr_frames, stream_out_path, fps=eff_fps)
+        logger.info(
+            "[CONVERTER] Built panorama '%s' via horizontal rotation fallback (%dx%d, axis=%s, %d frames @ %dfps)",
+            stem,
+            width,
+            height,
+            axis,
+            len(ltr_frames),
+            eff_fps,
+        )
+        return gif_out_path.name, stream_out_path.name, static_rgb565_path.name
     except Exception as exc:
         src_img_path.unlink(missing_ok=True)
+        rot_src_path.unlink(missing_ok=True)
         logger.info("[CONVERTER] Panorama conversion error for %s: %s", stem, exc)
         return None
 

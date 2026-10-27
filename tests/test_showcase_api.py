@@ -496,3 +496,152 @@ def test_mdns_responder_packet_encoding_and_reply():
     ptr_reply = parse_and_reply_mdns(ptr_pkt, hostname="dmdmediashowcase", ipv4="192.168.1.77", port=8890)
     assert ptr_reply is not None
     assert socket.inet_aton("192.168.1.77") in ptr_reply
+
+
+def test_tate_marquee_and_screenshot_panoramas_scroll_left_to_right_without_distortion(
+    tmp_path: Path, monkeypatch
+):
+    """
+    Verify Showcase panoramas on TATE (`64x128` / `32x128`) and square (`64x64`) matrices:
+    - Pan smoothly from Left -> Right (`Red -> Green -> Blue`) for wide marquees and screenshots
+      with strict zero aspect-ratio distortion (both via native `scroll_direction` AND via the
+      rotation fallback when running against an older `dmd_gif_converter` wheel).
+    - Preserve Top -> Bottom scrolling on portrait jackets (`src_w < src_h`) and `128x32` matrices.
+    """
+    from dmd_gif_converter import DmdMediaProcessor, rgb565_le_to_rgb888
+    from app.infrastructure.rendering.panorama_and_static import (
+        convert_image_to_panorama_gif_and_stream,
+        resolve_showcase_panorama_axis,
+    )
+
+    # TATE (H > W) ALWAYS scrolls left-to-right; YOKO (W > H) ALWAYS scrolls top-to-bottom;
+    # Square (W == H) scrolls left-to-right when src_w > src_h else top-to-bottom.
+    assert resolve_showcase_panorama_axis(800, 220, 64, 128) == "horizontal"
+    assert resolve_showcase_panorama_axis(1920, 1080, 64, 128) == "horizontal"
+    assert resolve_showcase_panorama_axis(320, 224, 32, 128) == "horizontal"
+    assert resolve_showcase_panorama_axis(400, 600, 64, 128) == "horizontal"
+    assert resolve_showcase_panorama_axis(800, 220, 128, 64) == "vertical"
+    assert resolve_showcase_panorama_axis(800, 220, 128, 32) == "vertical"
+    assert resolve_showcase_panorama_axis(1920, 1080, 128, 32) == "vertical"
+    assert resolve_showcase_panorama_axis(800, 220, 64, 64) == "horizontal"
+    assert resolve_showcase_panorama_axis(400, 600, 64, 64) == "vertical"
+
+    # Build a synthetic 360x120 (3:1) RGBA marquee with transparent margin + Left=Red, Mid=Green, Right=Blue
+    marquee_rgba = np.zeros((120, 360, 4), dtype=np.uint8)
+    marquee_rgba[:, :, 3] = 255
+    marquee_rgba[:10, :, :] = (255, 255, 255, 0)  # Transparent white alpha band -> must composite to black
+    marquee_rgba[10:, :120, :3] = (240, 0, 0)
+    marquee_rgba[10:, 120:240, :3] = (0, 240, 0)
+    marquee_rgba[10:, 240:, :3] = (0, 0, 240)
+    marquee_rgba[40:80, 160:200, :3] = (255, 255, 255)  # 40x40 centered 1:1 square
+    buf = io.BytesIO()
+    Image.fromarray(marquee_rgba, mode="RGBA").save(buf, format="PNG")
+    marquee_bytes = buf.getvalue()
+
+    def _assert_dmds_ltr(stream_path: Path, exp_w: int, exp_h: int) -> None:
+        raw = stream_path.read_bytes()
+        hdr = read_rgb565_stream_header(raw[:16])
+        assert hdr["width"] == exp_w
+        assert hdr["height"] == exp_h
+        assert hdr["total_frames"] >= 20
+        fbytes = exp_w * exp_h * 2
+        first_rgb = rgb565_le_to_rgb888(raw[16 : 16 + fbytes], exp_w, exp_h)
+        last_off = 16 + (hdr["total_frames"] - 1) * fbytes
+        last_rgb = rgb565_le_to_rgb888(raw[last_off : last_off + fbytes], exp_w, exp_h)
+        # Transparent top band must be pure dark/black, NOT white
+        assert first_rgb[:6, :, :].mean() < 25.0
+        # Starts on Left (Red) and finishes on Right (Blue)
+        assert first_rgb[20:, :, 0].mean() > first_rgb[20:, :, 2].mean() + 80.0
+        assert last_rgb[20:, :, 2].mean() > last_rgb[20:, :, 0].mean() + 80.0
+
+    # 1. Native `dmd_gif_converter` horizontal scroll path on TATE 64x128
+    out_native = tmp_path / "native_tate"
+    res_native = convert_image_to_panorama_gif_and_stream(
+        raw_image_bytes=marquee_bytes,
+        out_dir=out_native,
+        stem="pan_marquee",
+        width=64,
+        height=128,
+        fps=16,
+        duration_s=2.5,
+        color_boost=False,
+    )
+    assert res_native is not None
+    _assert_dmds_ltr(out_native / res_native[1], 64, 128)
+
+    # 2. Legacy `dmd_gif_converter` wheel fallback path (simulating absence of `scroll_direction`)
+    orig_method = DmdMediaProcessor.process_image_panorama
+
+    def _legacy_sig_wrapper(
+        self,
+        input_image,
+        output_dir,
+        width: int = 128,
+        height: int = 32,
+        duration_s: float = 4.0,
+        fps: int = 20,
+        smart_color_boost: bool = True,
+        export_gif: bool = True,
+        export_rgb565_stream: bool = True,
+        stem: str = "pan",
+    ):
+        return orig_method(
+            self,
+            input_image=input_image,
+            output_dir=output_dir,
+            width=width,
+            height=height,
+            duration_s=duration_s,
+            fps=fps,
+            smart_color_boost=smart_color_boost,
+            scroll_direction="vertical",
+            export_gif=export_gif,
+            export_rgb565_stream=export_rgb565_stream,
+            stem=stem,
+        )
+
+    monkeypatch.setattr(DmdMediaProcessor, "process_image_panorama", _legacy_sig_wrapper)
+    out_fallback = tmp_path / "fallback_tate"
+    res_fb = convert_image_to_panorama_gif_and_stream(
+        raw_image_bytes=marquee_bytes,
+        out_dir=out_fallback,
+        stem="pan_marquee",
+        width=64,
+        height=128,
+        fps=16,
+        duration_s=2.5,
+        color_boost=False,
+    )
+    assert res_fb is not None
+    _assert_dmds_ltr(out_fallback / res_fb[1], 64, 128)
+
+    # 3. Portrait jacket (200x360) on TATE 64x128 via legacy fallback -> ALSO scrolls Left -> Right,
+    #    zooming uniformly to eliminate black bars and centering vertically!
+    jacket_arr = np.zeros((360, 200, 3), dtype=np.uint8)
+    jacket_arr[:, :90, 0] = 240
+    jacket_arr[:, 110:, 2] = 240
+    jacket_arr[150:210, :, 1] = 220
+    j_buf = io.BytesIO()
+    Image.fromarray(jacket_arr, mode="RGB").save(j_buf, format="PNG")
+    out_j_fb = tmp_path / "fallback_tate_jacket"
+    res_j_fb = convert_image_to_panorama_gif_and_stream(
+        raw_image_bytes=j_buf.getvalue(),
+        out_dir=out_j_fb,
+        stem="pan_jacket",
+        width=64,
+        height=128,
+        fps=16,
+        duration_s=2.5,
+        color_boost=False,
+    )
+    assert res_j_fb is not None
+    j_raw = (out_j_fb / res_j_fb[1]).read_bytes()
+    j_hdr = read_rgb565_stream_header(j_raw[:16])
+    j_fbytes = 64 * 128 * 2
+    j_first = rgb565_le_to_rgb888(j_raw[16 : 16 + j_fbytes], 64, 128)
+    j_last_off = 16 + (j_hdr["total_frames"] - 1) * j_fbytes
+    j_last = rgb565_le_to_rgb888(j_raw[j_last_off : j_last_off + j_fbytes], 64, 128)
+    assert j_first[:, :, 0].mean() > j_first[:, :, 2].mean() + 40.0
+    assert j_last[:, :, 2].mean() > j_last[:, :, 0].mean() + 40.0
+    assert j_first[:4, :, :].max(axis=2).mean() > 90.0
+    assert j_first[-4:, :, :].max(axis=2).mean() > 90.0
