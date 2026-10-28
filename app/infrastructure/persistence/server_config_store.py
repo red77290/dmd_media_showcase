@@ -17,6 +17,7 @@ import copy
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,30 @@ from app.security.vault import decrypt_prod_vault_secret, has_prod_vault_secret
 logger = logging.getLogger("dmd_showcase.persistence.config")
 
 MASKED_SECRET_PLACEHOLDERS = ("••••••••", "********")
+
+_TWITCH_CREDENTIAL_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def sanitize_twitch_credential(val: Any) -> str:
+    """
+    Validate a Twitch/IGDB Client ID or Client Secret token.
+    Rejects browser password-manager autofill pollution such as short usernames
+    (e.g. 'red1ll') or site URLs (e.g. 'http://dmdmediashowcase:8890/') so
+    invalid UI autofill never shadows valid `.env` / Vault credentials or falsely
+    reports IGDB as configured.
+    """
+    s = str(val or "").strip()
+    if not s or not _TWITCH_CREDENTIAL_RE.fullmatch(s):
+        return ""
+    return s
+
+
+def sanitize_api_token_no_url(val: Any) -> str:
+    """Reject browser-autofilled URLs or whitespace-containing strings in API key fields."""
+    s = str(val or "").strip()
+    if not s or "://" in s or " " in s:
+        return ""
+    return s
 
 VALID_AGGREGATION_MODES = ("enrich_missing", "fallback_only")
 
@@ -233,11 +258,14 @@ class ServerConfigStore:
                 if isinstance(disk_data, dict):
                     for k in USER_PERSISTED_KEYS:
                         if k in disk_data and disk_data[k] is not None:
-                            loaded[k] = (
-                                normalize_source_policies(disk_data[k])
-                                if k == "source_policies"
-                                else disk_data[k]
-                            )
+                            if k == "source_policies":
+                                loaded[k] = normalize_source_policies(disk_data[k])
+                            elif k in ("igdb_client_id", "igdb_client_secret"):
+                                loaded[k] = sanitize_twitch_credential(disk_data[k])
+                            elif k in ("tmdb_api_key", "tvdb_api_key"):
+                                loaded[k] = sanitize_api_token_no_url(disk_data[k])
+                            else:
+                                loaded[k] = disk_data[k]
             except Exception as exc:
                 logger.warning("[CONFIG] Could not read %s: %s", path, exc)
         self._user_overrides = loaded
@@ -284,14 +312,14 @@ class ServerConfigStore:
         """
         with self._lock:
             self._ensure_loaded()
-            user_tmdb = str(self._user_overrides.get("tmdb_api_key") or "").strip()
-            user_tvdb = str(self._user_overrides.get("tvdb_api_key") or "").strip()
+            user_tmdb = sanitize_api_token_no_url(self._user_overrides.get("tmdb_api_key"))
+            user_tvdb = sanitize_api_token_no_url(self._user_overrides.get("tvdb_api_key"))
             user_ss_user = str(self._user_overrides.get("screenscraper_user") or "").strip()
             user_ss_pass = str(self._user_overrides.get("screenscraper_pass") or "").strip()
             user_ss_dev_id = str(self._user_overrides.get("screenscraper_dev_id") or "").strip()
             user_ss_dev_pass = str(self._user_overrides.get("screenscraper_dev_pass") or "").strip()
-            user_igdb_id = str(self._user_overrides.get("igdb_client_id") or "").strip()
-            user_igdb_secret = str(self._user_overrides.get("igdb_client_secret") or "").strip()
+            user_igdb_id = sanitize_twitch_credential(self._user_overrides.get("igdb_client_id"))
+            user_igdb_secret = sanitize_twitch_credential(self._user_overrides.get("igdb_client_secret"))
             user_showcase_key = str(
                 self._user_overrides.get("showcase_api_key")
                 if "showcase_api_key" in self._user_overrides
@@ -312,8 +340,8 @@ class ServerConfigStore:
                 "screenscraper_pass": user_ss_pass or self._resolve_env_or_prod_vault("screenscraper_pass"),
                 "screenscraper_dev_id": user_ss_dev_id or self._resolve_env_or_prod_vault("screenscraper_dev_id"),
                 "screenscraper_dev_pass": user_ss_dev_pass or self._resolve_env_or_prod_vault("screenscraper_dev_pass"),
-                "igdb_client_id": user_igdb_id or self._resolve_env_or_prod_vault("igdb_client_id"),
-                "igdb_client_secret": user_igdb_secret or self._resolve_env_or_prod_vault("igdb_client_secret"),
+                "igdb_client_id": user_igdb_id or sanitize_twitch_credential(self._resolve_env_or_prod_vault("igdb_client_id")),
+                "igdb_client_secret": user_igdb_secret or sanitize_twitch_credential(self._resolve_env_or_prod_vault("igdb_client_secret")),
                 "source_policies": normalize_source_policies(self._user_overrides.get("source_policies")),
                 "mqtt_mode": str(
                     self._user_overrides.get("mqtt_mode") or os.environ.get("MQTT_MODE", "embedded")
@@ -388,16 +416,16 @@ class ServerConfigStore:
                     effective.get("igdb_client_id") and effective.get("igdb_client_secret")
                 ),
                 "igdb_builtin_active": bool(
-                    self._resolve_env_or_prod_vault("igdb_client_id")
-                    and self._resolve_env_or_prod_vault("igdb_client_secret")
+                    sanitize_twitch_credential(self._resolve_env_or_prod_vault("igdb_client_id"))
+                    and sanitize_twitch_credential(self._resolve_env_or_prod_vault("igdb_client_secret"))
                 ),
                 "igdb_from_prod_vault": bool(
                     has_prod_vault_secret("igdb_client_id")
                     and has_prod_vault_secret("igdb_client_secret")
                 ),
                 "igdb_user_override": bool(
-                    str(self._user_overrides.get("igdb_client_id") or "").strip()
-                    and str(self._user_overrides.get("igdb_client_secret") or "").strip()
+                    sanitize_twitch_credential(self._user_overrides.get("igdb_client_id"))
+                    and sanitize_twitch_credential(self._user_overrides.get("igdb_client_secret"))
                 ),
                 "tmdb_builtin_active": bool(self._resolve_env_or_prod_vault("tmdb_api_key")),
                 "tmdb_from_prod_vault": has_prod_vault_secret("tmdb_api_key"),
@@ -421,16 +449,16 @@ class ServerConfigStore:
         with self._lock:
             self._ensure_loaded()
             effective = self.get_all()
-            user_tmdb = str(self._user_overrides.get("tmdb_api_key") or "").strip()
-            user_tvdb = str(self._user_overrides.get("tvdb_api_key") or "").strip()
+            user_tmdb = sanitize_api_token_no_url(self._user_overrides.get("tmdb_api_key"))
+            user_tvdb = sanitize_api_token_no_url(self._user_overrides.get("tvdb_api_key"))
             user_ss_pass = str(
                 self._user_overrides.get("screenscraper_pass")
                 or self._resolve_env_or_prod_vault("screenscraper_pass")
             ).strip()
             user_ss_dev_id = str(self._user_overrides.get("screenscraper_dev_id") or "").strip()
             user_ss_dev_pass = str(self._user_overrides.get("screenscraper_dev_pass") or "").strip()
-            user_igdb_id = str(self._user_overrides.get("igdb_client_id") or "").strip()
-            user_igdb_secret = str(self._user_overrides.get("igdb_client_secret") or "").strip()
+            user_igdb_id = sanitize_twitch_credential(self._user_overrides.get("igdb_client_id"))
+            user_igdb_secret = sanitize_twitch_credential(self._user_overrides.get("igdb_client_secret"))
             user_showcase_key = str(effective.get("showcase_api_key") or "").strip()
 
             return {
@@ -500,6 +528,12 @@ class ServerConfigStore:
                     self._user_overrides["source_policies"] = normalize_source_policies(
                         val, base_policies=current_policies
                     )
+                    continue
+                if key in ("igdb_client_id", "igdb_client_secret"):
+                    self._user_overrides[key] = sanitize_twitch_credential(val)
+                    continue
+                if key in ("tmdb_api_key", "tvdb_api_key"):
+                    self._user_overrides[key] = sanitize_api_token_no_url(val)
                     continue
                 self._user_overrides[key] = val
 

@@ -861,3 +861,64 @@ async def test_expanded_64_system_catalog_ondemand_filter_forwarding_and_live_so
         assert cps2_entry["supported_decades"] == cps2_entry["decades"]
 
     await batch_manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_igdb_autofill_sanitization_and_webui_autocomplete_guards(
+    tmp_path: Path, monkeypatch
+):
+    """
+    Browser password-manager autofill pollution (such as short username 'red1ll' or site URL
+    'http://dmdmediashowcase:8890/') must be rejected as empty so it never falsely marks IGDB
+    as configured or shadows valid `.env` credentials, and updating IGDB keys resets cooldown.
+    """
+    data_dir = tmp_path / "autofill_guard"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    cfg_file = data_dir / "server_config.json"
+    cfg_file.write_text(
+        '{"igdb_client_id": "red1ll", "igdb_client_secret": "http://dmdmediashowcase:8890/"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("IGDB_CLIENT_ID", "w8chw0voao0qjj26vpsmukitqj02y6")
+    monkeypatch.setenv("IGDB_CLIENT_SECRET", "")
+    monkeypatch.setattr(settings, "igdb_client_id", "w8chw0voao0qjj26vpsmukitqj02y6")
+    monkeypatch.setattr(settings, "igdb_client_secret", "")
+
+    local_store = ServerConfigStore(file_path=cfg_file)
+    monkeypatch.setattr(
+        "app.infrastructure.scrapers.games.igdb_adapter.server_config_store",
+        local_store,
+    )
+    monkeypatch.setattr("app.main.server_config_store", local_store)
+
+    eff = local_store.get_all()
+    assert eff["igdb_client_id"] == "w8chw0voao0qjj26vpsmukitqj02y6"
+    assert eff["igdb_client_secret"] == ""
+
+    adapter = IgdbGamesAdapter()
+    assert adapter.is_configured() is False
+
+    # Simulate cooldown then update valid credentials via POST /api/v1/admin/config -> resets cooldown
+    IgdbGamesAdapter._record_cooldown("test auth failure")
+    assert adapter.is_in_cooldown() is True
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r_save = await client.post(
+            "/api/v1/admin/config",
+            json={
+                "igdb_client_id": "w8chw0voao0qjj26vpsmukitqj02y6",
+                "igdb_client_secret": "valid_twitch_secret_token_30ch",
+            },
+        )
+        assert r_save.status_code == 200
+        assert adapter.is_in_cooldown() is False
+        assert adapter.is_configured() is True
+
+        r_html = await client.get("/")
+        assert r_html.status_code == 200
+        html = r_html.text
+        assert 'id="igdb_client_id" autocomplete="new-password"' in html
+        assert 'id="igdb_client_secret" autocomplete="new-password"' in html
+

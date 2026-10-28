@@ -31,7 +31,10 @@ from app.domain.taxonomy import (
     resolve_canonical_genre,
     resolve_canonical_system,
 )
-from app.infrastructure.persistence.server_config_store import server_config_store
+from app.infrastructure.persistence.server_config_store import (
+    sanitize_twitch_credential,
+    server_config_store,
+)
 from app.infrastructure.scrapers.games.arcade_aliases import (
     expand_retro_query_titles,
     resolve_arcade_query_roms,
@@ -135,8 +138,8 @@ class IgdbGamesAdapter(IScraperSource):
 
     def _credentials(self) -> Tuple[str, str]:
         cfg = server_config_store.get_all()
-        cid = str(cfg.get("igdb_client_id") or "").strip()
-        csecret = str(cfg.get("igdb_client_secret") or "").strip()
+        cid = sanitize_twitch_credential(cfg.get("igdb_client_id"))
+        csecret = sanitize_twitch_credential(cfg.get("igdb_client_secret"))
         return cid, csecret
 
     def is_configured(self) -> bool:
