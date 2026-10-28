@@ -9,8 +9,9 @@ Features:
 1. Reads your local `.env` file (which is ignored by git via `.gitignore`).
 2. Automatically generates and persists a 256-bit `VAULT_MASTER_SECRET` in `.env` if missing.
 3. Pushes/updates all non-empty developer secrets (`VAULT_MASTER_SECRET`, `TMDB_API_KEY`,
-   `TVDB_API_KEY`, `SCREENSCRAPER_DEV_ID`, `SCREENSCRAPER_DEV_PASS`) to your repository's
-   CI/CD secrets (GitHub Actions Secrets and/or GitLab CI Masked Variables).
+   `TVDB_API_KEY`, `SCREENSCRAPER_DEV_ID`, `SCREENSCRAPER_DEV_PASS`, `IGDB_CLIENT_ID`,
+   `IGDB_CLIENT_SECRET`) to your repository's CI/CD secrets (GitHub Actions Secrets and/or
+   GitLab CI Masked Variables).
 4. Skips empty keys gracefully (e.g., `SCREENSCRAPER_DEV_ID` / `SCREENSCRAPER_DEV_PASS` until
    you receive them from ScreenScraper; simply re-run `python3 scripts/sync_ci_secrets.py`
    later to add or update them).
@@ -36,6 +37,8 @@ MANAGED_CI_SECRETS = (
     "TVDB_API_KEY",
     "SCREENSCRAPER_DEV_ID",
     "SCREENSCRAPER_DEV_PASS",
+    "IGDB_CLIENT_ID",
+    "IGDB_CLIENT_SECRET",
 )
 
 
