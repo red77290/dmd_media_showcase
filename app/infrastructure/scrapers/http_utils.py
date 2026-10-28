@@ -128,12 +128,127 @@ MEDIA_TOPIC_KEYWORDS = {
     "en": ("film", "movie", "series", "anime", "manga", "animation", "television", "tv show", "video game"),
 }
 
+_GAME_DOMAIN_HINTS = {
+    "game",
+    "games",
+    "video game",
+    "jeu vidéo",
+    "jeu video",
+    "videojuego",
+    "videospiel",
+    "videogioco",
+}
 
-def is_relevant_media_extract(data: Dict[str, Any], lang: str) -> bool:
-    """Validate that a Wikipedia summary belongs to the media/entertainment domain."""
+_GAME_EXTRACT_MARKERS = (
+    "jeu vidéo",
+    "jeux vidéo",
+    "jeu d'",
+    "jeu de ",
+    "série de jeux",
+    "video game",
+    "arcade",
+    "borne d'arcade",
+    "videojuego",
+    "videospiel",
+    "videogioco",
+    "gameplay",
+    "super nintendo",
+    "mega drive",
+    "game boy",
+    "famicom",
+    "playstation",
+)
+
+_NON_GAME_LEAD_MARKERS = (
+    "est un film",
+    "is a film",
+    "film américain",
+    "film d'animation",
+    "film réalisé",
+    "directed by",
+    "long métrage",
+    "est une série télévisée",
+    "est une série d'animation",
+    "television series",
+    "animated series",
+    "série de jouets",
+    "toy line",
+    "bande dessinée",
+    "roman de ",
+)
+
+_WIKI_TITLE_STOPWORDS = {
+    "the", "of", "and", "in", "to", "for", "on", "at", "by", "le", "la", "les",
+    "de", "du", "des", "un", "une", "et", "el", "los", "las", "del", "jeu", "video",
+    "vidéo", "game", "games", "film", "serie", "série", "anime",
+}
+
+
+def _wiki_title_tokens(raw: str) -> List[str]:
+    no_parens = re.sub(r"\s*\([^)]*\)", " ", raw or "")
+    norm = (
+        no_parens.lower()
+        .replace("é", "e")
+        .replace("è", "e")
+        .replace("ê", "e")
+        .replace("à", "a")
+        .replace("ô", "o")
+        .replace("û", "u")
+        .replace("ï", "i")
+    )
+    return [
+        t
+        for t in re.findall(r"[a-z0-9]+", norm)
+        if (len(t) >= 2 or t.isdigit()) and t not in _WIKI_TITLE_STOPWORDS
+    ]
+
+
+def is_relevant_media_extract(
+    data: Dict[str, Any],
+    lang: str,
+    is_game_domain: bool = False,
+    query_title: str = "",
+    trusted_titles: Optional[List[str]] = None,
+) -> bool:
+    """Validate that a Wikipedia summary matches the queried entity and media domain."""
     desc = str(data.get("description") or "").lower()
-    extract = str(data.get("extract") or "").lower()
-    combined = f"{desc} {extract}"
+    extract = str(data.get("extract") or "").strip()
+    extract_low = extract.lower()
+    combined = f"{desc} {extract_low}"
+
+    page_title = str(data.get("title") or "").strip()
+    if query_title and page_title:
+        trusted_norm = {
+            re.sub(r"\s*\([^)]*\)", "", t).strip().lower()
+            for t in (trusted_titles or [])
+            if t and t.strip()
+        }
+        page_clean_low = re.sub(r"\s*\([^)]*\)", "", page_title).strip().lower()
+        if page_clean_low not in trusted_norm:
+            p_toks = set(_wiki_title_tokens(page_title))
+            q_toks = set(_wiki_title_tokens(query_title))
+            for tt in trusted_titles or []:
+                q_toks.update(_wiki_title_tokens(tt))
+            if q_toks and (not p_toks or not (p_toks & q_toks)):
+                return False
+            # Guard franchise subtitle collisions (e.g. "Zelda: Ocarina of Time" vs "Zelda: Majora's Mask")
+            if ":" in query_title and ":" in page_title:
+                q_sub = set(_wiki_title_tokens(query_title.split(":", 1)[1]))
+                p_sub = set(_wiki_title_tokens(page_title.split(":", 1)[1]))
+                if q_sub and p_sub and not (q_sub & p_sub):
+                    return False
+
+    if is_game_domain:
+        lead_sentence = extract_low.split(".")[0] if extract_low else ""
+        lead_combined = f"{desc} {lead_sentence}"
+        has_lead_game_marker = any(
+            m in lead_combined
+            for m in ("jeu vidéo", "jeux vidéo", "jeu d'", "jeu de ", "video game", "arcade", "videojuego", "videospiel", "videogioco")
+        )
+        if not has_lead_game_marker and any(bad in lead_combined for bad in _NON_GAME_LEAD_MARKERS):
+            return False
+        return any(gm in combined for gm in _GAME_EXTRACT_MARKERS)
+
     keywords = MEDIA_TOPIC_KEYWORDS.get(lang, MEDIA_TOPIC_KEYWORDS["en"])
     return any(kw in combined for kw in keywords)
 
@@ -151,17 +266,33 @@ async def fetch_wikipedia_localized_synopsis(
        to translate the canonical English title into the exact official localized title.
     2. Queries `{lang}.wikipedia.org/api/rest_v1/page/summary/{localized_title}`.
     3. Falls back to localized MediaWiki search on `{lang}.wikipedia.org`.
-    4. Validates that the topic belongs to entertainment/media (prevents homonym misfires).
+    4. Validates entity title overlap and domain markers (prevents film/toy/cartoon misfires).
     """
     short_lang = (lang or "fr").split("-")[0].lower()
     clean_t = re.sub(r"[^\w\s\-\:\'\,\.]", " ", title).strip()
     if not clean_t:
         return None, None
 
+    hint_low = (domain_hint or "").strip().lower()
+    is_game_domain = hint_low in _GAME_DOMAIN_HINTS
+    en_disambig = (
+        "video game"
+        if is_game_domain
+        else {
+            "film": "film",
+            "movie": "film",
+            "movies": "film",
+            "series": "TV series",
+            "tv": "TV series",
+            "série télévisée": "TV series",
+            "anime": "anime",
+        }.get(hint_low, domain_hint)
+    )
+
     # Step 1: Interwiki resolution via en.wikipedia langlinks if target is not English
     localized_titles: List[str] = []
     if short_lang != "en":
-        search_titles = [f"{clean_t} ({domain_hint})", clean_t] if domain_hint else [clean_t]
+        search_titles = [f"{clean_t} ({en_disambig})", clean_t] if en_disambig else [clean_t]
         for st in search_titles:
             try:
                 ll_url = "https://en.wikipedia.org/w/api.php"
@@ -188,18 +319,53 @@ async def fetch_wikipedia_localized_synopsis(
 
     # Suffixes localized to the target language
     suffix_map = {
-        "fr": {"film": "film", "anime": "anime", "series": "série télévisée", "tv": "série télévisée"},
-        "es": {"film": "película", "anime": "anime", "series": "serie de televisión", "tv": "serie de televisión"},
-        "de": {"film": "Film", "anime": "Anime", "series": "Fernsehserie", "tv": "Fernsehserie"},
-        "it": {"film": "film", "anime": "anime", "series": "serie televisiva", "tv": "serie televisiva"},
-        "en": {"film": "film", "anime": "anime", "series": "TV series", "tv": "TV series"},
+        "fr": {
+            "film": "film",
+            "anime": "anime",
+            "series": "série télévisée",
+            "tv": "série télévisée",
+            "game": "jeu vidéo",
+        },
+        "es": {
+            "film": "película",
+            "anime": "anime",
+            "series": "serie de televisión",
+            "tv": "serie de televisión",
+            "game": "videojuego",
+        },
+        "de": {
+            "film": "Film",
+            "anime": "Anime",
+            "series": "Fernsehserie",
+            "tv": "Fernsehserie",
+            "game": "Videospiel",
+        },
+        "it": {
+            "film": "film",
+            "anime": "anime",
+            "series": "serie televisiva",
+            "tv": "serie televisiva",
+            "game": "videogioco",
+        },
+        "en": {
+            "film": "film",
+            "anime": "anime",
+            "series": "TV series",
+            "tv": "TV series",
+            "game": "video game",
+        },
     }
-    loc_suffix = suffix_map.get(short_lang, suffix_map["en"]).get(domain_hint.lower(), domain_hint)
+    lookup_domain_key = "game" if is_game_domain else hint_low
+    loc_suffix = suffix_map.get(short_lang, suffix_map["en"]).get(lookup_domain_key, domain_hint)
 
-    candidates: List[str] = list(localized_titles)
+    candidates: List[str] = []
     if loc_suffix:
         candidates.append(f"{clean_t} ({loc_suffix})")
-    candidates.append(clean_t)
+    for lt in localized_titles:
+        if lt not in candidates:
+            candidates.append(lt)
+    if clean_t not in candidates:
+        candidates.append(clean_t)
 
     # Step 2: Query summary API on `{short_lang}.wikipedia.org`
     for cand in candidates:
@@ -212,7 +378,13 @@ async def fetch_wikipedia_localized_synopsis(
             data = resp.json()
             if data.get("type") == "disambiguation":
                 continue
-            if not is_relevant_media_extract(data, short_lang):
+            if not is_relevant_media_extract(
+                data,
+                short_lang,
+                is_game_domain=is_game_domain,
+                query_title=clean_t,
+                trusted_titles=localized_titles,
+            ):
                 continue
             extract = clean_synopsis_text(data.get("extract"), max_chars=320)
             thumb = (
@@ -247,7 +419,15 @@ async def fetch_wikipedia_localized_synopsis(
                 resp = await client.get(url, timeout=2.5)
                 if resp.status_code == 200:
                     data = resp.json()
-                    if is_relevant_media_extract(data, short_lang):
+                    if data.get("type") == "disambiguation":
+                        continue
+                    if is_relevant_media_extract(
+                        data,
+                        short_lang,
+                        is_game_domain=is_game_domain,
+                        query_title=clean_t,
+                        trusted_titles=localized_titles,
+                    ):
                         extract = clean_synopsis_text(data.get("extract"), max_chars=320)
                         thumb = (
                             (data.get("originalimage") or {}).get("source")

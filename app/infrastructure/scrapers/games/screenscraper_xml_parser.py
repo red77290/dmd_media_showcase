@@ -16,6 +16,7 @@ from app.domain.taxonomy import (
     CANONICAL_DECADES,
     GAME_GENRE_CATALOG,
     is_disallowed_non_fighting_title,
+    is_unofficial_game_release,
     localize_label,
     normalize_category_slug,
     resolve_canonical_genre,
@@ -261,6 +262,7 @@ _SS_NOT_FOUND_MARKERS: Tuple[str, ...] = (
     "aucun jeu",
     "aucun résultat",
     "aucun resultat",
+    "informations obligatoires manquantes",
 )
 
 
@@ -616,6 +618,8 @@ def parse_screenscraper_game_node(
         or synopsis_by_lang.get("fr")
         or first_synopsis
     )
+    if is_unofficial_game_release(title, synopsis=synopsis or "", publisher=publisher):
+        return None
 
     note_raw = extract_node_text(jeu.get("note"))
     try:
