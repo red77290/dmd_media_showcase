@@ -17,6 +17,8 @@ from app.infrastructure.http.dependencies import (
     get_mqtt_gateway,
     get_orchestrator,
 )
+from app.infrastructure.scrapers.games.igdb_adapter import IgdbGamesAdapter
+from app.infrastructure.scrapers.games.screenscraper_adapter import ScreenScraperAdapter
 from app.security.log_redactor import install_secret_log_redaction
 
 
@@ -44,6 +46,16 @@ async def apply_runtime_config_live(
     mdns = get_mdns_responder()
 
     applied_log_level = apply_live_log_level(settings.log_level)
+
+    if touched_keys & {"igdb_client_id", "igdb_client_secret"}:
+        IgdbGamesAdapter.reset_circuit_breaker()
+    if touched_keys & {
+        "screenscraper_user",
+        "screenscraper_pass",
+        "screenscraper_dev_id",
+        "screenscraper_dev_pass",
+    }:
+        ScreenScraperAdapter.reset_circuit_breaker()
 
     if "cache_dir" in touched_keys:
         settings.cache_dir.mkdir(parents=True, exist_ok=True)
