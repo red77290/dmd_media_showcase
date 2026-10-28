@@ -23,10 +23,13 @@ from app.domain.entities import DomainType, FilterCriteria, MediaCandidate
 from app.domain.ports.scraper_source import IScraperSource
 from app.domain.taxonomy import (
     CANONICAL_DECADES,
+    CANONICAL_GAME_GENRE_PRIORITY,
     GAME_GENRE_CATALOG,
     RETRO_SYSTEM_CATALOG,
     ReferentialConsolidator,
     build_game_fingerprint,
+    is_disallowed_non_fighting_title,
+    is_unofficial_game_release,
     localize_label,
     resolve_canonical_genre,
     resolve_canonical_system,
@@ -42,10 +45,14 @@ from app.infrastructure.scrapers.games.arcade_aliases import (
 from app.infrastructure.scrapers.games.arcadeitalia_referential import (
     ArcadeItaliaReferentialStrategy,
 )
+from app.infrastructure.scrapers.games.screenscraper_tokens import (
+    SYSTEM_SPECIFIC_STEMS,
+)
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
     create_async_http_client,
     fetch_wikipedia_localized_synopsis,
+    format_exception_detail,
 )
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.igdb")
@@ -59,21 +66,32 @@ _IGDB_TOKEN_CACHE: Dict[str, Any] = {
     "expires_at": 0.0,
 }
 
-# Build reverse lookup: IGDB platform ID -> canonical system keys (non-generic hardware first)
-_IGDB_ID_TO_SYSTEMS: Dict[int, List[str]] = {}
+# Strict arcade sub-boards whose IGDB platform ID is only generic `52` (Arcade)
+_GENERIC_ARCADE_SUBBOARDS = frozenset(
+    {"cps1", "cps2", "cps3", "naomi", "atomiswave", "model2", "model3", "zn", "pgm"}
+)
+_GENERIC_ARCADE_CATCHALLS = ("arcade", "mame", "fbneo")
+
+# Build reverse lookup: IGDB platform ID -> canonical system keys (generic `52` maps strictly to `"arcade"`)
+_IGDB_ID_TO_SYSTEMS: Dict[int, List[str]] = {52: ["arcade"]}
 for _sys_k, _smeta in RETRO_SYSTEM_CATALOG.items():
+    if _sys_k in _GENERIC_ARCADE_SUBBOARDS or _sys_k in _GENERIC_ARCADE_CATCHALLS:
+        continue
     _ids = list(_smeta.get("igdb_ids") or ([] if not _smeta.get("igdb_id") else [_smeta["igdb_id"]]))
     for _pid in _ids:
+        if int(_pid) == 52:
+            continue
         _bucket = _IGDB_ID_TO_SYSTEMS.setdefault(int(_pid), [])
-        if _sys_k == "arcade":
+        if _sys_k not in _bucket:
             _bucket.append(_sys_k)
-        else:
-            _bucket.insert(0, _sys_k)
 
-_IGDB_GENRE_ID_TO_KEY: Dict[int, str] = {}
-for _g_key, _gmeta in GAME_GENRE_CATALOG.items():
+_IGDB_GENRE_ID_TO_KEYS: Dict[int, List[str]] = {}
+for _g_key in CANONICAL_GAME_GENRE_PRIORITY:
+    _gmeta = GAME_GENRE_CATALOG.get(_g_key) or {}
     for _gid in _gmeta.get("igdb_genre_ids") or []:
-        _IGDB_GENRE_ID_TO_KEY.setdefault(int(_gid), _g_key)
+        _g_bucket = _IGDB_GENRE_ID_TO_KEYS.setdefault(int(_gid), [])
+        if _g_key not in _g_bucket:
+            _g_bucket.append(_g_key)
 
 _APICALYPSE_FIELDS = (
     "fields name, summary, storyline, first_release_date, total_rating, rating, "
@@ -170,11 +188,7 @@ class IgdbGamesAdapter(IScraperSource):
         try:
             resp = await client.post(
                 "https://id.twitch.tv/oauth2/token",
-                params={
-                    "client_id": cid,
-                    "client_secret": csecret,
-                    "grant_type": "client_credentials",
-                },
+                params={"client_id": cid, "client_secret": csecret, "grant_type": "client_credentials"},
                 timeout=5.0,
             )
             if resp.status_code != 200:
@@ -186,10 +200,14 @@ class IgdbGamesAdapter(IScraperSource):
             if not token:
                 self._record_cooldown("Twitch OAuth2 missing access_token")
                 return None
-            _IGDB_TOKEN_CACHE["client_id"] = cid
-            _IGDB_TOKEN_CACHE["client_secret"] = csecret
-            _IGDB_TOKEN_CACHE["access_token"] = token
-            _IGDB_TOKEN_CACHE["expires_at"] = now + max(60.0, float(expires_in) - 60.0)
+            _IGDB_TOKEN_CACHE.update(
+                {
+                    "client_id": cid,
+                    "client_secret": csecret,
+                    "access_token": token,
+                    "expires_at": now + max(60.0, float(expires_in) - 60.0),
+                }
+            )
             return token
         except Exception as exc:
             self._record_cooldown(f"Twitch OAuth2 error: {type(exc).__name__}")
@@ -236,19 +254,33 @@ class IgdbGamesAdapter(IScraperSource):
         req_genres: List[str],
         req_decades: List[str],
         require_cover: bool = False,
+        for_discovery: bool = False,
     ) -> List[str]:
         clauses: List[str] = []
         if require_cover:
             clauses.append("cover != null")
+        if for_discovery:
+            clauses.append("first_release_date != null")
+            clauses.append("version_parent = null")
         if req_systems:
+            has_generic_arcade = any(s in _GENERIC_ARCADE_CATCHALLS for s in req_systems)
+            has_dedicated_plat = any(
+                s not in _GENERIC_ARCADE_SUBBOARDS and s not in _GENERIC_ARCADE_CATCHALLS
+                for s in req_systems
+            )
             plat_ids: List[int] = []
             for sys_k in req_systems:
                 smeta = RETRO_SYSTEM_CATALOG.get(sys_k) or {}
                 for pid in smeta.get("igdb_ids") or (
                     [smeta["igdb_id"]] if smeta.get("igdb_id") else []
                 ):
-                    if int(pid) not in plat_ids:
-                        plat_ids.append(int(pid))
+                    pid_int = int(pid)
+                    # During random offset discovery, do not pollute dedicated consoles/Neo-Geo with
+                    # generic Arcade `52` unless generic Arcade was explicitly requested or no dedicated IDs exist.
+                    if for_discovery and pid_int == 52 and not has_generic_arcade and has_dedicated_plat:
+                        continue
+                    if pid_int not in plat_ids:
+                        plat_ids.append(pid_int)
             if plat_ids:
                 joined = ",".join(str(p) for p in plat_ids)
                 clauses.append(f"platforms = ({joined})")
@@ -269,35 +301,115 @@ class IgdbGamesAdapter(IScraperSource):
         return clauses
 
     @staticmethod
-    def _resolve_system_for_item(item: Dict[str, Any], req_systems: List[str]) -> str:
+    def _extract_rom_candidates(item: Dict[str, Any], raw_query: str = "") -> List[str]:
+        title = str(item.get("name") or "").strip()
+        rom_cands = resolve_arcade_query_roms(raw_query) or resolve_arcade_query_roms(title)
+        for alt in item.get("alternative_names") or []:
+            if isinstance(alt, dict) and alt.get("name") and not rom_cands:
+                rom_cands = resolve_arcade_query_roms(str(alt["name"]))
+        return rom_cands
+
+    @classmethod
+    def _resolve_system_for_item(
+        cls,
+        item: Dict[str, Any],
+        req_systems: List[str],
+        rom_cands: Optional[List[str]] = None,
+        allow_empty_platforms: bool = False,
+    ) -> str:
         item_plats = [int(p) for p in (item.get("platforms") or []) if str(p).isdigit()]
+        plats_set = set(item_plats)
+        roms = rom_cands if rom_cands is not None else cls._extract_rom_candidates(item)
+
         if req_systems:
+            if not item_plats:
+                if allow_empty_platforms:
+                    first_sys = req_systems[0]
+                    if first_sys not in _GENERIC_ARCADE_SUBBOARDS:
+                        return first_sys
+                    if any(
+                        ArcadeItaliaReferentialStrategy.is_rom_authoritative_for_system(rc, first_sys)
+                        for rc in roms
+                    ):
+                        return first_sys
+                return ""
+
+            # Pass 1: Specific dedicated IGDB platform IDs (`pid != 52`) take strict precedence
+            # so multi-platform console+PlayChoice-10 games (e.g. Kid Icarus `[18, 52]`) resolve to `nes`.
             for sys_k in req_systems:
+                if sys_k in _GENERIC_ARCADE_SUBBOARDS or sys_k in _GENERIC_ARCADE_CATCHALLS:
+                    continue
                 smeta = RETRO_SYSTEM_CATALOG.get(sys_k) or {}
-                sys_pids = {
-                    int(p)
-                    for p in (
-                        smeta.get("igdb_ids")
-                        or ([smeta["igdb_id"]] if smeta.get("igdb_id") else [])
-                    )
-                }
-                if not item_plats or (sys_pids & set(item_plats)):
+                raw_pids = smeta.get("igdb_ids") or ([smeta["igdb_id"]] if smeta.get("igdb_id") else [])
+                specific_pids = {int(p) for p in raw_pids if int(p) != 52}
+                if specific_pids & plats_set:
                     return sys_k
-            return req_systems[0]
+
+            # Pass 2: Strict arcade sub-boards (`cps1`, `cps2`, `cps3`, `naomi`, ...) require board ROM verification
+            if 52 in plats_set and roms:
+                for sys_k in req_systems:
+                    if sys_k in _GENERIC_ARCADE_SUBBOARDS and any(
+                        ArcadeItaliaReferentialStrategy.is_rom_authoritative_for_system(rc, sys_k) for rc in roms
+                    ):
+                        return sys_k
+
+            # Pass 3: Generic catch-all Arcade (`arcade`, `mame`, `fbneo`) if explicitly requested
+            if 52 in plats_set:
+                for sys_k in req_systems:
+                    if sys_k in _GENERIC_ARCADE_CATCHALLS:
+                        return sys_k
+            return ""
+
+        # Unfiltered (`req_systems == []`): upgrade `52` to authoritative arcade board if known, else dedicated ID
+        if 52 in plats_set and roms:
+            for rc in roms:
+                board_sys = ArcadeItaliaReferentialStrategy.resolve_authoritative_system_for_rom(rc)
+                if board_sys:
+                    return board_sys
         for pid in item_plats:
+            if pid == 52:
+                continue
             mapped = _IGDB_ID_TO_SYSTEMS.get(pid)
             if mapped:
-                # Prefer canonical console/arcade over sub-board when unfiltered
-                return "arcade" if 52 in item_plats and pid == 52 else mapped[0]
-        return "arcade"
+                return mapped[0]
+        if 52 in plats_set or allow_empty_platforms:
+            return "arcade"
+        return ""
 
     @staticmethod
-    def _resolve_genre_for_item(item: Dict[str, Any], req_genres: List[str]) -> str:
-        if req_genres:
-            return req_genres[0]
+    def _resolve_genre_for_item(
+        item: Dict[str, Any],
+        req_genres: List[str],
+        title: str = "",
+    ) -> str:
+        raw_Keys: List[str] = []
         for gid in item.get("genres") or []:
-            if str(gid).isdigit() and int(gid) in _IGDB_GENRE_ID_TO_KEY:
-                return _IGDB_GENRE_ID_TO_KEY[int(gid)]
+            if str(gid).isdigit():
+                for gk in _IGDB_GENRE_ID_TO_KEYS.get(int(gid), []):
+                    if gk not in raw_Keys:
+                        raw_Keys.append(gk)
+        priority_rank = {gk: idx for idx, gk in enumerate(CANONICAL_GAME_GENRE_PRIORITY)}
+        mapped_keys = sorted(raw_Keys, key=lambda gk: priority_rank.get(gk, 999))
+
+        non_fighting = is_disallowed_non_fighting_title(title) if title else False
+        if non_fighting and "fighting" in mapped_keys and len(mapped_keys) > 1:
+            mapped_keys = [gk for gk in mapped_keys if gk != "fighting"]
+
+        if req_genres:
+            req_set = set(req_genres)
+            if mapped_keys:
+                for gk in mapped_keys:
+                    if gk == "fighting" and non_fighting:
+                        continue
+                    if gk in req_set:
+                        return gk
+                return ""
+            if req_genres == ["fighting"] and non_fighting:
+                return ""
+            return req_genres[0]
+
+        if mapped_keys:
+            return mapped_keys[0]
         return "action"
 
     async def _build_candidate(
@@ -315,17 +427,27 @@ class IgdbGamesAdapter(IScraperSource):
         if not igdb_gid or not title:
             return None
 
-        sys_key = self._resolve_system_for_item(item, req_systems)
+        igdb_summary = clean_synopsis_text(
+            str(item.get("summary") or item.get("storyline") or ""), max_chars=320
+        )
+        if is_unofficial_game_release(title, synopsis=igdb_summary):
+            return None
+
+        rom_cands = self._extract_rom_candidates(item, raw_query=raw_query)
+        sys_key = self._resolve_system_for_item(
+            item,
+            req_systems,
+            rom_cands=rom_cands,
+            allow_empty_platforms=bool(raw_query),
+        )
+        if not sys_key:
+            return None
         smeta = RETRO_SYSTEM_CATALOG.get(sys_key) or RETRO_SYSTEM_CATALOG["arcade"]
         is_arcade = bool(smeta.get("is_arcade"))
 
-        # Validate hardware board ROM compatibility when strict arcade sub-board is requested
+        # Validate hardware board ROM compatibility when strict arcade sub-board is resolved
         matched_rom = ""
         if is_arcade:
-            rom_cands = resolve_arcade_query_roms(raw_query) or resolve_arcade_query_roms(title)
-            for alt in item.get("alternative_names") or []:
-                if isinstance(alt, dict) and alt.get("name") and not rom_cands:
-                    rom_cands = resolve_arcade_query_roms(str(alt["name"]))
             for rc in rom_cands:
                 if ArcadeItaliaReferentialStrategy.is_rom_allowed_for_system(rc, sys_key):
                     matched_rom = rc
@@ -337,6 +459,10 @@ class IgdbGamesAdapter(IScraperSource):
                 and not matched_rom
             ):
                 return None
+
+        genre_key = self._resolve_genre_for_item(item, req_genres, title=title)
+        if not genre_key:
+            return None
 
         cover_obj = item.get("cover") if isinstance(item.get("cover"), dict) else {}
         cover_img_id = str(cover_obj.get("image_id") or "").strip()
@@ -391,14 +517,10 @@ class IgdbGamesAdapter(IScraperSource):
         )
 
         short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
-        genre_key = self._resolve_genre_for_item(item, req_genres)
         gmeta = GAME_GENRE_CATALOG.get(genre_key) or GAME_GENRE_CATALOG["action"]
         genre_label = localize_label(gmeta["labels"], short_lang, "Arcade")
         sys_label = localize_label(smeta["labels"], short_lang, smeta["badge"])
 
-        igdb_summary = clean_synopsis_text(
-            str(item.get("summary") or item.get("storyline") or ""), max_chars=320
-        )
         synopsis = igdb_summary
         synopsis_localized = "1" if (short_lang == "en" and bool(igdb_summary)) else "0"
 
@@ -409,7 +531,7 @@ class IgdbGamesAdapter(IScraperSource):
                         client,
                         title,
                         lang=short_lang,
-                        domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
+                        domain_hint="video game",
                     ),
                     timeout=2.5,
                 )
@@ -417,7 +539,11 @@ class IgdbGamesAdapter(IScraperSource):
                     synopsis = wiki_syn
                     synopsis_localized = "1"
             except Exception as exc:
-                logger.warning("[IGDB] Wikipedia synopsis lookup timed out/failed for '%s': %s", title, exc)
+                logger.warning(
+                    "[IGDB] Wikipedia synopsis lookup timed out/failed for '%s': %s",
+                    title,
+                    format_exception_detail(exc),
+                )
 
         if not synopsis:
             prep = {"fr": "sur", "es": "en", "de": "auf", "it": "su", "pt": "no"}.get(short_lang, "on")
@@ -482,7 +608,30 @@ class IgdbGamesAdapter(IScraperSource):
             d.strip().lower() for d in (criteria.decades or []) if d and d.strip().lower() != "all"
         ]
 
-        clauses = self._build_where_clauses(req_systems, req_genres, req_decades, require_cover=True)
+        only_generic_subboards = bool(req_systems) and all(
+            s in _GENERIC_ARCADE_SUBBOARDS for s in req_systems
+        )
+        if only_generic_subboards:
+            stem_pool = [st for s_k in req_systems for st in (SYSTEM_SPECIFIC_STEMS.get(s_k) or [])]
+            if stem_pool:
+                searched = await self.search_candidates(
+                    query=_SYS_RNG.choice(stem_pool), criteria=criteria, limit=max(4, count * 3)
+                )
+                out: List[MediaCandidate] = []
+                for cand in searched:
+                    fp = build_game_fingerprint(str((cand.extra_meta or {}).get("system") or ""), cand.title)
+                    if cand.id in seen_ids or (fp and fp in seen_ids):
+                        continue
+                    seen_ids.update({cand.id} | ({fp} if fp else set()))
+                    out.append(cand)
+                    if len(out) >= count:
+                        return out
+                if out:
+                    return out
+
+        clauses = self._build_where_clauses(
+            req_systems, req_genres, req_decades, require_cover=True, for_discovery=True
+        )
         where_stmt = f"where {' & '.join(clauses)};" if clauses else "where cover != null;"
         max_offset = 80 if (req_systems or req_genres or req_decades) else 350
         rand_offset = _SYS_RNG.randint(0, max_offset)
@@ -508,6 +657,8 @@ class IgdbGamesAdapter(IScraperSource):
                     break
                 igdb_gid = item.get("id")
                 sys_probe = self._resolve_system_for_item(item, req_systems)
+                if not sys_probe:
+                    continue
                 cand_id_probe = f"games_igdb_{sys_probe}_{igdb_gid}"
                 title_probe = str(item.get("name") or "").strip()
                 fp_probe = build_game_fingerprint(sys_probe, title_probe)

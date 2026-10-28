@@ -407,6 +407,49 @@ for _gid, _igdb_ids in _IGDB_GENRE_IDS_BY_CANONICAL.items():
     if _gid in GAME_GENRE_CATALOG:
         GAME_GENRE_CATALOG[_gid]["igdb_genre_ids"] = list(_igdb_ids)
 
+# Specificity ranking when an upstream item carries multiple genre IDs (e.g. IGDB [9, 12, 31] on Zelda)
+CANONICAL_GAME_GENRE_PRIORITY: Tuple[str, ...] = (
+    "fighting",
+    "beatemup",
+    "shootemup",
+    "runandgun",
+    "rpg",
+    "platform",
+    "racing",
+    "sports",
+    "strategy",
+    "action",
+    "adventure",
+    "pinball",
+    "lightgun",
+    "simulation",
+    "puzzle",
+    "maze",
+)
+
+_UNOFFICIAL_TITLE_MARKERS: Tuple[str, ...] = (
+    "bug fix",
+    "unreal engine",
+    "unity remake",
+    "randomizer",
+    "decompilation",
+)
+
+
+def is_unofficial_game_release(
+    title: str,
+    synopsis: str = "",
+    publisher: str = "",
+) -> bool:
+    """
+    Return True when metadata indicates a non-retro PC engine tech demo (`Unreal Engine` /
+    `Unity Remake`), randomizer seed, or bug-fix patch rather than a playable retro release
+    (legitimate console/Neo-Geo homebrews and ports on real hardware remain allowed).
+    """
+    _ = (synopsis, publisher)
+    t_low = (title or "").strip().lower()
+    return any(marker in t_low for marker in _UNOFFICIAL_TITLE_MARKERS)
+
 
 _GAME_TITLE_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
 

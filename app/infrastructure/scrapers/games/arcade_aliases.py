@@ -146,6 +146,17 @@ ARCADE_QUERY_ALIASES: Dict[str, List[str]] = {
     "red earth": ["redearth"],
     "knights of valour": ["kov"],
     "demon front": ["dmnfrnt"],
+    "three wonders": ["3wonders"],
+    "midnight wanderers": ["3wonders"],
+    "midnight wanderers quest for the chariot": ["3wonders"],
+    "saturday night slam masters": ["slammast"],
+    "willow": ["willow"],
+    "nemo": ["nemo"],
+    "magic sword": ["msword"],
+    "king of dragons": ["kod"],
+    "the king of dragons": ["kod"],
+    "knights of the round": ["knights"],
+    "warriors of fate": ["wof"],
 }
 
 # Shorthand -> Canonical full titles for IGDB / ScreenScraper / Libretro text search expansion
@@ -194,6 +205,7 @@ RETRO_QUERY_TITLE_ALIASES: Dict[str, List[str]] = {
     "ff6": ["Final Fantasy VI", "Final Fantasy III"],
     "ff7": ["Final Fantasy VII"],
     "ct": ["Chrono Trigger"],
+    "ys": ["Ys Book I & II", "Ys III: Wanderers from Ys"],
 }
 
 

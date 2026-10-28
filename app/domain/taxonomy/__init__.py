@@ -17,8 +17,10 @@ from app.domain.taxonomy.common import (
 )
 from app.domain.taxonomy.consolidator import ReferentialConsolidator
 from app.domain.taxonomy.game_genres import (
+    CANONICAL_GAME_GENRE_PRIORITY,
     GAME_GENRE_CATALOG,
     is_disallowed_non_fighting_title,
+    is_unofficial_game_release,
 )
 from app.domain.taxonomy.resolver import (
     GENRE_RESOLVERS_BY_DOMAIN,
@@ -34,6 +36,7 @@ from app.domain.taxonomy.systems import RETRO_SYSTEM_CATALOG
 __all__ = [
     "ANIME_GENRE_CATALOG",
     "CANONICAL_DECADES",
+    "CANONICAL_GAME_GENRE_PRIORITY",
     "GAME_GENRE_CATALOG",
     "GENRE_RESOLVERS_BY_DOMAIN",
     "MOVIE_GENRE_CATALOG",
@@ -45,6 +48,7 @@ __all__ = [
     "build_game_fingerprint",
     "is_arcade_system",
     "is_disallowed_non_fighting_title",
+    "is_unofficial_game_release",
     "localize_label",
     "normalize_category_slug",
     "resolve_canonical_genre",

@@ -32,6 +32,7 @@ from app.domain.taxonomy import (
     ReferentialConsolidator,
     build_game_fingerprint,
     is_disallowed_non_fighting_title,
+    is_unofficial_game_release,
     localize_label,
     resolve_canonical_genre,
     resolve_canonical_system,
@@ -209,7 +210,11 @@ class LibretroWikidataAdapter(IScraperSource):
         display_title = re.sub(r"\s*\([^)]*video game[^)]*\)\s*$", "", display_title, flags=re.I).strip()
         display_title = re.sub(r"\s*\([^)]*jeu vidéo[^)]*\)\s*$", "", display_title, flags=re.I).strip()
 
-        if not display_title or display_title.lower() in _FORBIDDEN_HARDWARE_TITLES:
+        if (
+            not display_title
+            or display_title.lower() in _FORBIDDEN_HARDWARE_TITLES
+            or is_unofficial_game_release(display_title)
+        ):
             return None
         if canon_genre == "fighting" and (
             is_disallowed_non_fighting_title(display_title)
@@ -254,8 +259,10 @@ class LibretroWikidataAdapter(IScraperSource):
                 client,
                 wiki_query,
                 lang=short_lang,
-                domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
+                domain_hint="video game",
             )
+            if wiki_syn and is_unofficial_game_release(display_title, synopsis=wiki_syn):
+                return None
         genre_label = localize_label(gmeta["labels"], short_lang, "Retro")
         sys_label = localize_label(smeta["labels"], short_lang, smeta["badge"])
         prep_by_lang = {
@@ -324,6 +331,8 @@ class LibretroWikidataAdapter(IScraperSource):
         gmeta = GAME_GENRE_CATALOG.get(canon_genre) or GAME_GENRE_CATALOG["platform"]
         short_lang = (lang or "fr").split("-")[0].split("_")[0].lower()
         repo = smeta.get("libretro_repo") or "Nintendo_-_Nintendo_Entertainment_System"
+        if repo == "MAME" and canon_sys not in ("arcade", "mame", "fbneo"):
+            return []
 
         folders = await self.referential_strategy.sync_system_libretro_tree(client, canon_sys)
         boxarts = list(
@@ -373,8 +382,10 @@ class LibretroWikidataAdapter(IScraperSource):
                 client,
                 clean_title,
                 lang=short_lang,
-                domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
+                domain_hint="video game",
             )
+            if is_unofficial_game_release(clean_title, synopsis=wiki_syn or ""):
+                continue
             genre_label = localize_label(gmeta["labels"], short_lang, "Retro")
             sys_label = localize_label(smeta["labels"], short_lang, smeta["badge"])
             default_dec = (smeta.get("decades") or ["1980s"])[0]
@@ -450,8 +461,10 @@ class LibretroWikidataAdapter(IScraperSource):
                         client, sys_key=sys_key, genre_key=None
                     )
 
-                if not harvested and chosen_genre in _VERIFIED_GENRE_TITLE_SEEDS:
-                    smeta_decades = (RETRO_SYSTEM_CATALOG.get(sys_key) or {}).get("decades") or ["1990s"]
+                smeta_sys = RETRO_SYSTEM_CATALOG.get(sys_key) or {}
+                allow_seed_fallback = not smeta_sys.get("is_arcade") or sys_key in ("arcade", "mame", "fbneo")
+                if not harvested and allow_seed_fallback and chosen_genre in _VERIFIED_GENRE_TITLE_SEEDS:
+                    smeta_decades = smeta_sys.get("decades") or ["1990s"]
                     seed_year = "1993" if "1990s" in smeta_decades else str(smeta_decades[0])[:4]
                     harvested = [
                         {

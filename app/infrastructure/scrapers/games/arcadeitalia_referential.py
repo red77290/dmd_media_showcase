@@ -214,6 +214,27 @@ class ArcadeItaliaReferentialStrategy(IScraperReferentialStrategy):
             return False
         return True
 
+    @classmethod
+    def is_rom_authoritative_for_system(cls, rom: str, sys_key: Optional[str]) -> bool:
+        """Return True when `rom` is explicitly listed in the authoritative board set for `sys_key`."""
+        r = (rom or "").strip().lower()
+        if not r or not sys_key:
+            return False
+        canon_sys = resolve_canonical_system(sys_key)
+        auth_roms = cls._AUTHORITATIVE_SYSTEM_ROMS.get(canon_sys) or []
+        return r in auth_roms
+
+    @classmethod
+    def resolve_authoritative_system_for_rom(cls, rom: str) -> Optional[str]:
+        """Return the canonical arcade sub-board (`cps1`, `cps2`, `cps3`, `neogeo`, etc.) owning `rom`."""
+        r = (rom or "").strip().lower()
+        if not r:
+            return None
+        for sys_k, auth_roms in cls._AUTHORITATIVE_SYSTEM_ROMS.items():
+            if r in auth_roms:
+                return sys_k
+        return None
+
     async def _harvest_from_lista_mame(
         self, client: Any, token: str, sys_key: Optional[str] = None
     ) -> List[str]:

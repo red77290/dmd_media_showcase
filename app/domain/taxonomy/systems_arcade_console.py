@@ -105,7 +105,7 @@ ARCADE_AND_MAIN_CONSOLE_SYSTEMS: Dict[str, Dict[str, Any]] = {
         "is_arcade": True,
         "screenscraper_id": "142",
         "igdb_id": 79,
-        "igdb_ids": [79, 80, 52],
+        "igdb_ids": [79, 80, 136],
         "arcadeitalia_driver": "neogeo",
         "wikidata_qid": "Q1054350",
         "libretro_repo": "SNK_-_Neo_Geo",

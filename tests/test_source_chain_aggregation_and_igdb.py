@@ -922,3 +922,185 @@ async def test_igdb_autofill_sanitization_and_webui_autocomplete_guards(
         assert 'id="igdb_client_id" autocomplete="new-password"' in html
         assert 'id="igdb_client_secret" autocomplete="new-password"' in html
 
+
+@pytest.mark.asyncio
+async def test_kid_icarus_neogeo_isolation_genre_matching_and_wiki_disambiguation():
+    """
+    Regression suite for Docker log data integrity anomalies:
+    1. `Kid Icarus` (`platforms=[18, 52]` NES + PlayChoice-10 Arcade) MUST resolve to `nes` when
+       `req_systems=['neogeo', 'cps1', 'nes']` and MUST be rejected (`None`) when `req_systems=['neogeo']`.
+    2. `Tekken 4` (`platforms=[8, 52]`) MUST be rejected when only `['neogeo', 'cps1', 'cps2', 'nes']` are requested,
+       while `Super Street Fighter II Turbo` (`[52]`, `genres=[4, 33]`) resolves to `cps2` + `fighting` (NOT `platform`!).
+    3. `Zelda: Ocarina of Time` (`genres=[9, 12, 31]`) resolves to `rpg`/`action` instead of `puzzle`.
+    4. Unofficial fan mods/bootlegs (`Sonic 1 Spike Bug Fix & Spindash`, `Unreal Engine ...`, `Ka Sheng` bootlegs)
+       are rejected by `is_unofficial_game_release`.
+    5. `LibretroWikidataAdapter` never stamps `Super Mario Bros.` onto `cps1`, and `SEARCH_SYLLABLES` are all >= 3 chars.
+    6. `is_relevant_media_extract` rejects film (`Pinocchio` Zemeckis), toy (`Shogun Warriors`), cartoon (`Les Pierrafeu`),
+       and unrelated Wikipedia articles (`Namco × Capcom` for `Bravoman`, `Graphismes de jeu vidéo` for `Battletoads`).
+    """
+    from app.domain.taxonomy import RETRO_SYSTEM_CATALOG, is_unofficial_game_release
+    from app.infrastructure.scrapers.games.libretro_wikidata_adapter import LibretroWikidataAdapter
+    from app.infrastructure.scrapers.games.screenscraper_tokens import SEARCH_SYLLABLES
+    from app.infrastructure.scrapers.http_utils import is_relevant_media_extract
+
+    # 1. Generic IGDB platform 52 must NEVER belong to `neogeo`
+    assert 52 not in RETRO_SYSTEM_CATALOG["neogeo"]["igdb_ids"]
+    assert all(len(tok) >= 3 for tok in SEARCH_SYLLABLES)
+
+    adapter = IgdbGamesAdapter()
+    kid_icarus = {
+        "id": 3663,
+        "name": "Kid Icarus",
+        "summary": "Nintendo classic 8-bit platform adventure starring Pit.",
+        "first_release_date": 535334400,
+        "platforms": [18, 52],
+        "genres": [8, 31],
+        "cover": {"image_id": "co_kid_icarus"},
+    }
+    cand_nes = await adapter._build_candidate(
+        None,
+        kid_icarus,
+        req_systems=["neogeo", "cps1", "nes"],
+        req_genres=["platform", "fighting"],
+        lang="en",
+        fetch_wiki=False,
+    )
+    assert cand_nes is not None
+    assert cand_nes.badge == "NES"
+    assert cand_nes.extra_meta["system"] == "nes"
+
+    cand_neogeo_only = await adapter._build_candidate(
+        None,
+        kid_icarus,
+        req_systems=["neogeo"],
+        req_genres=["platform"],
+        lang="en",
+        fetch_wiki=False,
+    )
+    assert cand_neogeo_only is None
+
+    # 2. Tekken 4 rejected on Neo-Geo/CPS; Super Turbo resolves to CPS-2 + Fighting (never Platform!)
+    tekken4 = {
+        "id": 1245,
+        "name": "Tekken 4",
+        "summary": "3D fighting game by Namco.",
+        "first_release_date": 996624000,
+        "platforms": [8, 52],
+        "genres": [4],
+        "cover": {"image_id": "co_tk4"},
+    }
+    assert (
+        await adapter._build_candidate(
+            None,
+            tekken4,
+            req_systems=["neogeo", "cps1", "cps2", "nes"],
+            req_genres=["platform", "fighting"],
+            lang="fr",
+            fetch_wiki=False,
+        )
+        is None
+    )
+
+    ssf2t = {
+        "id": 4238,
+        "name": "Super Street Fighter II Turbo",
+        "summary": "Capcom CPS-2 tournament fighter.",
+        "first_release_date": 761875200,
+        "platforms": [52, 50],
+        "genres": [4, 33],
+        "cover": {"image_id": "co_ssf2t"},
+    }
+    cand_ssf2t = await adapter._build_candidate(
+        None,
+        ssf2t,
+        req_systems=["neogeo", "cps2", "nes"],
+        req_genres=["platform", "fighting", "beatemup"],
+        lang="fr",
+        fetch_wiki=False,
+    )
+    assert cand_ssf2t is not None
+    assert cand_ssf2t.badge == "CPS-2"
+    assert cand_ssf2t.extra_meta["genre"] == "fighting"
+    assert "Combat" in cand_ssf2t.subtitle
+
+    # 3. Zelda [9, 12, 31] resolves to rpg/action instead of puzzle
+    zelda_oot = {
+        "id": 1029,
+        "name": "The Legend of Zelda: Ocarina of Time",
+        "platforms": [4],
+        "genres": [9, 12, 31],
+        "cover": {"image_id": "co_oot"},
+    }
+    assert adapter._resolve_genre_for_item(zelda_oot, ["platform", "rpg", "puzzle"], title=zelda_oot["name"]) == "rpg"
+
+    # 4. Non-retro PC engine tech demos & bug-fix patches rejected, while genuine Neo-Geo fanmods/homebrews pass!
+    assert is_unofficial_game_release("Sonic 1 Spike Bug Fix & Spindash") is True
+    assert is_unofficial_game_release("Unreal Engine The Legend of Zelda: Ocarina of Time") is True
+    assert is_unofficial_game_release("Chrono Trigger", synopsis="RPG développé par Square.") is False
+
+    neogeo_homebrew = {
+        "id": 999888,
+        "name": "Shinobi Neo-Geo Homebrew Edition",
+        "summary": "Community fan-made port running natively on SNK Neo-Geo MVS/AES.",
+        "first_release_date": 1700000000,
+        "platforms": [79, 80],
+        "genres": [8],
+        "cover": {"image_id": "co_ng_hb"},
+    }
+    cand_hb = await adapter._build_candidate(
+        None,
+        neogeo_homebrew,
+        req_systems=["neogeo", "nes"],
+        req_genres=["platform"],
+        lang="en",
+        fetch_wiki=False,
+    )
+    assert cand_hb is not None and cand_hb.badge == "NEO-GEO"
+
+    # 5. Libretro MAME tree discovery never stamps CPS-1 onto generic MAME titles
+    lw = LibretroWikidataAdapter()
+    assert await lw._discover_from_verified_libretro_tree(None, "cps1", "platform", "fr", set(), 1) == []
+
+    # 6. Wikipedia disambiguation rejects film/toy/cartoon & unrelated page titles
+    assert is_relevant_media_extract(
+        {
+            "title": "Pinocchio (film, 2022)",
+            "description": "film réalisé par Robert Zemeckis",
+            "extract": "Pinocchio est un film américain réalisé par Robert Zemeckis et sorti en 2022.",
+        },
+        "fr",
+        is_game_domain=True,
+        query_title="Pinocchio",
+    ) is False
+    assert is_relevant_media_extract(
+        {
+            "title": "Namco × Capcom",
+            "description": "jeu vidéo de 2005",
+            "extract": "Namco × Capcom est un jeu vidéo Tactical RPG incluant Bravoman.",
+        },
+        "fr",
+        is_game_domain=True,
+        query_title="Bravoman",
+    ) is False
+    assert is_relevant_media_extract(
+        {
+            "title": "Graphismes de jeu vidéo",
+            "description": "aspect visuel",
+            "extract": "Les graphismes de jeu vidéo ont évolué avec Battletoads.",
+        },
+        "fr",
+        is_game_domain=True,
+        query_title="Battletoads",
+    ) is False
+    assert is_relevant_media_extract(
+        {
+            "title": "Pinocchio (jeu vidéo)",
+            "description": "jeu vidéo de 1996",
+            "extract": "Pinocchio est un jeu vidéo de plates-formes sorti en 1996 sur Super Nintendo et Mega Drive.",
+        },
+        "fr",
+        is_game_domain=True,
+        query_title="Pinocchio",
+    ) is True
+
+

@@ -341,6 +341,8 @@ class ScreenScraperAdapter(IScraperSource):
                 results.append(cand)
 
         async def _run_query_pass(client: Any, q_text: str) -> bool:
+            if len(q_text.strip()) < 3:
+                return True
             if len(valid_systems) == 1:
                 only_sys = valid_systems[0]
                 ss_id = str(SYSTEM_METADATA[only_sys]["ss_id"])
