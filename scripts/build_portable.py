@@ -489,6 +489,10 @@ def _base_pyinstaller_args(name: str) -> List[str]:
         "uvicorn",
         "--collect-submodules",
         "yt_dlp",
+        "--collect-data",
+        "yt_dlp",
+        "--collect-data",
+        "certifi",
     ]
 
 

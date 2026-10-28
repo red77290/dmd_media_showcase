@@ -151,6 +151,9 @@ Ajoutez `"custom_retro"` dans `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources
 6. **Coffre-Fort à 3 Niveaux & Zéro Fuite dans les Logs HTTP** :
    - Résoudre tous les secrets (`IGDB_CLIENT_ID`, `IGDB_CLIENT_SECRET`, `SCREENSCRAPER_DEV_ID`, `SCREENSCRAPER_DEV_PASS`, `SCREENSCRAPER_USER`, `SCREENSCRAPER_PASS`, `TMDB_API_KEY`, `TVDB_API_KEY`, `SHOWCASE_API_KEY`) exclusivement via `server_config_store` (`1. ./data/server_config.json` $\to$ `2. .env / env OS` $\to$ `3. app.security._prod_vault*.so` compilé en CI/CD avec `VAULT_MASTER_SECRET`, PBKDF2-HMAC-SHA256 + sel aléatoire 16 octets + XOR 3 parts).
    - Maintenir `install_secret_log_redaction()` (`SecretRedactingLogFilter` + `httpx`/`httpcore` bridés à `WARNING` dans `app/security/log_redactor.py`) actif afin qu'aucun secret en query-string (`devpassword`, `sspassword`, `api_key`, `client_secret`) ni jeton Bearer ne fuite dans stdout.
+7. **Bundles Portables Hermétiques (`Windows_x64`, `macOS`, `Linux_x64`) & Résilience TLS Archives Rétro** :
+   - Les exécutables PyInstaller figés résolvent `yt-dlp` via `resolve_ytdlp_command()` (dispatch précoce `[sys.executable, "--internal-ytdlp"]` dans `app/main.py` + repli Python `yt_dlp.YoutubeDL` dans `youtube_resolver.py`), éliminant tout besoin d'un binaire `yt-dlp.exe` externe malgré le `PATH` hermétique.
+   - `enforce_hermetic_environment()` exporte le magasin CA `certifi` embarqué (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), tandis que `default_http_download_bytes()` (`imaging_primitives.py`) bascule automatiquement (avec cache par hôte) vers un contexte TLS non vérifié lorsqu'une archive rétro comme `adb.arcadeitalia.net` présente un certificat expiré.
 
 ---
 

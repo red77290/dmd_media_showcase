@@ -151,6 +151,9 @@ Append `"custom_retro"` to `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`
 6. **3-Tier Credential Vault & Zero-Leak Log Redaction**:
    - Resolve all optional credentials (`IGDB_CLIENT_ID`, `IGDB_CLIENT_SECRET`, `SCREENSCRAPER_DEV_ID`, `SCREENSCRAPER_DEV_PASS`, `SCREENSCRAPER_USER`, `SCREENSCRAPER_PASS`, `TMDB_API_KEY`, `TVDB_API_KEY`, `SHOWCASE_API_KEY`) exclusively through `server_config_store` (`1. ./data/server_config.json` $\to$ `2. .env / OS env` $\to$ `3. app.security._prod_vault*.so` compiled in CI/CD via `VAULT_MASTER_SECRET` using PBKDF2-HMAC-SHA256 + 16-byte random salt + 3-way XOR).
    - Keep `install_secret_log_redaction()` (`SecretRedactingLogFilter` + `httpx`/`httpcore` `WARNING` level in `app/security/log_redactor.py`) active so query-string secrets (`devpassword`, `sspassword`, `api_key`, `client_secret`) and Bearer tokens never leak into container stdout logs.
+7. **Hermetic Portable Bundles (`Windows_x64`, `macOS`, `Linux_x64`) & Retro-Archive TLS Resilience**:
+   - Frozen PyInstaller executables resolve `yt-dlp` via `resolve_ytdlp_command()` (`[sys.executable, "--internal-ytdlp"]` early dispatch in `app/main.py` plus in-process `yt_dlp.YoutubeDL` fallback in `youtube_resolver.py`) so hermetic `PATH` isolation never requires an external `yt-dlp.exe` binary.
+   - `enforce_hermetic_environment()` exports bundled `certifi` CA roots (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), while `default_http_download_bytes()` (`imaging_primitives.py`) retries with an unverified TLS context (cached per host) when legacy retro archives such as `adb.arcadeitalia.net` serve expired certificates.
 
 ---
 

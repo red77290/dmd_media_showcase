@@ -7,7 +7,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Callable, Literal, Optional, Tuple, Union
+import ssl
+import threading
+from typing import Callable, Literal, Optional, Set, Tuple, Union
+from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import cv2
@@ -20,10 +24,36 @@ from src.engine.conversion.core import DEFAULT_PARAMS
 
 DEFAULT_PARAMS["font_name"] = None
 DEFAULT_PARAMS["text_overlay_enabled"] = False
-DEFAULT_PARAMS["text_font_file"] = __file__
+DEFAULT_PARAMS["text_font_file"] = ""
+DEFAULT_PARAMS["quiet_terminal_log"] = True
 install_ipv4_preference()
 
 logger = logging.getLogger("dmd_showcase.converter")
+
+_UNVERIFIED_TLS_HOSTS: Set[str] = set()
+_UNVERIFIED_TLS_LOCK = threading.Lock()
+
+
+def _build_verified_ssl_context() -> ssl.SSLContext:
+    """Create a verified TLS context backed by `certifi` when available."""
+    try:
+        import certifi
+
+        ca_file = certifi.where()
+        if ca_file and os.path.isfile(ca_file):
+            return ssl.create_default_context(cafile=ca_file)
+    except Exception:
+        pass
+    return ssl.create_default_context()
+
+
+def _is_ssl_verification_error(exc: BaseException) -> bool:
+    """Return True when `exc` (or `URLError.reason`) is a TLS certificate verification error."""
+    if isinstance(exc, ssl.SSLError):
+        return True
+    if isinstance(exc, URLError) and isinstance(getattr(exc, "reason", None), ssl.SSLError):
+        return True
+    return "CERTIFICATE_VERIFY_FAILED" in str(exc)
 
 
 def apply_worker_nice(nice_inc: int = 10, ffmpeg_threads: int = 1) -> None:
@@ -45,20 +75,28 @@ def apply_worker_nice(nice_inc: int = 10, ffmpeg_threads: int = 1) -> None:
 
 
 def default_http_download_bytes(url: Optional[str], timeout: float = 6.0) -> Optional[bytes]:
-    """Download up to 80 MB over HTTP/HTTPS with a standard browser User-Agent."""
+    """
+    Download up to 80 MB over HTTP/HTTPS with a standard browser User-Agent.
+    Automatically retries with an unverified TLS context when an upstream retro archive
+    (such as `adb.arcadeitalia.net`) presents an expired certificate.
+    """
     if not url or not url.startswith(("http://", "https://")):
         return None
-    try:
-        req = Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 dmd-media-showcase/2.1"
-                )
-            },
-        )
-        with urlopen(req, timeout=timeout) as resp:
+    is_https = url.startswith("https://")
+    host = (urlparse(url).hostname or "").lower() if is_https else ""
+    req = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 dmd-media-showcase/2.1"
+            )
+        },
+    )
+
+    def _read_with_context(ctx: Optional[ssl.SSLContext]) -> Optional[bytes]:
+        open_kwargs = {"context": ctx} if (is_https and ctx is not None) else {}
+        with urlopen(req, timeout=timeout, **open_kwargs) as resp:
             if resp.status == 200:
                 data = resp.read(80 * 1024 * 1024)
                 if len(data) < 128:
@@ -74,7 +112,40 @@ def default_http_download_bytes(url: Optional[str], timeout: float = 6.0) -> Opt
                     url,
                 )
                 return data
+        return None
+
+    use_unverified = False
+    if is_https and host:
+        with _UNVERIFIED_TLS_LOCK:
+            use_unverified = host in _UNVERIFIED_TLS_HOSTS
+
+    try:
+        ctx = (
+            ssl._create_unverified_context()
+            if (is_https and use_unverified)
+            else (_build_verified_ssl_context() if is_https else None)
+        )
+        return _read_with_context(ctx)
     except Exception as exc:
+        if is_https and not use_unverified and _is_ssl_verification_error(exc):
+            first_for_host = False
+            if host:
+                with _UNVERIFIED_TLS_LOCK:
+                    if host not in _UNVERIFIED_TLS_HOSTS:
+                        _UNVERIFIED_TLS_HOSTS.add(host)
+                        first_for_host = True
+            if first_for_host:
+                logger.info(
+                    "[CONVERTER] TLS certificate verification failed for '%s' (%s); "
+                    "retrying with unverified TLS context",
+                    host or url,
+                    exc,
+                )
+            try:
+                return _read_with_context(ssl._create_unverified_context())
+            except Exception as retry_exc:
+                logger.info("[CONVERTER] Download failed for %s: %s", url, retry_exc)
+                return None
         logger.info("[CONVERTER] Download failed for %s: %s", url, exc)
     return None
 
@@ -216,6 +287,7 @@ def load_card_font(
     """Load an arcade bitmap font or Unicode/CJK TrueType font matching `font_style`."""
     needs_unicode = any(ord(ch) > 255 for ch in text_sample)
     style = str(font_style or "arcade_pixel").strip().lower()
+    win_fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
     if needs_unicode:
         candidates: Tuple[str, ...] = (
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -223,6 +295,10 @@ def load_card_font(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
             "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            os.path.join(win_fonts, "msyh.ttc"),
+            os.path.join(win_fonts, "msgothic.ttc"),
+            os.path.join(win_fonts, "malgun.ttf"),
+            os.path.join(win_fonts, "segoeui.ttf"),
         )
     elif style == "clean_sans":
         candidates = (
@@ -232,6 +308,10 @@ def load_card_font(
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/System/Library/Fonts/Helvetica.ttc",
+            os.path.join(win_fonts, "segoeuib.ttf"),
+            os.path.join(win_fonts, "arialbd.ttf"),
+            os.path.join(win_fonts, "segoeui.ttf"),
+            os.path.join(win_fonts, "arial.ttf"),
         )
     else:
         return ImageFont.load_default()

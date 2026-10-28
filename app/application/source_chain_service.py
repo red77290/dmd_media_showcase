@@ -217,12 +217,14 @@ class DomainSourceChainService:
                     if len(collected) >= count:
                         break
             except Exception as exc:
+                err_txt = str(exc).strip()
+                err_summary = f"{type(exc).__name__}: {err_txt}" if err_txt else type(exc).__name__
                 logger.warning(
                     "[SOURCE CHAIN] Source '%s' (%s) failed for domain '%s': %s",
                     source.source_id,
                     source.role,
                     domain,
-                    exc,
+                    err_summary,
                 )
         return collected
 
@@ -391,13 +393,15 @@ class DomainSourceChainService:
                     if len(collected) >= clamped_limit:
                         break
             except Exception as exc:
+                err_txt = str(exc).strip()
+                err_summary = f"{type(exc).__name__}: {err_txt}" if err_txt else type(exc).__name__
                 logger.warning(
                     "[SOURCE CHAIN] Search on source '%s' (%s) failed for domain '%s' (query='%s'): %s",
                     source.source_id,
                     source.role,
                     domain,
                     q_clean,
-                    exc,
+                    err_summary,
                 )
 
         final_results = collected[:clamped_limit]
