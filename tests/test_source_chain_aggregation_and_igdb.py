@@ -850,4 +850,14 @@ async def test_expanded_64_system_catalog_ondemand_filter_forwarding_and_live_so
         assert "standby_source" in cab
         assert "preparing_source" in cab
 
+        r_filters = await client.get("/api/v1/games/filters?lang=fr")
+        assert r_filters.status_code == 200
+        systems_payload = r_filters.json()["systems"]
+        assert len(systems_payload) >= 60
+        cps2_entry = next(s for s in systems_payload if s["id"] == "cps2")
+        assert isinstance(cps2_entry.get("supported_genres"), list) and len(cps2_entry["supported_genres"]) >= 1
+        assert isinstance(cps2_entry.get("supported_decades"), list) and len(cps2_entry["supported_decades"]) >= 1
+        assert cps2_entry["supported_genres"] == cps2_entry["genres"]
+        assert cps2_entry["supported_decades"] == cps2_entry["decades"]
+
     await batch_manager.stop()

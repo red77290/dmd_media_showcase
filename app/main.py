@@ -91,11 +91,11 @@ _session_client_meta: Dict[Tuple[str, str], Tuple[str, float]] = {}
 OPENAPI_TAGS = [
     {
         "name": "System & Admin",
-        "description": "Server health, centralized API credentials (`server_config.json`), and `seen_history.json` management.",
+        "description": "Server health, centralized API credentials & source policies (`server_config.json`), and `seen_history.json` management.",
     },
     {
         "name": "Discovery",
-        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` metadata scraper sources.",
+        "description": "Live categories, 66 retro/arcade systems, genres, decades, and configurable multi-source metadata & video scraper chains.",
     },
     {
         "name": "Consume-Once Protocol",
@@ -111,7 +111,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "On-Demand & Voice Assistant",
-        "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants.",
+        "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/clients/{dmd_id}/queue/async`, `/on-demand`) for WebUI, FrontendSync, and voice assistants.",
     },
     {
         "name": "Card Studio & Simulator",
@@ -156,7 +156,7 @@ app = FastAPI(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
         "### Architecture Highlights\n"
-        "- **Resilient Scraper Chains (`Primary` + `Fallback`)**: 2 dedicated metadata & video sources per domain.\n"
+        "- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
         "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming "
         "(`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at "

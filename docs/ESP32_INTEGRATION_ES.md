@@ -767,21 +767,24 @@ void onMqttMessage(const char* topic, char* jsonPayload) {
 
 Todos los perfiles DMD gestionados en el servidor, controles en vivo, búsquedas multilingües e integraciones con frontends arcade (`FrontendSync`) se exponen mediante la API REST FastAPI (`:8890`) y se sincronizan por MQTT (`:1883`).
 
-### 5.1 Búsqueda de Catálogo Filtrada y Localizada (`GET /api/v1/{domain}/search`)
+### 5.1 Búsqueda Filtrada, Referenciales y Cadenas de Fuentes Configurables (`GET /api/v1/{domain}/search`, `/filters`)
 
-Consulta la cadena de scrapers `[Primario, Fallback]` de un dominio (`games`, `movies`, `series`, `anime`) en el idioma de emisión solicitado (`lang`) con filtros opcionales:
+Consulta la cadena multifuente configurable (`source_policies` en `/api/v1/admin/config`: `IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata` para `games`; `TMDB` + `iTunes` para `movies`; `TMDB` + `TheTVDB v4` + `TVMaze` para `series`; `Jikan/AnimeThemes` + `AniList` para `anime`) en el idioma de emisión solicitado (`lang`) con filtros opcionales.
+
+- **Enriquecimiento entre Fuentes (`enrich_missing`) y Procedencia (`source_used`)**: Cuando a la fuente primaria le falta una marquesina arcade, carátula HD o tráiler/gameplay, `CandidateAggregator` completa automáticamente los activos faltantes desde las fuentes secundarias sin sobrescribir los metadatos primarios, informando la procedencia simple o compuesta (ej. `"source_used": "igdb+arcadeitalia"`). Si la fuente primaria no devuelve resultados o está en enfriamiento de cuota, pasa de inmediato a la fuente secundaria.
+- **Referencial Relacional de 66 Sistemas (`GET /api/v1/games/filters`)**: Expone **66 sistemas retro, arcade, portátiles y microordenadores canónicos** (`cps1`, `cps2`, `cps3`, `neogeo`, `mame`, `megadrive`, `snes`, `pcengine`, `saturn`, `dreamcast`, `psx`, ...), cada uno con `supported_genres` y `supported_decades` (más alias `genres`/`decades`) para el filtrado dinámico por etiquetas en `ArcadeMatrix` (ESP32) y `ArcadeMatrix_RPi`.
 
 ```bash
-curl -s "http://dmdmediashowcase.local:8890/api/v1/games/search?q=street+fighter&lang=es&systems=megadrive&genres=fighting&limit=8" | jq .
+curl -s "http://dmdmediashowcase.local:8890/api/v1/games/search?q=sf2x&lang=es&systems=cps2&genres=fighting&limit=8" | jq .
 ```
 
 | Parámetro | Tipo | Descripción |
 | :--- | :--- | :--- |
-| `q` | `string` | Texto de búsqueda del título (ej. `streets of rage`, `akira`, `blade runner`). |
+| `q` | `string` | Texto del título o alias de ROM arcade (`sf2x`, `streets of rage`, `akira`, `blade runner`). |
 | `lang` | `string` | Idioma objetivo para título, sinopsis y carátulas regionales (`fr`, `en`, `es`, `de`, `it`, `ja`). |
-| `systems` | `string` | IDs canónicos de sistemas separados por comas (`megadrive`, `snes`, `neogeo`, `mame`, ...). |
+| `systems` | `string` | IDs canónicos de sistemas entre las 66 plataformas (`cps2`, `neogeo`, `megadrive`, `snes`, `mame`, ...). |
 | `genres` | `string` | IDs canónicos de géneros separados por comas (`fighting`, `shmup`, `platform`, `scifi`, ...). |
-| `decades` | `string` | Filtro de décadas separado por comas (`1980s`, `1990s`, `2000s`, ...). |
+| `decades` | `string` | Filtro de décadas separado por comas (`1970s`, `1980s`, `1990s`, `2000s`, ...). |
 | `limit` | `int` | Número máximo de candidatos devueltos (`1..25`, por defecto `8`). |
 
 ---
@@ -837,12 +840,13 @@ curl -X PUT "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_128
 
 ---
 
-### 5.3 Cola Prioritaria Bajo Demanda (`GET / POST / DELETE /api/v1/clients/{dmd_id}/queue`)
+### 5.3 Cola Prioritaria Bajo Demanda (`GET / POST / DELETE /api/v1/clients/{dmd_id}/queue`, `POST /queue/async`, `POST /api/v1/{domain}/on-demand`)
 
-Consulta (`GET`), envía (`POST`) o elimina (`DELETE /api/v1/clients/{dmd_id}/queue/{queue_id}`) un título específico en la cola prioritaria de un DMD — ya sea mediante el `candidate_id` devuelto por `/search` o mediante `{domain, query, systems, lang}`:
+Consulta (`GET` — incluyendo la procedencia `source_used` de cada elemento), envía (`POST /queue` síncrono o `POST /queue/async` no bloqueante `< 3 ms` `202 Accepted`) o elimina (`DELETE /api/v1/clients/{dmd_id}/queue/{queue_id}`) un título específico en la cola prioritaria de un DMD — ya sea mediante el `candidate_id` devuelto por `/search` o mediante `{domain, query, systems, genres, decades, lang}` (también soportado en `POST /api/v1/{domain}/on-demand`):
 
 - **`mode: "enqueue_next"`** *(Por defecto)*: Transcodifica el elemento con prioridad alta (`HIGH_ON_DEMAND`) y lo reproduce justo al terminar el elemento actual.
 - **`mode: "play_now"`**: Interrumpe de inmediato la emisión en curso (`stop`/`play_card` por MQTT + corte del stream UDP `ffmpeg -re`) y lanza el título solicitado en cuanto termina su transcodificación.
+- **`POST /api/v1/clients/{dmd_id}/queue/async`** *(Recomendado para firmware embebido y `FrontendSync`)*: Registra de inmediato un marcador `preparing` y planifica el scraping + transcodificación en segundo plano devolviendo `202 Accepted` en `< 3 ms` sin bloquear sockets HTTP.
 - **`mark_seen: true | false`**: Controla si la reproducción se registra en `./data/seen_history.json`.
 
 ```bash
@@ -877,20 +881,20 @@ curl -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_12
 
 En máquinas recreativas o HTPC con **Batocera**, **RetroBat**, **LaunchBox / BigBox** o **Playnite**, **`FrontendSync`** convierte su DMD HUB75 en una marquesina/topper reactivo sincronizado con el juego explorado o iniciado por el jugador, regresando automáticamente a la rotación Showcase sin repetición cuando la máquina queda en reposo:
 
-1. **Al Seleccionar o Iniciar un Juego (`mode: "play_now"`, `mark_seen: false`)**:
-   - `FrontendSync` invoca `POST /api/v1/clients/{dmd_id}/queue` con `mode: "play_now"` y **`mark_seen: false`**.
-   - **Por qué `mark_seen: false` es clave**: Jugar 20 veces a su clásico favorito de Neo-Geo o Mega Drive **jamás contamina `./data/seen_history.json`**, preservando intacto el descubrimiento Consume-Once durante el modo attract.
+1. **Al Seleccionar o Iniciar un Juego (`POST /queue/async`, `mode: "play_now"`, `mark_seen: false`)**:
+   - `FrontendSync` (tanto en `ArcadeMatrix` ESP32 como en `ArcadeMatrix_RPi`) invoca `POST /api/v1/clients/{dmd_id}/queue/async` con `mode: "play_now"` y **`mark_seen: false`**, recibiendo `202 Accepted` en `< 3 ms` mientras `DomainSourceChainService` resuelve alias de ROM arcade (ej. `sf2x` en `cps2`) y transcodifica en segundo plano.
+   - **Por qué `mark_seen: false` es clave**: Jugar 20 veces a su clásico favorito de Neo-Geo, CPS-2 o Mega Drive **jamás contamina `./data/seen_history.json`**, preservando intacto el descubrimiento Consume-Once durante el modo attract.
 2. **Al Salir del Juego (`action: "skip"`)**:
    - Al volver al menú o al modo reposo, `FrontendSync` envía `{"action": "skip"}` a `/api/v1/clients/{dmd_id}/control` para retomar al instante el siguiente elemento `N+1` precalentado.
 
 ```bash
 # Ejemplo: Script EmulationStation en Batocera (/userdata/system/configs/emulationstation/scripts/game-start/dmd_sync.sh)
 #!/bin/sh
-SYSTEM="$1"    # ej. "megadrive", "neogeo", "mame"
+SYSTEM="$1"    # ej. "cps2", "megadrive", "neogeo", "mame"
 ROM_PATH="$2"
-GAME_NAME="$3" # ej. "Streets of Rage 2"
+GAME_NAME="$3" # ej. "sf2x" o "Streets of Rage 2"
 
-curl -fsS -m 2 -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_128x32/queue" \
+curl -fsS -m 2 -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_128x32/queue/async" \
   -H "Content-Type: application/json" \
   -d "{
     \"domain\": \"games\",
