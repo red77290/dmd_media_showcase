@@ -27,6 +27,7 @@ from app.infrastructure.scrapers.http_utils import (
     fetch_wikipedia_localized_synopsis,
     resolve_multilingual_media_details,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.movies.itunes")
 
@@ -102,6 +103,10 @@ class ItunesMovieAdapter(IScraperSource):
             video_url=preview_url if preview_url.startswith("http") else None,
             source_id=self.source_id,
             theme_palette=g_meta["palette"],
+            extra_meta={
+                "original_title": title,
+                "has_itunes_synopsis": "1" if synopsis else "0",
+            },
         )
         cand.add_unique_snapshot(wide_art)
         return cand
@@ -179,16 +184,26 @@ class ItunesMovieAdapter(IScraperSource):
                         yr = int(cand.year)
                         if not (decade_bounds[0] <= yr <= decade_bounds[1]):
                             continue
+                    has_track_syn = cand.extra_meta.pop("has_itunes_synopsis", "0") == "1"
+                    has_loc = bool(has_track_syn and (short_lang == "en" or ctry != "US"))
                     if short_lang != "en" and (ctry == "US" or len(cand.synopsis) < 50):
                         loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
                             client, cand.title, lang=short_lang, domain_hint="film", year=cand.year
                         )
                         if loc_syn:
                             cand.synopsis = loc_syn
+                            has_loc = True
                         if loc_t:
                             cand.title = loc_t
                         if loc_tr and not cand.youtube_url:
                             cand.youtube_url = loc_tr
+                    cand.extra_meta["synopsis_localized"] = "1" if has_loc else "0"
+                    await ensure_candidate_localized(
+                        cand,
+                        short_lang,
+                        client,
+                        raw_source_lang="en" if (ctry == "US" or not has_track_syn) and not has_loc else "",
+                    )
                     return cand
             except Exception as exc:
                 logger.debug("[iTunes Movies] Lookup error for '%s' (%s): %s", query_term, ctry, exc)
@@ -307,6 +322,7 @@ class ItunesMovieAdapter(IScraperSource):
                 wiki_syn, wiki_thumb = await fetch_wikipedia_localized_synopsis(
                     client, raw_title, lang=short_lang, domain_hint="film"
                 )
+                has_wiki_loc = bool(wiki_syn)
                 if not wiki_syn:
                     wiki_syn = clean_synopsis_text(entry.get("snippet"), max_chars=280)
                 if not wiki_syn:
@@ -336,6 +352,16 @@ class ItunesMovieAdapter(IScraperSource):
                     youtube_url=dm_url,
                     source_id=self.source_id,
                     theme_palette=g_meta["palette"],
+                    extra_meta={
+                        "original_title": clean_title,
+                        "synopsis_localized": "1" if (has_wiki_loc or short_lang == "en") else "0",
+                    },
+                )
+                await ensure_candidate_localized(
+                    cand,
+                    short_lang,
+                    client,
+                    raw_source_lang="" if (has_wiki_loc or short_lang == "en") else "en",
                 )
                 for st in dm_stills:
                     cand.add_unique_snapshot(st)
@@ -481,16 +507,26 @@ class ItunesMovieAdapter(IScraperSource):
                         async with sem:
                             ctry = cand_storefront.get(c.id, country)
                             orig_t = c.title
+                            has_track_syn = c.extra_meta.pop("has_itunes_synopsis", "0") == "1"
+                            has_loc = bool(has_track_syn and (short_lang == "en" or ctry != "US"))
                             if short_lang != "en" and (ctry == "US" or len(c.synopsis) < 45):
                                 loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
                                     client, orig_t, lang=short_lang, domain_hint="film", year=c.year
                                 )
                                 if loc_syn:
                                     c.synopsis = loc_syn
+                                    has_loc = True
                                 if loc_t:
                                     c.title = loc_t
                                 if loc_tr and not c.youtube_url:
                                     c.youtube_url = loc_tr
+                            c.extra_meta["synopsis_localized"] = "1" if has_loc else "0"
+                            await ensure_candidate_localized(
+                                c,
+                                short_lang,
+                                client,
+                                raw_source_lang="en" if (ctry == "US" or not has_track_syn) and not has_loc else "",
+                            )
                             if not c.video_url and not c.youtube_url:
                                 dm_url, dm_stills = await fetch_dailymotion_trailer_and_stills(
                                     client, f"{orig_t} {c.year} trailer", max_snapshots=3
@@ -501,6 +537,13 @@ class ItunesMovieAdapter(IScraperSource):
                                     c.add_unique_snapshot(st)
 
                     await asyncio.gather(*(_enrich_itunes(c) for c in top_to_enrich), return_exceptions=True)
+                    for tail_c in candidates[len(top_to_enrich) :]:
+                        has_ts = tail_c.extra_meta.pop("has_itunes_synopsis", "0") == "1"
+                        ctry_t = cand_storefront.get(tail_c.id, country)
+                        tail_c.extra_meta["synopsis_localized"] = (
+                            "1" if has_ts and (short_lang == "en" or ctry_t != "US") else "0"
+                        )
+                        await ensure_candidate_localized(tail_c, short_lang, None)
         except Exception as exc:
             logger.debug("[iTunes Movies] Search error for '%s': %s", q_clean, exc)
 

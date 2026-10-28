@@ -52,6 +52,19 @@ def _core_tokens_and_numbers(title: str) -> Tuple[Set[str], Set[str]]:
     return norm_toks, nums
 
 
+def _titles_overlap(title_a: str, title_b: str) -> bool:
+    t1_toks, n1 = _core_tokens_and_numbers(title_a)
+    t2_toks, n2 = _core_tokens_and_numbers(title_b)
+    if not t1_toks or not t2_toks:
+        return False
+    # Reject mismatched sequel numbers (e.g. Street Fighter 2 vs Street Fighter 3)
+    if (n1 or n2) and n1 != n2:
+        return False
+    overlap = len(t1_toks & t2_toks)
+    smaller = min(len(t1_toks), len(t2_toks))
+    return overlap >= max(1, (smaller + 1) // 2)
+
+
 class CandidateAggregator:
     """Cross-source Composite Enricher for `MediaCandidate` instances."""
 
@@ -63,8 +76,9 @@ class CandidateAggregator:
         short_lang = (criteria.lang or cand.lang or "fr").split("-")[0].split("_")[0].lower()
         meta = cand.extra_meta or {}
 
+        loc_flag = str(meta.get("synopsis_localized") or "")
         missing_synopsis = (not cand.synopsis) or (
-            short_lang != "en" and meta.get("synopsis_localized") == "0"
+            short_lang != "en" and loc_flag in ("0", "auto")
         )
         missing_marquee = not cand.marquee_url
         if cand.domain in ("games", "movies", "anime"):
@@ -104,19 +118,19 @@ class CandidateAggregator:
             if y1.isdigit() and y2.isdigit() and abs(int(y1) - int(y2)) > 2:
                 return False
 
-        t1_toks, n1 = _core_tokens_and_numbers(primary.title)
-        t2_toks, n2 = _core_tokens_and_numbers(donor.title)
-        if not t1_toks or not t2_toks:
-            return False
+        p_titles = [primary.title]
+        if p_meta.get("original_title"):
+            p_titles.append(str(p_meta["original_title"]))
+        d_titles = [donor.title]
+        if d_meta.get("original_title"):
+            d_titles.append(str(d_meta["original_title"]))
 
-        # Reject mismatched sequel numbers (e.g. Street Fighter 2 vs Street Fighter 3)
-        if (n1 or n2) and n1 != n2:
-            # Exception: Japanese "Super Street Fighter II X" vs "Super Street Fighter II Turbo" both have {"2"}
-            return False
-
-        overlap = len(t1_toks & t2_toks)
-        smaller = min(len(t1_toks), len(t2_toks))
-        return overlap >= max(1, (smaller + 1) // 2)
+        return any(
+            _titles_overlap(pt, dt)
+            for pt in dict.fromkeys(p_titles)
+            for dt in dict.fromkeys(d_titles)
+            if pt and dt
+        )
 
     @staticmethod
     def _build_secondary_lookup(
@@ -141,8 +155,13 @@ class CandidateAggregator:
                 return mame_rom, sec_criteria
             return cand.title, sec_criteria
 
+        lookup_title = (
+            str(meta.get("original_title") or cand.title).strip()
+            if secondary_source_id in ("itunes_movies", "tvmaze", "jikan", "anilist")
+            else cand.title
+        )
         return (
-            cand.title,
+            lookup_title or cand.title,
             FilterCriteria(
                 domain=cand.domain,
                 lang=base_criteria.lang,
@@ -189,18 +208,24 @@ class CandidateAggregator:
 
         p_meta = primary.extra_meta
         d_meta = donor.extra_meta or {}
-        p_loc = p_meta.get("synopsis_localized") == "1"
-        d_loc = d_meta.get("synopsis_localized") == "1"
+        loc_ranks = {"1": 2, "auto": 1, "0": 0}
+        raw_p_loc = str(p_meta.get("synopsis_localized") or "")
+        raw_d_loc = str(d_meta.get("synopsis_localized") or "0")
+        p_rank = loc_ranks.get(raw_p_loc, 1 if primary.synopsis else 0)
+        d_rank = loc_ranks.get(raw_d_loc, 0)
 
-        if (not primary.synopsis and donor.synopsis) or (
-            short_lang != "en"
-            and not p_loc
-            and donor.synopsis
-            and (d_loc or len(donor.synopsis) > len(primary.synopsis) + 25)
-        ):
+        should_replace_synopsis = False
+        if not primary.synopsis and donor.synopsis:
+            should_replace_synopsis = True
+        elif short_lang == "en" and donor.synopsis and len(donor.synopsis) > len(primary.synopsis) + 25:
+            should_replace_synopsis = True
+        elif short_lang != "en" and donor.synopsis and d_rank > p_rank:
+            should_replace_synopsis = True
+
+        if should_replace_synopsis:
             primary.synopsis = donor.synopsis
-            if d_loc:
-                p_meta["synopsis_localized"] = "1"
+            if raw_d_loc in ("1", "auto"):
+                p_meta["synopsis_localized"] = raw_d_loc
             contributed = True
 
         if d_meta.get("mame_rom") and not p_meta.get("mame_rom"):

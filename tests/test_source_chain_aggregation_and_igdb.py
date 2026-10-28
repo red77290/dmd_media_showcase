@@ -1104,3 +1104,265 @@ async def test_kid_icarus_neogeo_isolation_genre_matching_and_wiki_disambiguatio
     ) is True
 
 
+@pytest.mark.asyncio
+async def test_cross_source_synopsis_localization_precedence_and_free_translation_across_domains():
+    """
+    Verify:
+    1. `CandidateAggregator` never overwrites a French primary synopsis (`synopsis_localized="1"`)
+       with a longer English donor synopsis (`"0"`), even when `len(donor) > len(primary) + 25`.
+    2. Conversely, a shorter human-localized French donor (`"1"`, e.g. ScreenScraper) always upgrades
+       an English (`"0"`) or machine-translated (`"auto"`, e.g. IGDB) primary synopsis.
+    3. Localized movie titles (`"Piège de cristal"` + `original_title="Die Hard"`) match English
+       secondary donors (`"Die Hard"`) to pull `.m4v` trailers while keeping French title & synopsis.
+    4. `ensure_candidate_localized` + `translate_synopsis_free` translates English-only synopses via
+       GTX / MyMemory fallback (`"auto"`), catches English leaks, and localizes genre badges/subtitles.
+    """
+    from app.infrastructure.scrapers.translation_service import (
+        _TRANSLATION_CACHE,
+        ensure_candidate_localized,
+        is_likely_english_synopsis,
+    )
+
+    _TRANSLATION_CACHE.clear()
+    agg = CandidateAggregator()
+
+    # Case 1: ScreenScraper FR ("1", short) + ArcadeItalia EN ("0", much longer) -> FR preserved!
+    ss_primary = MediaCandidate(
+        id="games_ss_cps1_sf2",
+        domain="games",
+        title="Street Fighter II",
+        year="1991",
+        badge="CPS1",
+        badge_color="#FB8C00",
+        subtitle="Combat • CPS1",
+        rating="9.4",
+        synopsis="Jeu de combat culte développé par Capcom mettant en scène huit guerriers.",
+        lang="fr",
+        poster_url="https://screenscraper.fr/sf2_box.png",
+        marquee_url=None,
+        video_url=None,
+        source_id="screenscraper",
+        extra_meta={"system": "cps1", "mame_rom": "sf2", "synopsis_localized": "1"},
+    )
+    adb_donor = MediaCandidate(
+        id="games_adb_sf2",
+        domain="games",
+        title="Street Fighter II: The World Warrior",
+        year="1991",
+        badge="CPS1",
+        badge_color="#FB8C00",
+        subtitle="Fighting • CPS1",
+        rating="9.4",
+        synopsis=(
+            "Street Fighter II is a competitive fighting game developed and published by Capcom "
+            "for arcades in 1991 featuring eight selectable characters from around the world in a tournament."
+        ),
+        lang="fr",
+        poster_url="https://adb.arcadeitalia.net/sf2_flyer.png",
+        marquee_url="https://adb.arcadeitalia.net/sf2_marquee.png",
+        video_url="https://adb.arcadeitalia.net/sf2.mp4",
+        source_id="arcadeitalia",
+        extra_meta={"system": "cps1", "mame_rom": "sf2", "synopsis_localized": "0"},
+    )
+    assert agg._merge_donor_into_primary(ss_primary, adb_donor, "fr") is True
+    assert ss_primary.marquee_url == "https://adb.arcadeitalia.net/sf2_marquee.png"
+    assert ss_primary.video_url == "https://adb.arcadeitalia.net/sf2.mp4"
+    assert "Jeu de combat culte" in ss_primary.synopsis
+    assert ss_primary.extra_meta["synopsis_localized"] == "1"
+
+    # Case 2: IGDB longer "auto" primary + ScreenScraper shorter "1" human FR donor -> upgraded to "1"!
+    igdb_primary = MediaCandidate(
+        id="games_igdb_snes_zelda",
+        domain="games",
+        title="The Legend of Zelda: A Link to the Past",
+        year="1991",
+        badge="SNES",
+        badge_color="#7E57C2",
+        subtitle="Aventure • SNES",
+        rating="9.6",
+        synopsis=(
+            "Link parcourt les mondes de la lumière et des ténèbres dans cette traduction automatique "
+            "beaucoup plus longue issue d'un résumé anglophone détaillé pour tester la priorité."
+        ),
+        lang="fr",
+        poster_url="https://images.igdb.com/zelda.jpg",
+        marquee_url=None,
+        source_id="igdb",
+        extra_meta={"system": "snes", "synopsis_localized": "auto"},
+    )
+    ss_donor_fr = MediaCandidate(
+        id="games_ss_snes_zelda",
+        domain="games",
+        title="The Legend of Zelda: A Link to the Past",
+        year="1991",
+        badge="SNES",
+        badge_color="#7E57C2",
+        subtitle="Aventure • SNES",
+        rating="9.6",
+        synopsis="Link part sauver la princesse Zelda et le royaume d'Hyrule face à Agahnim.",
+        lang="fr",
+        poster_url="https://screenscraper.fr/zelda_box.png",
+        marquee_url="https://screenscraper.fr/zelda_wheel.png",
+        source_id="screenscraper",
+        extra_meta={"system": "snes", "synopsis_localized": "1"},
+    )
+    assert CandidateAggregator.needs_enrichment(igdb_primary, FilterCriteria(domain="games", lang="fr")) is True
+    assert agg._merge_donor_into_primary(igdb_primary, ss_donor_fr, "fr") is True
+    assert "sauver la princesse Zelda" in igdb_primary.synopsis
+    assert igdb_primary.extra_meta["synopsis_localized"] == "1"
+
+    # Case 3: TMDB FR ("Piège de cristal" / original_title="Die Hard") + iTunes US ("Die Hard")
+    tmdb_fr = MediaCandidate(
+        id="movies_tmdb_562",
+        domain="movies",
+        title="Piège de cristal",
+        year="1988",
+        badge="ACTION",
+        badge_color="#E53935",
+        subtitle="Action • 1988",
+        rating="8.2",
+        synopsis="John McClane affronte des preneurs d'otages au Nakatomi Plaza.",
+        lang="fr",
+        poster_url="https://image.tmdb.org/diehard_fr.jpg",
+        backdrop_url="https://image.tmdb.org/diehard_bg.jpg",
+        video_url=None,
+        source_id="tmdb_movies",
+        extra_meta={"original_title": "Die Hard", "synopsis_localized": "1"},
+    )
+    itunes_us = MediaCandidate(
+        id="movies_itunes_562",
+        domain="movies",
+        title="Die Hard",
+        year="1988",
+        badge="ACTION",
+        badge_color="#E53935",
+        subtitle="Action • Bruce Willis",
+        rating="8.2",
+        synopsis=(
+            "NYPD cop John McClane visits his estranged wife in Los Angeles when terrorists seize "
+            "the Nakatomi Plaza skyscraper during a Christmas Eve party."
+        ),
+        lang="fr",
+        poster_url="https://is1-ssl.mzstatic.com/diehard.jpg",
+        marquee_url="https://is1-ssl.mzstatic.com/diehard_wide.jpg",
+        video_url="https://video-ssl.itunes.apple.com/diehard.m4v",
+        source_id="itunes_movies",
+        extra_meta={"original_title": "Die Hard", "synopsis_localized": "0"},
+    )
+    assert CandidateAggregator._is_compatible_donor(tmdb_fr, itunes_us) is True
+    q_sec, _ = CandidateAggregator._build_secondary_lookup(
+        tmdb_fr, "itunes_movies", FilterCriteria(domain="movies", lang="fr")
+    )
+    assert q_sec == "Die Hard"
+    assert agg._merge_donor_into_primary(tmdb_fr, itunes_us, "fr") is True
+    assert tmdb_fr.title == "Piège de cristal"
+    assert tmdb_fr.video_url == "https://video-ssl.itunes.apple.com/diehard.m4v"
+    assert "John McClane affronte" in tmdb_fr.synopsis
+
+    # Case 4: Free zero-key translation cascade (GTX fail -> MyMemory success) + genre localization
+    class _MockTranslateClient:
+        async def get(self, url: str, params: Any = None, timeout: float = 2.2) -> httpx.Response:
+            req = httpx.Request("GET", url, params=params)
+            if "translate.googleapis.com" in url:
+                return httpx.Response(503, text="Service Unavailable", request=req)
+            if "api.mymemory.translated.net" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "responseStatus": 200,
+                        "responseData": {
+                            "translatedText": "Un jeune chasseur de primes voyage à travers le système solaire avec son équipage."
+                        },
+                    },
+                    request=req,
+                )
+            return httpx.Response(404, request=req)
+
+    en_anime = MediaCandidate(
+        id="anime_anilist_1",
+        domain="anime",
+        title="Cowboy Bebop",
+        year="1998",
+        badge="FANTASY",
+        badge_color="#00ACC1",
+        subtitle="Fantasy • 1998",
+        rating="8.8",
+        synopsis="A young bounty hunter travels through the solar system with his ragtag crew.",
+        lang="fr",
+        poster_url="https://s4.anilist.co/bebop.jpg",
+        source_id="anilist",
+        extra_meta={"synopsis_localized": "1"},  # Simulated upstream English leak!
+    )
+    assert is_likely_english_synopsis(en_anime.synopsis, "fr") is True
+    await ensure_candidate_localized(en_anime, "fr", _MockTranslateClient())
+    assert "chasseur de primes" in en_anime.synopsis
+    assert en_anime.extra_meta["synopsis_localized"] == "auto"
+    assert en_anime.subtitle == "Fantasy / Isekai • 1998"
+
+
+def test_igdb_discovery_excludes_subgames_and_video_pipeline_falls_back_on_dead_yt_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """
+    Verify:
+    1. `IgdbGamesAdapter._build_where_clauses(..., for_discovery=True)` enforces `parent_game = null`
+       and `is_unofficial_game_release()` rejects embedded sub-games like Kirby's 'The Arena'.
+    2. `build_video_assets_worker_task()` retries `ytsearch1:<title> <badge> gameplay trailer` when
+       an upstream IGDB `youtube_url` points to a dead/deleted YouTube video ID.
+    """
+    from app.domain.taxonomy.game_genres import is_unofficial_game_release
+    from app.infrastructure.rendering import video_pipeline
+    from app.infrastructure.scrapers.games.igdb_adapter import IgdbGamesAdapter
+
+    clauses = IgdbGamesAdapter._build_where_clauses(["snes"], [], [], require_cover=True, for_discovery=True)
+    assert "parent_game = null" in clauses
+    assert "version_parent = null" in clauses
+    assert (
+        is_unofficial_game_release(
+            "The Arena",
+            synopsis="The Arena is a Sub-Game debuting in Kirby Super Star, unlocked after beating the game.",
+        )
+        is True
+    )
+    assert is_unofficial_game_release("Kirby Super Star", synopsis="A classic platform game by HAL Laboratory.") is False
+
+    yt_calls: List[str] = []
+
+    def _fake_extract(video_page_url: str, out_mp4: Any, max_duration_s: float = 8.0, max_filesize_mb: int = 60) -> bool:
+        yt_calls.append(video_page_url)
+        if video_page_url.startswith("ytsearch1:"):
+            out_mp4.write_bytes(b"\x00" * 16384)
+            return True
+        return False
+
+    class _FakeProc:
+        def process_video_trailer(self, **kwargs: Any) -> Any:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(frame_count=120, fps=15, duration_s=8.0, quality_score=88)
+
+    monkeypatch.setattr(video_pipeline, "extract_hd_youtube_clip_ytdlp", _fake_extract)
+    monkeypatch.setattr(video_pipeline, "DmdMediaProcessor", _FakeProc)
+
+    res = video_pipeline.build_video_assets_worker_task(
+        item_dir=str(tmp_path / "aladdin"),
+        title="Disney's Aladdin",
+        badge="MEGA DRIVE",
+        palette=(0, 120, 255),
+        video_url=None,
+        youtube_url="https://www.youtube.com/watch?v=5IXhJs8DZt0",
+        width=128,
+        height=32,
+        fps=15,
+        max_duration_s=8.0,
+    )
+    assert res["has_video"] is True
+    assert yt_calls == [
+        "https://www.youtube.com/watch?v=5IXhJs8DZt0",
+        "ytsearch1:Disney's Aladdin MEGA DRIVE gameplay trailer",
+    ]
+
+
+
+

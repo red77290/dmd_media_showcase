@@ -39,6 +39,7 @@ from app.infrastructure.scrapers.http_utils import (
     create_async_http_client,
     format_exception_detail,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.screenscraper")
 
@@ -237,16 +238,17 @@ class ScreenScraperAdapter(IScraperSource):
                     )
                     break
 
-        if len(results) < count and overflow_candidates:
-            _SYS_RNG.shuffle(overflow_candidates)
-            for cand, dedup_keys in overflow_candidates:
-                if len(results) >= count:
-                    break
-                if dedup_keys & seen_ids:
-                    continue
-                seen_ids.update(dedup_keys)
-                results.append(cand)
-
+            if len(results) < count and overflow_candidates:
+                _SYS_RNG.shuffle(overflow_candidates)
+                for cand, dedup_keys in overflow_candidates:
+                    if len(results) >= count:
+                        break
+                    if dedup_keys & seen_ids:
+                        continue
+                    seen_ids.update(dedup_keys)
+                    results.append(cand)
+            for cand_item in results[:count]:
+                await ensure_candidate_localized(cand_item, criteria.lang, client)
         return results[:count]
 
     async def search_candidates(
@@ -398,6 +400,8 @@ class ScreenScraperAdapter(IScraperSource):
                         if expanded.lower() != q_clean.lower():
                             if not await _run_query_pass(client, expanded) or results:
                                 break
+                for cand_item in results[:target_limit]:
+                    await ensure_candidate_localized(cand_item, criteria.lang, client)
         except Exception as exc:
             logger.warning(
                 "[ScreenScraper] Search error for '%s': %s",

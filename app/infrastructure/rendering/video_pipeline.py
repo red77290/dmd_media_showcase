@@ -91,6 +91,20 @@ def build_video_assets_worker_task(
             max_duration_s=max_duration_s,
             max_filesize_mb=ytdlp_max_filesize_mb,
         )
+        if not have_real_video and not youtube_url.startswith("ytsearch") and (title or "").strip():
+            yt_fallback = f"ytsearch1:{title.strip()} {(badge or '').strip()} gameplay trailer".strip()
+            logger.info(
+                "[CONVERTER] Upstream youtube_url unavailable for '%s' (%s) -> retrying search fallback '%s'",
+                title,
+                youtube_url,
+                yt_fallback,
+            )
+            have_real_video = extract_hd_youtube_clip_ytdlp(
+                video_page_url=yt_fallback,
+                out_mp4=src_video_path,
+                max_duration_s=max_duration_s,
+                max_filesize_mb=ytdlp_max_filesize_mb,
+            )
 
     if not have_real_video:
         src_video_path.unlink(missing_ok=True)

@@ -17,6 +17,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Stamp version from release tag (if tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          raw_ver = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          pep_ver = re.sub(r"-snapshot$", ".dev0", raw_ver, flags=re.I)
+          for rel_path, pattern, repl in [
+              ("pyproject.toml", r'^version = ".*"', f'version = "{pep_ver}"'),
+              ("app/__init__.py", r'^__version__ = ".*"', f'__version__ = "{raw_ver}"'),
+          ]:
+              p = Path(rel_path)
+              p.write_text(
+                  re.sub(pattern, repl, p.read_text(encoding="utf-8"), count=1, flags=re.M),
+                  encoding="utf-8",
+              )
+          print(f"Stamped Docker release version: {raw_ver}")
+          PY
+
       - name: Set up QEMU for arm64 emulation
         uses: docker/setup-qemu-action@v3
 

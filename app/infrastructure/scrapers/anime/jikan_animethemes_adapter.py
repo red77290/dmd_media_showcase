@@ -27,6 +27,7 @@ from app.infrastructure.scrapers.http_utils import (
     fetch_wikipedia_localized_synopsis,
     resolve_multilingual_media_details,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.anime.jikan")
 _YT_EMBED_RE = re.compile(r"/embed/([A-Za-z0-9_-]{6,})")
@@ -197,6 +198,7 @@ class JikanAnimeThemesAdapter(IScraperSource):
         year = str(item.get("year") or ((item.get("aired") or {}).get("from") or "2012"))[:4]
         score = float(item.get("score") or 8.2)
         synopsis = clean_synopsis_text(item.get("synopsis"), max_chars=300)
+        has_loc_syn = bool(short_lang == "en" and synopsis)
 
         resolved_trailer: Optional[str] = None
         if enrich_heavy and (short_lang != "en" or not synopsis):
@@ -205,6 +207,7 @@ class JikanAnimeThemesAdapter(IScraperSource):
             )
             if loc_syn:
                 synopsis = loc_syn
+                has_loc_syn = True
             if loc_t and short_lang != "ja":
                 title = loc_t
             if loc_tr:
@@ -241,12 +244,25 @@ class JikanAnimeThemesAdapter(IScraperSource):
             youtube_url=str(yt_url) if yt_url else None,
             source_id=self.source_id,
             theme_palette=g_meta["palette"],
+            extra_meta={
+                "mal_id": str(mal_id),
+                "original_title": orig_title,
+                "synopsis_localized": "1" if has_loc_syn else "0",
+            },
         )
         if max_img:
             cand.add_unique_snapshot(str(max_img))
 
         if not enrich_heavy:
+            await ensure_candidate_localized(cand, short_lang, None)
             return cand
+
+        await ensure_candidate_localized(
+            cand,
+            short_lang,
+            client,
+            raw_source_lang="" if has_loc_syn else "en",
+        )
 
         await enrich_with_animethemes_webm(
             client,

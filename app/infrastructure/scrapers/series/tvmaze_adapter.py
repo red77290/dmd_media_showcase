@@ -24,6 +24,7 @@ from app.infrastructure.scrapers.http_utils import (
     fetch_wikipedia_localized_synopsis,
     resolve_multilingual_media_details,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.series.tvmaze")
 
@@ -93,6 +94,8 @@ class TvMazeAdapter(IScraperSource):
         poster_url = img.get("original") or img.get("medium")
 
         summary = clean_synopsis_text(show.get("summary"), max_chars=300)
+        has_raw_summary = bool(summary)
+        has_loc_syn = bool(short_lang == "en" and summary)
         resolved_trailer: Optional[str] = None
         if enrich_heavy:
             loc_t, loc_syn, loc_tr = await resolve_multilingual_media_details(
@@ -100,6 +103,7 @@ class TvMazeAdapter(IScraperSource):
             )
             if loc_syn and (short_lang != "en" or not summary):
                 summary = loc_syn
+                has_loc_syn = True
             if loc_t and short_lang != "en":
                 title = loc_t
             if loc_tr:
@@ -121,11 +125,23 @@ class TvMazeAdapter(IScraperSource):
             youtube_url=resolved_trailer,
             source_id=self.source_id,
             theme_palette=genre_meta["palette"],
-            extra_meta={"tvmaze_id": str(show_id)},
+            extra_meta={
+                "tvmaze_id": str(show_id),
+                "original_title": orig_title,
+                "synopsis_localized": "1" if has_loc_syn else "0",
+            },
         )
 
         if not enrich_heavy:
+            await ensure_candidate_localized(cand, short_lang, None)
             return cand
+
+        await ensure_candidate_localized(
+            cand,
+            short_lang,
+            client,
+            raw_source_lang="" if has_loc_syn else ("en" if has_raw_summary else "en"),
+        )
 
         if show_id:
             try:

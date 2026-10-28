@@ -54,6 +54,7 @@ from app.infrastructure.scrapers.http_utils import (
     fetch_wikipedia_localized_synopsis,
     format_exception_detail,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.igdb")
 
@@ -260,8 +261,7 @@ class IgdbGamesAdapter(IScraperSource):
         if require_cover:
             clauses.append("cover != null")
         if for_discovery:
-            clauses.append("first_release_date != null")
-            clauses.append("version_parent = null")
+            clauses.extend(("first_release_date != null", "version_parent = null", "parent_game = null"))
         if req_systems:
             has_generic_arcade = any(s in _GENERIC_ARCADE_CATCHALLS for s in req_systems)
             has_dedicated_plat = any(
@@ -533,7 +533,7 @@ class IgdbGamesAdapter(IScraperSource):
                         lang=short_lang,
                         domain_hint="video game",
                     ),
-                    timeout=2.5,
+                    timeout=4.5,
                 )
                 if wiki_syn:
                     synopsis = wiki_syn
@@ -583,6 +583,8 @@ class IgdbGamesAdapter(IScraperSource):
             cand.add_unique_snapshot(
                 f"https://images.igdb.com/igdb/image/upload/t_screenshot_med/{shot_id}.jpg"
             )
+        if short_lang != "en" and synopsis_localized == "0" and igdb_summary:
+            await ensure_candidate_localized(cand, short_lang, client, raw_source_lang="en")
         return cand
 
     async def fetch_random_unseen(
@@ -652,6 +654,8 @@ class IgdbGamesAdapter(IScraperSource):
                 return []
 
             _SYS_RNG.shuffle(items)
+            if criteria.include_video:
+                items.sort(key=lambda it: 0 if it.get("videos") else 1)
             for item in items:
                 if len(results) >= count:
                     break

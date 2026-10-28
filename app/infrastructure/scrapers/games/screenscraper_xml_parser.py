@@ -611,13 +611,21 @@ def parse_screenscraper_game_node(
                 if not first_synopsis:
                     first_synopsis = cleaned
     alt_lang = "jp" if short_lang == "ja" else ("sp" if short_lang == "es" else "")
-    synopsis = (
-        synopsis_by_lang.get(short_lang)
-        or (synopsis_by_lang.get(alt_lang) if alt_lang else None)
-        or synopsis_by_lang.get("en")
-        or synopsis_by_lang.get("fr")
-        or first_synopsis
+    native_syn = synopsis_by_lang.get(short_lang) or (
+        synopsis_by_lang.get(alt_lang) if alt_lang else None
     )
+    synopsis_loc_flag = "1" if native_syn else "0"
+    synopsis_src_lang = short_lang if native_syn else ""
+    if native_syn:
+        synopsis = native_syn
+    elif synopsis_by_lang.get("en"):
+        synopsis = synopsis_by_lang["en"]
+        synopsis_src_lang = "en"
+    elif synopsis_by_lang.get("fr"):
+        synopsis = synopsis_by_lang["fr"]
+        synopsis_src_lang = "fr"
+    else:
+        synopsis = first_synopsis
     if is_unofficial_game_release(title, synopsis=synopsis or "", publisher=publisher):
         return None
 
@@ -628,6 +636,17 @@ def parse_screenscraper_game_node(
     except (TypeError, ValueError):
         rating = "8.5"
 
+    prep = {"fr": "sur", "es": "en", "de": "auf", "it": "su", "pt": "no"}.get(short_lang, "on")
+    extra_meta_ss: Dict[str, Any] = {
+        "system": canon_sys,
+        "genre": primary_genre,
+        "genres": canon_genres,
+        "publisher": publisher,
+        "synopsis_localized": synopsis_loc_flag,
+    }
+    if synopsis_src_lang and synopsis_src_lang != short_lang:
+        extra_meta_ss["synopsis_source_lang"] = synopsis_src_lang
+
     cand = MediaCandidate(
         id=f"games_ss_{game_id}",
         domain="games",
@@ -637,16 +656,11 @@ def parse_screenscraper_game_node(
         badge_color=sys_meta["color"],
         subtitle=subtitle,
         rating=rating,
-        synopsis=synopsis or f"{title} ({year}) on {sys_meta['label']}.",
+        synopsis=synopsis or f"{title} ({year}) — {sys_meta['label']} ({prep} {sys_meta['badge']}).",
         lang=short_lang,
         source_id=source_id,
         theme_palette=sys_meta["palette"],
-        extra_meta={
-            "system": canon_sys,
-            "genre": primary_genre,
-            "genres": canon_genres,
-            "publisher": publisher,
-        },
+        extra_meta=extra_meta_ss,
     )
 
     medias_raw = jeu.get("medias")

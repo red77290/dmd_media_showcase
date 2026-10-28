@@ -22,6 +22,7 @@ from app.infrastructure.scrapers.http_utils import (
     fetch_dailymotion_trailer_and_stills,
     resolve_multilingual_media_details,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.series.tmdb")
 
@@ -246,14 +247,32 @@ class TmdbSeriesAdapter(IScraperSource):
                             f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else None
                         )
                         synopsis = clean_synopsis_text(item.get("overview"))
+                        has_loc_syn = bool(synopsis)
+                        raw_src_lang = ""
                         if len(synopsis) < 30 and short_lang != "en":
                             loc_t, loc_syn, _ = await resolve_multilingual_media_details(
                                 client, orig_title, lang=short_lang, domain_hint="series", year=year
                             )
                             if loc_syn:
                                 synopsis = loc_syn
+                                has_loc_syn = True
                             if loc_t:
                                 title = loc_t
+                            if not synopsis:
+                                try:
+                                    en_resp = await client.get(
+                                        f"https://api.themoviedb.org/3/tv/{tv_id}",
+                                        params={**auth_params, "language": "en-US"},
+                                        headers=auth_headers,
+                                    )
+                                    if en_resp.status_code == 200:
+                                        en_ov = clean_synopsis_text(en_resp.json().get("overview"))
+                                        if en_ov:
+                                            synopsis = en_ov
+                                            has_loc_syn = False
+                                            raw_src_lang = "en"
+                                except Exception:
+                                    pass
 
                         cand = MediaCandidate(
                             id=item_id,
@@ -272,6 +291,15 @@ class TmdbSeriesAdapter(IScraperSource):
                             backdrop_url=backdrop_url,
                             source_id=self.source_id,
                             theme_palette=g_meta["palette"],
+                            extra_meta={
+                                "original_title": orig_title,
+                                "synopsis_localized": "1"
+                                if (has_loc_syn or short_lang == "en") and synopsis
+                                else "0",
+                            },
+                        )
+                        await ensure_candidate_localized(
+                            cand, short_lang, client, raw_source_lang=raw_src_lang
                         )
                         if backdrop_url:
                             cand.add_unique_snapshot(backdrop_url)
@@ -423,7 +451,7 @@ class TmdbSeriesAdapter(IScraperSource):
                             domain="series",
                             title=title,
                             year=year,
-                            badge=str(g_meta["label"])[:8].upper() if item_gids or valid_genres else "SERIES",
+                            badge=genre_label[:8].upper() if item_gids or valid_genres else "SERIES",
                             badge_color=str(g_meta["color"]),
                             subtitle=f"{genre_label} • {year}"[:28],
                             rating=f"{vote:.1f}",
@@ -435,6 +463,10 @@ class TmdbSeriesAdapter(IScraperSource):
                             backdrop_url=backdrop_url,
                             source_id=self.source_id,
                             theme_palette=tuple(g_meta["palette"]),
+                            extra_meta={
+                                "original_title": orig_title,
+                                "synopsis_localized": "1" if synopsis else "0",
+                            },
                         )
                         if backdrop_url:
                             cand.add_unique_snapshot(backdrop_url)
@@ -454,14 +486,36 @@ class TmdbSeriesAdapter(IScraperSource):
                     async def _enrich_one(c: MediaCandidate) -> None:
                         async with sem:
                             ot = orig_titles.get(c.id, c.title)
-                            if len(c.synopsis) < 25 and short_lang != "en":
+                            had_native = c.extra_meta.get("synopsis_localized") == "1"
+                            raw_src = ""
+                            if (not had_native or len(c.synopsis) < 25) and short_lang != "en":
                                 loc_t, loc_syn, _ = await resolve_multilingual_media_details(
                                     client, ot, lang=short_lang, domain_hint="series", year=c.year
                                 )
                                 if loc_syn:
                                     c.synopsis = loc_syn
+                                    c.extra_meta["synopsis_localized"] = "1"
+                                    had_native = True
                                 if loc_t:
                                     c.title = loc_t
+                                if not had_native:
+                                    try:
+                                        en_r = await client.get(
+                                            f"https://api.themoviedb.org/3/tv/{tv_ids[c.id]}",
+                                            params={**auth_params, "language": "en-US"},
+                                            headers=auth_headers,
+                                        )
+                                        if en_r.status_code == 200:
+                                            en_ov = clean_synopsis_text(en_r.json().get("overview"))
+                                            if en_ov:
+                                                c.synopsis = en_ov
+                                                c.extra_meta["synopsis_localized"] = "0"
+                                                raw_src = "en"
+                                    except Exception:
+                                        pass
+                            await ensure_candidate_localized(
+                                c, short_lang, client, raw_source_lang=raw_src
+                            )
                             await self._enrich_tv_videos_and_images(
                                 client,
                                 tv_ids[c.id],
@@ -473,6 +527,8 @@ class TmdbSeriesAdapter(IScraperSource):
                             )
 
                     await asyncio.gather(*(_enrich_one(c) for c in top_to_enrich), return_exceptions=True)
+                    for tail_c in candidates[len(top_to_enrich) :]:
+                        await ensure_candidate_localized(tail_c, short_lang, None)
         except Exception as exc:
             logger.debug("[TMDB Series] Search error for '%s': %s", q_clean, exc)
 

@@ -436,6 +436,13 @@ _UNOFFICIAL_TITLE_MARKERS: Tuple[str, ...] = (
 )
 
 
+_UNOFFICIAL_SYNOPSIS_MARKERS: Tuple[str, ...] = (
+    " is a sub-game ",
+    " is a minigame ",
+    " is a mini-game ",
+)
+
+
 def is_unofficial_game_release(
     title: str,
     synopsis: str = "",
@@ -443,12 +450,16 @@ def is_unofficial_game_release(
 ) -> bool:
     """
     Return True when metadata indicates a non-retro PC engine tech demo (`Unreal Engine` /
-    `Unity Remake`), randomizer seed, or bug-fix patch rather than a playable retro release
-    (legitimate console/Neo-Geo homebrews and ports on real hardware remain allowed).
+    `Unity Remake`), randomizer seed, bug-fix patch, or embedded sub-game/minigame entry
+    rather than a standalone playable retro release (legitimate console/Neo-Geo homebrews
+    and ports on real hardware remain allowed).
     """
-    _ = (synopsis, publisher)
+    _ = publisher
     t_low = (title or "").strip().lower()
-    return any(marker in t_low for marker in _UNOFFICIAL_TITLE_MARKERS)
+    if any(marker in t_low for marker in _UNOFFICIAL_TITLE_MARKERS):
+        return True
+    s_low = f" {(synopsis or '').strip().lower()} "
+    return any(marker in s_low for marker in _UNOFFICIAL_SYNOPSIS_MARKERS)
 
 
 _GAME_TITLE_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")

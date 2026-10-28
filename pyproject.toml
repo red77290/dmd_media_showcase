@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dmd-media-showcase"
-version = "1.0.0"
+version = "1.1.2"
 description = "DMD Media Showcase & Real-Time MQTT+UDP / HTTP Streaming Server (Games, Movies, TV Series, Anime) for HUB75 LED Matrices"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -1,7 +1,7 @@
 asyncapi: 2.6.0
 info:
   title: DMD Media Showcase Server — MQTT 3.1.1 & UDP DMDF Streaming Protocol
-  version: 1.1.0
+  version: 1.1.2
   description: |
     Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server**,
     powering **ArcadeMatrix (ESP32 / ESP32-S3)**, **Server-Managed Passive ESP32 Receivers**, and **ArcadeMatrix_RPi** HUB75 LED panels.

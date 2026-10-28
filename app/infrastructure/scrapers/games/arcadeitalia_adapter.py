@@ -43,6 +43,7 @@ from app.infrastructure.scrapers.http_utils import (
     create_async_http_client,
     fetch_wikipedia_localized_synopsis,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 from app.infrastructure.scrapers.referential_store import (
     ArcadeItaliaReferentialStrategy,
     arcadeitalia_referential_strategy,
@@ -202,7 +203,12 @@ class ArcadeItaliaAdapter(IScraperSource):
             lang=short_lang,
             source_id=self.source_id,
             theme_palette=tuple(sys_meta["palette"]),
-            extra_meta={"system": canon_sys, "mame_rom": rom, "genre": canon_genre},
+            extra_meta={
+                "system": canon_sys,
+                "mame_rom": rom,
+                "genre": canon_genre,
+                "synopsis_localized": "1" if (history and short_lang == "en") else "0",
+            },
         )
 
         flyer = info.get("url_image_flyer") or info.get("url_image_cabinet")
@@ -248,9 +254,9 @@ class ArcadeItaliaAdapter(IScraperSource):
                         client,
                         clean_title,
                         lang=short_lang,
-                        domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
+                        domain_hint="video game",
                     ),
-                    timeout=2.5,
+                    timeout=4.0,
                 )
                 if wiki_syn:
                     cand.synopsis = wiki_syn
@@ -266,6 +272,8 @@ class ArcadeItaliaAdapter(IScraperSource):
                 )
         elif history and short_lang == "en":
             cand.extra_meta["synopsis_localized"] = "1"
+        if short_lang != "en" and history and cand.extra_meta.get("synopsis_localized") != "1":
+            await ensure_candidate_localized(cand, short_lang, client, raw_source_lang="en")
 
         return cand
 

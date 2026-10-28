@@ -41,6 +41,7 @@ from app.infrastructure.scrapers.http_utils import (
     create_async_http_client,
     fetch_wikipedia_localized_synopsis,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 from app.infrastructure.scrapers.referential_store import (
     LibretroWikidataReferentialStrategy,
     _is_excluded_nointro_filename,
@@ -303,12 +304,24 @@ class LibretroWikidataAdapter(IScraperSource):
             youtube_url=None,
             source_id=self.source_id,
             theme_palette=tuple(smeta["palette"]),
-            extra_meta={"system": canon_sys, "genre": canon_genre, "qid": entry.get("qid", "")},
+            extra_meta={
+                "system": canon_sys,
+                "genre": canon_genre,
+                "qid": entry.get("qid", ""),
+                "synopsis_localized": "1" if wiki_syn else "0",
+            },
         )
         if snap_url:
             cand.add_unique_snapshot(snap_url)
         if title_url and title_url != poster_url:
             cand.add_unique_snapshot(title_url)
+        if not wiki_syn and short_lang != "en" and fetch_synopsis and client is not None:
+            en_syn, _ = await fetch_wikipedia_localized_synopsis(
+                client, str(entry.get("en_wiki") or title_en or display_title), lang="en", domain_hint="video game"
+            )
+            if en_syn:
+                cand.synopsis = en_syn
+                await ensure_candidate_localized(cand, short_lang, client, raw_source_lang="en")
         return cand
 
     async def _discover_from_verified_libretro_tree(

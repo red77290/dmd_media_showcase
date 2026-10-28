@@ -24,6 +24,7 @@ from app.infrastructure.scrapers.http_utils import (
     create_async_http_client,
     fetch_dailymotion_trailer_and_stills,
 )
+from app.infrastructure.scrapers.translation_service import ensure_candidate_localized
 
 logger = logging.getLogger("dmd_showcase.scrapers.tvdb")
 
@@ -245,7 +246,9 @@ class TvdbSeriesAdapter(IScraperSource):
 
         # Fetch extended record for trailers, artworks, and translations
         loc_title = orig_title
-        loc_overview = clean_synopsis_text(raw_item.get("overview"), max_chars=320)
+        raw_overview = clean_synopsis_text(raw_item.get("overview"), max_chars=320)
+        loc_overview = raw_overview
+        has_tvdb_loc = bool(short_lang == "en" and raw_overview)
         trailer_url: Optional[str] = None
         banner_url: Optional[str] = None
         snapshots: List[str] = []
@@ -255,10 +258,13 @@ class TvdbSeriesAdapter(IScraperSource):
         if isinstance(translations_map, dict) and translations_map.get(tvdb_lang):
             loc_title = str(translations_map[tvdb_lang]).strip()
         if isinstance(overviews_map, dict) and overviews_map.get(tvdb_lang):
-            loc_overview = clean_synopsis_text(overviews_map[tvdb_lang], max_chars=320)
+            mapped_ov = clean_synopsis_text(overviews_map[tvdb_lang], max_chars=320)
+            if mapped_ov:
+                loc_overview = mapped_ov
+                has_tvdb_loc = True
 
         try:
-            if not loc_overview or short_lang != "en":
+            if not has_tvdb_loc and short_lang != "en":
                 t_resp = await client.get(
                     f"https://api4.thetvdb.com/v4/series/{tvdb_id}/translations/{tvdb_lang}",
                     headers=headers,
@@ -268,7 +274,10 @@ class TvdbSeriesAdapter(IScraperSource):
                     if t_data.get("name"):
                         loc_title = str(t_data["name"]).strip()
                     if t_data.get("overview"):
-                        loc_overview = clean_synopsis_text(t_data["overview"], max_chars=320)
+                        tr_ov = clean_synopsis_text(t_data["overview"], max_chars=320)
+                        if tr_ov:
+                            loc_overview = tr_ov
+                            has_tvdb_loc = True
 
             ext_resp = await client.get(
                 f"https://api4.thetvdb.com/v4/series/{tvdb_id}/extended",
@@ -278,6 +287,8 @@ class TvdbSeriesAdapter(IScraperSource):
                 ext_data = ext_resp.json().get("data") or {}
                 if not poster_url and ext_data.get("image"):
                     poster_url = str(ext_data["image"])
+                if not loc_overview and ext_data.get("overview"):
+                    loc_overview = clean_synopsis_text(ext_data.get("overview"), max_chars=320)
                 for tr in ext_data.get("trailers") or []:
                     u = str(tr.get("url") or "").strip()
                     if u.startswith("http"):
@@ -317,6 +328,17 @@ class TvdbSeriesAdapter(IScraperSource):
             youtube_url=trailer_url,
             source_id=self.source_id,
             theme_palette=g_meta["palette"],
+            extra_meta={
+                "tvdb_id": str(tvdb_id),
+                "original_title": orig_title,
+                "synopsis_localized": "1" if has_tvdb_loc else "0",
+            },
+        )
+        await ensure_candidate_localized(
+            cand,
+            short_lang,
+            client,
+            raw_source_lang="" if has_tvdb_loc else ("en" if loc_overview else ""),
         )
         for snap in snapshots:
             cand.add_unique_snapshot(snap)
