@@ -355,6 +355,8 @@ class SessionBatchManager(BoundedWorkerExecutorMixin[QueuedVideoJob]):
                     settings.worker_nice_increment,
                     settings.ffmpeg_threads_per_job,
                     settings.ytdlp_max_filesize_mb,
+                    job.candidate.domain,
+                    str((job.candidate.extra_meta or {}).get("canonical_genre") or job.candidate.subtitle or ""),
                 )
                 has_vid = bool(res.get("has_video", False))
                 job.item.has_video = has_vid

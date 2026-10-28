@@ -1364,5 +1364,64 @@ def test_igdb_discovery_excludes_subgames_and_video_pipeline_falls_back_on_dead_
     ]
 
 
+def test_resolve_domain_scene_type_hint_unifies_platformer_and_fighting_and_forwards_to_clip_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """
+    Verify Showcase maps 2D platformer, 1v1 fighting, beat 'em up, run & gun, and action genres
+    (both canonical slugs and localized subtitle prefixes) to `scene_type='platformer'`, and
+    forwards `scene_type` into `DmdClipConfig` during video asset transcoding.
+    """
+    from app.infrastructure.rendering import video_pipeline
+    from app.infrastructure.rendering.video_pipeline import resolve_domain_scene_type_hint
+
+    assert resolve_domain_scene_type_hint("games", "platform") == "platformer"
+    assert resolve_domain_scene_type_hint("games", "fighting") == "platformer"
+    assert resolve_domain_scene_type_hint("games", "beatemup") == "platformer"
+    assert resolve_domain_scene_type_hint("games", "runandgun") == "platformer"
+    assert resolve_domain_scene_type_hint("games", "Plateforme • Mega Drive") == "platformer"
+    assert resolve_domain_scene_type_hint("games", "Combat (1v1 / Versus) • CPS-2") == "platformer"
+    assert resolve_domain_scene_type_hint("games", "shootemup") == "action_horizontal"
+    assert resolve_domain_scene_type_hint("games", "maze") == "top_down_isometric"
+    assert resolve_domain_scene_type_hint("movies", "action") == ""
+
+    captured_configs: List[Any] = []
+
+    def _fake_extract(video_page_url: str, out_mp4: Any, max_duration_s: float = 8.0, max_filesize_mb: int = 60) -> bool:
+        out_mp4.write_bytes(b"\x00" * 16384)
+        return True
+
+    class _CapturingProc:
+        def process_video_trailer(self, **kwargs: Any) -> Any:
+            from types import SimpleNamespace
+
+            captured_configs.append(kwargs.get("config"))
+            return SimpleNamespace(frame_count=120, fps=15, duration_s=8.0, quality_score=91)
+
+    monkeypatch.setattr(video_pipeline, "extract_hd_youtube_clip_ytdlp", _fake_extract)
+    monkeypatch.setattr(video_pipeline, "DmdMediaProcessor", _CapturingProc)
+
+    res = video_pipeline.build_video_assets_worker_task(
+        item_dir=str(tmp_path / "dracula"),
+        title="Bram Stoker's Dracula",
+        badge="MD",
+        palette=(180, 40, 40),
+        video_url=None,
+        youtube_url="https://www.youtube.com/watch?v=real_clip",
+        width=128,
+        height=32,
+        fps=15,
+        max_duration_s=8.0,
+        domain="games",
+        genre_hint="Plateforme • MD",
+    )
+    assert res["has_video"] is True
+    assert len(captured_configs) == 1
+    if "scene_type" in getattr(video_pipeline.DmdClipConfig, "__dataclass_fields__", {}):
+        assert captured_configs[0].scene_type == "platformer"
+
+
+
 
 
