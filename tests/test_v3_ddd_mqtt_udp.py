@@ -1606,10 +1606,112 @@ def test_resolution_256x64_propagates_across_mqtt_rest_transcoder_and_udp_chunks
     asyncio.run(_run_switch())
 
 
+def test_expired_ssl_certificate_asset_download_fallback(monkeypatch):
+    """
+    Verify `default_http_download_bytes` retries with an unverified TLS context when
+    an upstream retro archive (e.g. `adb.arcadeitalia.net`) has an expired TLS certificate,
+    and caches the host so subsequent asset downloads avoid redundant failed handshakes.
+    """
+    import ssl
+    from urllib.error import URLError
+    import app.infrastructure.rendering.imaging_primitives as img_prim
+
+    monkeypatch.setattr(img_prim, "_UNVERIFIED_TLS_HOSTS", set())
+    expected_payload = _make_png_bytes(64, 64)
+    observed_contexts = []
+
+    class _FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, _max_bytes: int) -> bytes:
+            return expected_payload
+
+    def _fake_urlopen(req, timeout=6.0, context=None):
+        observed_contexts.append(context)
+        if context is not None and context.verify_mode != ssl.CERT_NONE:
+            raise URLError(ssl.SSLCertVerificationError(1, "certificate verify failed: certificate has expired"))
+        return _FakeResp()
+
+    monkeypatch.setattr(img_prim, "urlopen", _fake_urlopen)
+
+    url1 = "https://adb.arcadeitalia.net/media/mame.current/flyers/mslugx.png"
+    url2 = "https://adb.arcadeitalia.net/media/mame.current/marquees/mslugx.png"
+
+    data1 = img_prim.default_http_download_bytes(url1)
+    assert data1 == expected_payload
+    assert len(observed_contexts) == 2
+    assert observed_contexts[0].verify_mode != ssl.CERT_NONE
+    assert observed_contexts[1].verify_mode == ssl.CERT_NONE
+    assert "adb.arcadeitalia.net" in img_prim._UNVERIFIED_TLS_HOSTS
+
+    # Second download on same host goes straight to unverified TLS in 1 call
+    data2 = img_prim.default_http_download_bytes(url2)
+    assert data2 == expected_payload
+    assert len(observed_contexts) == 3
+    assert observed_contexts[2].verify_mode == ssl.CERT_NONE
 
 
+def test_portable_ytdlp_command_resolution_and_python_api_fallback(tmp_path: Path, monkeypatch):
+    """
+    Verify frozen Windows/macOS/Linux bundles never fail with `[WinError 2]` when external
+    `yt-dlp` binary is absent from `_internal/bin`:
+    1. `resolve_ytdlp_command()` dispatches to `[sys.executable, '--internal-ytdlp']` when frozen.
+    2. `extract_hd_youtube_clip_ytdlp()` falls back to in-process `yt_dlp.YoutubeDL` if CLI is unavailable.
+    3. `DEFAULT_PARAMS['text_font_file']` is never set to frozen `__file__`.
+    """
+    import sys
+    import app.portable_env as penv
+    import app.infrastructure.scrapers.youtube_resolver as yt_res
+    from app.infrastructure.rendering.imaging_primitives import DEFAULT_PARAMS
+    from app.infrastructure.scrapers.http_utils import format_exception_detail
+
+    assert DEFAULT_PARAMS.get("text_font_file") == ""
+    assert DEFAULT_PARAMS.get("quiet_terminal_log") is True
+    assert format_exception_detail(TimeoutError()) == "TimeoutError"
+
+    # 1. Frozen bundle without external yt-dlp.exe -> self-dispatch via --internal-ytdlp
+    empty_bin = tmp_path / "_internal" / "bin"
+    empty_bin.mkdir(parents=True)
+    monkeypatch.setattr(penv, "get_internal_bin_dir", lambda: empty_bin)
+    monkeypatch.setattr(penv.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "dmd-media-showcase.exe"))
+
+    cmd_prefix = penv.resolve_ytdlp_command()
+    assert cmd_prefix == [str(tmp_path / "dmd-media-showcase.exe"), "--internal-ytdlp"]
+
+    # 2. Fallback to in-process Python API if CLI raises FileNotFoundError ([WinError 2])
+    out_clip = tmp_path / "yt_clip.mp4"
+
+    def _raise_winerror2(*_args, **_kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    def _fake_inproc_extract(**kwargs):
+        kwargs["out_mp4"].write_bytes(b"\x00" * 8192)
+        return True
+
+    monkeypatch.setattr(yt_res.subprocess, "run", _raise_winerror2)
+    monkeypatch.setattr(yt_res, "_extract_hd_youtube_clip_python_api", _fake_inproc_extract)
+
+    ok = yt_res.extract_hd_youtube_clip_ytdlp(
+        video_page_url="https://www.youtube.com/watch?v=sfParGc8BJw",
+        out_mp4=out_clip,
+        max_duration_s=8.0,
+    )
+    assert ok is True
+    assert out_clip.exists() and out_clip.stat().st_size == 8192
 
 
-
-
-
+@pytest.mark.asyncio
+async def test_favicon_route_returns_200_svg():
+    """Verify `GET /favicon.ico` returns 200 OK instead of spamming 404 in browser logs."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/favicon.ico")
+        assert resp.status_code == 200
+        assert "image/svg+xml" in resp.headers.get("content-type", "")

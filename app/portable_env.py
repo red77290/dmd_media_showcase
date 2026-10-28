@@ -10,10 +10,13 @@ When running as a portable bundle (PyInstaller frozen executable or `DMD_PORTABL
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+from typing import Dict, List, Optional
 
 
 def is_portable_bundle() -> bool:
@@ -119,8 +122,45 @@ def enforce_hermetic_environment() -> Path:
         os.environ.pop("PYTHONHOME", None)
         os.environ["PYTHONNOUSERSITE"] = "1"
         os.environ.setdefault("CACHE_DIR", str(data_dir / "stream_tmp"))
+        try:
+            import certifi
+
+            ca_bundle = certifi.where()
+            if ca_bundle and Path(ca_bundle).is_file():
+                os.environ.setdefault("SSL_CERT_FILE", ca_bundle)
+                os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_bundle)
+        except Exception:
+            pass
 
     return data_dir
+
+
+def subprocess_windowless_kwargs() -> Dict[str, int]:
+    """Return `creationflags=CREATE_NO_WINDOW` on Windows so helper CLI processes never flash consoles."""
+    if sys.platform == "win32":
+        flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        return {"creationflags": int(flag)}
+    return {}
+
+
+def resolve_ytdlp_command() -> Optional[List[str]]:
+    """
+    Resolve the `yt-dlp` command prefix across Docker, virtualenvs, and hermetic
+    PyInstaller bundles (`Windows_x64`, `macOS`, `Linux_x64`).
+    """
+    bin_dir = get_internal_bin_dir()
+    exe_name = "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp"
+    bundled = bin_dir / exe_name
+    if bundled.exists() and bundled.is_file():
+        return [str(bundled)]
+    found = shutil.which("yt-dlp")
+    if found:
+        return [found]
+    if getattr(sys, "frozen", False) and sys.executable:
+        return [sys.executable, "--internal-ytdlp"]
+    if sys.executable and importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
+    return None
 
 
 def get_ffmpeg_binary() -> str:

@@ -254,11 +254,13 @@ class CandidateAggregator:
                     timeout=self.SECONDARY_TIMEOUT_S,
                 )
             except Exception as exc:
+                err_txt = str(exc).strip()
+                err_summary = f"{type(exc).__name__}: {err_txt}" if err_txt else type(exc).__name__
                 logger.warning(
                     "[AGGREGATOR] Secondary enrichment on '%s' for '%s' timed out/failed: %s",
                     sec.source_id,
                     cand.title,
-                    exc,
+                    err_summary,
                 )
                 continue
 

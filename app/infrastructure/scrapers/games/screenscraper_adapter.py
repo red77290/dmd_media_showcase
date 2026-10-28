@@ -35,7 +35,10 @@ from app.infrastructure.scrapers.games.screenscraper_xml_parser import (
     record_screenscraper_cooldown,
     reset_screenscraper_cooldown,
 )
-from app.infrastructure.scrapers.http_utils import create_async_http_client
+from app.infrastructure.scrapers.http_utils import (
+    create_async_http_client,
+    format_exception_detail,
+)
 
 logger = logging.getLogger("dmd_showcase.scrapers.games.screenscraper")
 
@@ -228,7 +231,10 @@ class ScreenScraperAdapter(IScraperSource):
                             staged_keys.update(dedup_keys)
                             overflow_candidates.append((cand, dedup_keys))
                 except Exception as exc:
-                    logger.warning("[ScreenScraper] Discovery request failed: %s", exc)
+                    logger.warning(
+                        "[ScreenScraper] Discovery request failed: %s",
+                        format_exception_detail(exc),
+                    )
                     break
 
         if len(results) < count and overflow_candidates:
@@ -391,7 +397,11 @@ class ScreenScraperAdapter(IScraperSource):
                             if not await _run_query_pass(client, expanded) or results:
                                 break
         except Exception as exc:
-            logger.warning("[ScreenScraper] Search error for '%s': %s", q_clean, exc)
+            logger.warning(
+                "[ScreenScraper] Search error for '%s': %s",
+                q_clean,
+                format_exception_detail(exc),
+            )
 
         return results[:target_limit]
 

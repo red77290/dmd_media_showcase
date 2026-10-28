@@ -13,9 +13,14 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
-from app.portable_env import get_ffmpeg_binary
+from app.infrastructure.scrapers.http_utils import format_exception_detail
+from app.portable_env import (
+    get_ffmpeg_binary,
+    resolve_ytdlp_command,
+    subprocess_windowless_kwargs,
+)
 
 logger = logging.getLogger("dmd_showcase.scrapers.youtube")
 
@@ -78,7 +83,13 @@ def slice_hd_remote_video_ffmpeg(
     ]
     t0 = time.monotonic()
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=max(20, int(dur) + 15))
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=max(20, int(dur) + 15),
+            **subprocess_windowless_kwargs(),
+        )
         if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
             logger.info(
                 "[VIDEO HD] FFmpeg sliced clean HD clip (%.1f KB) in %.2fs from %s",
@@ -88,7 +99,78 @@ def slice_hd_remote_video_ffmpeg(
             )
             return True
     except Exception as exc:
-        logger.debug("[VIDEO HD] FFmpeg HTTP slice skipped for %s: %s", video_url, exc)
+        logger.debug(
+            "[VIDEO HD] FFmpeg HTTP slice skipped for %s: %s",
+            video_url,
+            format_exception_detail(exc),
+        )
+    return False
+
+
+def _extract_hd_youtube_clip_python_api(
+    video_page_url: str,
+    out_mp4: Path,
+    ffmpeg_bin: str,
+    sec_start: int,
+    sec_end: int,
+    eff_mb: int,
+    fallback_mb: int,
+    t0: float,
+) -> bool:
+    """In-process `yt_dlp.YoutubeDL` fallback when no external `yt-dlp` binary is on PATH."""
+    import yt_dlp
+    from yt_dlp.utils import download_range_func
+
+    base_opts: Dict[str, Any] = {
+        "source_address": "0.0.0.0",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 7,
+        "ffmpeg_location": ffmpeg_bin,
+        "format_sort": ["vcodec:h264", "res:720", "ext:mp4:m4a"],
+        "merge_output_format": "mp4",
+        "outtmpl": str(out_mp4),
+    }
+    section_opts: Dict[str, Any] = {
+        **base_opts,
+        "max_filesize": eff_mb * 1024 * 1024,
+        "format": HD_YTDLP_FORMAT,
+        "download_ranges": download_range_func(None, [(sec_start, sec_end)]),
+    }
+    try:
+        with yt_dlp.YoutubeDL(section_opts) as ydl:
+            ydl.download([video_page_url])
+        if out_mp4.exists() and out_mp4.stat().st_size > 4096:
+            logger.info(
+                "[VIDEO HD] yt-dlp (in-process) extracted clean HD clip (%.1f KB) in %.2fs from %s",
+                out_mp4.stat().st_size / 1024.0,
+                time.monotonic() - t0,
+                video_page_url,
+            )
+            return True
+    except Exception:
+        out_mp4.unlink(missing_ok=True)
+
+    full_opts: Dict[str, Any] = {
+        **base_opts,
+        "max_filesize": fallback_mb * 1024 * 1024,
+        "format": (
+            "best[vcodec^=avc1][ext=mp4][height<=1080][height>=720]/"
+            "best[vcodec!*=av01][ext=mp4][height<=720]/"
+            "best[vcodec!*=av01][ext=mp4]/best[vcodec!*=av01]"
+        ),
+    }
+    with yt_dlp.YoutubeDL(full_opts) as ydl:
+        ydl.download([video_page_url])
+    if out_mp4.exists() and out_mp4.stat().st_size > 4096:
+        logger.info(
+            "[VIDEO HD] yt-dlp (in-process) extracted HD clip (%.1f KB) in %.2fs from %s",
+            out_mp4.stat().st_size / 1024.0,
+            time.monotonic() - t0,
+            video_page_url,
+        )
+        return True
     return False
 
 
@@ -115,73 +197,107 @@ def extract_hd_youtube_clip_ytdlp(
     sec_start = 8
     sec_end = int(sec_start + round(clip_dur))
     ffmpeg_bin = get_ffmpeg_binary()
-    cmd = [
-        "yt-dlp",
-        "--force-ipv4",
-        "--no-playlist",
-        "--no-warnings",
-        "--quiet",
-        "--socket-timeout",
-        "7",
-        "--max-filesize",
-        f"{eff_mb}M",
-        "--ffmpeg-location",
-        ffmpeg_bin,
-        "-S",
-        "vcodec:h264,res:720,ext:mp4:m4a",
-        "-f",
-        HD_YTDLP_FORMAT,
-        "--merge-output-format",
-        "mp4",
-        "--download-sections",
-        f"*{sec_start}-{sec_end}",
-        "-o",
-        str(out_mp4),
-        video_page_url,
-    ]
+    ytdlp_prefix: Optional[List[str]] = resolve_ytdlp_command()
+    win_kwargs = subprocess_windowless_kwargs()
+
     t0 = time.monotonic()
     try:
         logger.info("[VIDEO HD] Extracting 720p/1080p clip via yt-dlp: %s", video_page_url)
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=max(24, int(clip_dur) + 15))
-        if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
-            logger.info(
-                "[VIDEO HD] yt-dlp extracted clean HD clip (%.1f KB) in %.2fs from %s",
-                out_mp4.stat().st_size / 1024.0,
-                time.monotonic() - t0,
+        if ytdlp_prefix is not None:
+            cmd = [
+                *ytdlp_prefix,
+                "--force-ipv4",
+                "--no-playlist",
+                "--no-warnings",
+                "--quiet",
+                "--socket-timeout",
+                "7",
+                "--max-filesize",
+                f"{eff_mb}M",
+                "--ffmpeg-location",
+                ffmpeg_bin,
+                "-S",
+                "vcodec:h264,res:720,ext:mp4:m4a",
+                "-f",
+                HD_YTDLP_FORMAT,
+                "--merge-output-format",
+                "mp4",
+                "--download-sections",
+                f"*{sec_start}-{sec_end}",
+                "-o",
+                str(out_mp4),
                 video_page_url,
-            )
-            return True
+            ]
+            try:
+                res = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=max(24, int(clip_dur) + 15),
+                    **win_kwargs,
+                )
+                if res.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
+                    logger.info(
+                        "[VIDEO HD] yt-dlp extracted clean HD clip (%.1f KB) in %.2fs from %s",
+                        out_mp4.stat().st_size / 1024.0,
+                        time.monotonic() - t0,
+                        video_page_url,
+                    )
+                    return True
 
-        # Second attempt without --download-sections if ffmpeg section muxing is unsupported by CDN
-        cmd_full = [
-            "yt-dlp",
-            "--force-ipv4",
-            "--no-playlist",
-            "--no-warnings",
-            "--quiet",
-            "--socket-timeout",
-            "7",
-            "--max-filesize",
-            f"{fallback_mb}M",
-            "--ffmpeg-location",
-            ffmpeg_bin,
-            "-S",
-            "vcodec:h264,res:720,ext:mp4:m4a",
-            "-f",
-            "best[vcodec^=avc1][ext=mp4][height<=1080][height>=720]/best[vcodec!*=av01][ext=mp4][height<=720]/best[vcodec!*=av01][ext=mp4]/best[vcodec!*=av01]",
-            "-o",
-            str(out_mp4),
-            video_page_url,
-        ]
-        res2 = subprocess.run(cmd_full, capture_output=True, text=True, timeout=18)
-        if res2.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
-            logger.info(
-                "[VIDEO HD] yt-dlp extracted HD clip (%.1f KB) in %.2fs from %s",
-                out_mp4.stat().st_size / 1024.0,
-                time.monotonic() - t0,
-                video_page_url,
-            )
-            return True
+                cmd_full = [
+                    *ytdlp_prefix,
+                    "--force-ipv4",
+                    "--no-playlist",
+                    "--no-warnings",
+                    "--quiet",
+                    "--socket-timeout",
+                    "7",
+                    "--max-filesize",
+                    f"{fallback_mb}M",
+                    "--ffmpeg-location",
+                    ffmpeg_bin,
+                    "-S",
+                    "vcodec:h264,res:720,ext:mp4:m4a",
+                    "-f",
+                    "best[vcodec^=avc1][ext=mp4][height<=1080][height>=720]/best[vcodec!*=av01][ext=mp4][height<=720]/best[vcodec!*=av01][ext=mp4]/best[vcodec!*=av01]",
+                    "-o",
+                    str(out_mp4),
+                    video_page_url,
+                ]
+                res2 = subprocess.run(
+                    cmd_full,
+                    capture_output=True,
+                    text=True,
+                    timeout=18,
+                    **win_kwargs,
+                )
+                if res2.returncode == 0 and out_mp4.exists() and out_mp4.stat().st_size > 4096:
+                    logger.info(
+                        "[VIDEO HD] yt-dlp extracted HD clip (%.1f KB) in %.2fs from %s",
+                        out_mp4.stat().st_size / 1024.0,
+                        time.monotonic() - t0,
+                        video_page_url,
+                    )
+                    return True
+                return False
+            except FileNotFoundError:
+                out_mp4.unlink(missing_ok=True)
+
+        return _extract_hd_youtube_clip_python_api(
+            video_page_url=video_page_url,
+            out_mp4=out_mp4,
+            ffmpeg_bin=ffmpeg_bin,
+            sec_start=sec_start,
+            sec_end=sec_end,
+            eff_mb=eff_mb,
+            fallback_mb=fallback_mb,
+            t0=t0,
+        )
     except Exception as exc:
-        logger.info("[VIDEO HD] yt-dlp extraction skipped for %s: %s", video_page_url, exc)
+        logger.info(
+            "[VIDEO HD] yt-dlp extraction skipped for %s: %s",
+            video_page_url,
+            format_exception_detail(exc),
+        )
     return False

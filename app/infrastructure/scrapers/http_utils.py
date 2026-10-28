@@ -52,6 +52,12 @@ def install_ipv4_preference() -> None:
 install_ipv4_preference()
 
 
+def format_exception_detail(exc: BaseException) -> str:
+    """Format an exception with its class name so empty `TimeoutError()`/`ReadTimeout("")` never log blank."""
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+
 def create_async_http_client(
     timeout: float = 6.0,
     headers: Optional[Dict[str, str]] = None,
