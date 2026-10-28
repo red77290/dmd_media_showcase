@@ -10,6 +10,17 @@ Exposes:
 
 from __future__ import annotations
 
+import sys as _boot_sys
+
+if len(_boot_sys.argv) >= 2 and _boot_sys.argv[1] == "--internal-ytdlp":
+    from app.portable_env import enforce_hermetic_environment as _enforce_ytdlp_env
+
+    _enforce_ytdlp_env()
+    import yt_dlp as _yt_dlp_mod
+
+    _boot_sys.argv = ["yt-dlp", *_boot_sys.argv[2:]]
+    raise SystemExit(_yt_dlp_mod.main())
+
 from app.portable_env import enforce_hermetic_environment
 
 # Lock down portable environment before any media/subprocess imports

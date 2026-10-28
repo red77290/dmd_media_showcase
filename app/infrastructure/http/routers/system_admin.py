@@ -49,6 +49,26 @@ from app.models import (
 
 router = APIRouter()
 
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="6" fill="#0e101c" stroke="#38bdf8" stroke-width="2"/>'
+    '<circle cx="9" cy="11" r="2.2" fill="#ffa800"/>'
+    '<circle cx="16" cy="11" r="2.2" fill="#38bdf8"/>'
+    '<circle cx="23" cy="11" r="2.2" fill="#f43f5e"/>'
+    '<polygon points="12,15 12,23 21,19" fill="#ffc420"/>'
+    "</svg>"
+)
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def web_favicon() -> Response:
+    """Serve a compact HUB75 LED matrix favicon so browsers do not log 404 Not Found."""
+    return Response(
+        content=_FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
