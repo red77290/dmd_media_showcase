@@ -11,6 +11,7 @@ from app.domain.aggregates import (
 )
 from app.domain.board_identity import (
     DmdBoardIdentity,
+    PER_ENGINE_DMD_ID_RE,
     canonical_dmd_board_key,
     is_usable_physical_lan_ip,
     select_best_udp_ip,
@@ -28,6 +29,7 @@ from app.domain.entities import (
 __all__ = [
     "BoundedTtlCache",
     "DmdBoardIdentity",
+    "PER_ENGINE_DMD_ID_RE",
     "DomainType",
     "DualSlotPipeline",
     "FilterCriteria",

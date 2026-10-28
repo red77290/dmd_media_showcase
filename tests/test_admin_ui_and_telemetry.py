@@ -216,6 +216,85 @@ def test_canonical_dmd_board_key_deduplicates_multi_engine_boards():
     assert canonical_dmd_board_key("custom_panel", "172.16.5.42") == "ip:172.16.5.42"
     assert canonical_dmd_board_key("custom_panel", "127.0.0.1") == "id:custom_panel"
 
+    # Hardware-scoped unique IDs (`esp32_<hwid>_<domain>_<W>x<H>`, `rpi_<hwid>_<domain>_<W>x<H>`):
+    # - Normalize reconnect suffixes (`_3`) and preserve `_sync`
+    assert strip_mqtt_gen_suffix("esp32_a4cf12_games_128x32_3") == "esp32_a4cf12_games_128x32"
+    assert strip_mqtt_gen_suffix("esp32_a4cf12_games_128x32_sync_2") == "esp32_a4cf12_games_128x32_sync"
+    assert strip_mqtt_gen_suffix("rpi_9b03e1_movies_128x64_7") == "rpi_9b03e1_movies_128x64"
+
+    # - All 4 domains + `_sync` on physical ESP32 #1 (`a4cf12`) group as 1 board, while a second
+    #   physical ESP32 #2 (`7f8801`) of identical 128x32 resolution stays completely isolated
+    #   even when both sit behind Docker NAT (`172.18.0.1`)!
+    board1_keys = {
+        canonical_dmd_board_key(f"esp32_a4cf12_{dom}_128x32", "172.18.0.1")
+        for dom in ("games", "movies", "series", "anime")
+    }
+    board1_keys.add(canonical_dmd_board_key("esp32_a4cf12_games_128x32_sync", "172.18.0.1"))
+    board2_keys = {
+        canonical_dmd_board_key(f"esp32_7f8801_{dom}_128x32", "172.18.0.1")
+        for dom in ("games", "movies", "series", "anime")
+    }
+    assert board1_keys == {"board:esp32_a4cf12"}
+    assert board2_keys == {"board:esp32_7f8801"}
+    assert board1_keys.isdisjoint(board2_keys)
+
+
+@pytest.mark.asyncio
+async def test_embedded_mqtt_broker_reconnect_session_takeover_keeps_new_client_alive():
+    """
+    Verify MQTT 3.1.1 §3.1.4 session takeover: when a client reconnects with the same `client_id`
+    before the previous half-open TCP socket closes, the predecessor's `finally` cleanup must NOT
+    evict the new session or fire a spurious Last Will `"offline"` message.
+    """
+    import socket
+    from app.infrastructure.mqtt.embedded_broker import EmbeddedMqttBroker, SimpleAsyncMqttClient
+
+    async def _connect_pair(broker_inst: EmbeddedMqttBroker, client: SimpleAsyncMqttClient):
+        s_cli, s_srv = socket.socketpair()
+        r_cli, w_cli = await asyncio.open_connection(sock=s_cli)
+        r_srv, w_srv = await asyncio.open_connection(sock=s_srv)
+        srv_task = asyncio.get_running_loop().create_task(broker_inst._handle_client(r_srv, w_srv))
+        await client.connect(custom_streams=(r_cli, w_cli))
+        return srv_task
+
+    broker = EmbeddedMqttBroker(host="127.0.0.1", port=0)
+    lwt_events = []
+
+    async def on_lwt(topic: str, payload: bytes, retain: bool) -> None:
+        lwt_events.append((topic, payload))
+
+    broker.subscribe_internal("dmd_showcase/clients/+/status", on_lwt)
+    try:
+        c1 = SimpleAsyncMqttClient(
+            "127.0.0.1",
+            0,
+            "esp32_a4cf12_games_128x32",
+            will_topic="dmd_showcase/clients/esp32_a4cf12_games_128x32/status",
+            will_payload=b'{"online":false}',
+        )
+        c2 = SimpleAsyncMqttClient(
+            "127.0.0.1",
+            0,
+            "esp32_a4cf12_games_128x32",
+            will_topic="dmd_showcase/clients/esp32_a4cf12_games_128x32/status",
+            will_payload=b'{"online":false}',
+        )
+        t1 = await _connect_pair(broker, c1)
+        assert "esp32_a4cf12_games_128x32" in broker.clients
+
+        # Reconnect c2 with identical client_id while c1 is still open
+        t2 = await _connect_pair(broker, c2)
+        await asyncio.wait_for(t1, timeout=2.0)
+
+        assert "esp32_a4cf12_games_128x32" in broker.clients
+        assert broker.clients["esp32_a4cf12_games_128x32"] is not None
+        assert lwt_events == []
+        await c2.disconnect()
+        await asyncio.wait_for(t2, timeout=2.0)
+        await c1.disconnect(graceful=False)
+    finally:
+        await broker.stop()
+
 
 @pytest.mark.asyncio
 async def test_health_and_admin_config_four_domains_and_empty_seen_normalization(

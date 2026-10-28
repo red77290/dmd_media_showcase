@@ -210,6 +210,7 @@ class EmbeddedMqttBroker:
                         will_payload = body[pos : pos + w_len]
                     peername = writer.get_extra_info("peername")
                     peer_ip = str(peername[0]) if isinstance(peername, tuple) and len(peername) >= 1 else "127.0.0.1"
+                    old_session = self.clients.get(client_id)
                     session = _ClientSession(
                         client_id=client_id,
                         writer=writer,
@@ -219,6 +220,14 @@ class EmbeddedMqttBroker:
                         will_retain=will_retain,
                     )
                     self.clients[client_id] = session
+                    if old_session is not None and old_session is not session:
+                        #MQTT 3.1.1 §3.1.4 session takeover: supersede half-open predecessor
+                        # without firing its Last Will or letting its finally block evict us.
+                        old_session.clean_disconnect = True
+                        try:
+                            old_session.writer.close()
+                        except Exception:
+                            pass
                     logger.info(
                         "[MQTT BROKER] Client connected: client_id='%s' peer_ip=%s (will_topic=%s)",
                         client_id,
@@ -286,14 +295,14 @@ class EmbeddedMqttBroker:
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
             pass
         finally:
-            if session is not None:
+            if session is not None and self.clients.get(session.client_id) is session:
+                self.clients.pop(session.client_id, None)
                 if not session.clean_disconnect and session.will_topic:
                     await self.publish(
                         session.will_topic,
                         session.will_payload,
                         retain=session.will_retain,
                     )
-                self.clients.pop(session.client_id, None)
             try:
                 writer.close()
             except Exception:

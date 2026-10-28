@@ -15,18 +15,22 @@ from dataclasses import dataclass
 import re
 from typing import Optional
 
-_PER_ENGINE_DMD_ID_RE = re.compile(
-    r"^(?P<prefix>rpi|esp32|http)_(?P<domain>games|movies|series|anime)_(?P<geom>\d+x\d+)(?:_\d+)?$",
+PER_ENGINE_DMD_ID_RE = re.compile(
+    r"^(?P<prefix>rpi|esp32|http)(?:_(?P<hwid>[0-9a-z]{4,12}))?_(?P<domain>games|movies|series|anime)_(?P<geom>\d+x\d+)(?:_(?P<sync>sync))?(?:_\d+)?$",
     re.IGNORECASE,
 )
+_PER_ENGINE_DMD_ID_RE = PER_ENGINE_DMD_ID_RE
 
 
 def strip_mqtt_gen_suffix(client_id: str) -> str:
-    """Normalize an MQTT client ID (e.g. `rpi_games_128x32_3`) back to its logical `dmd_id`."""
+    """Normalize an MQTT client ID (e.g. `esp32_a4cf12_games_128x32_3` or `rpi_games_128x32_3`) back to its logical `dmd_id`."""
     raw = str(client_id or "").strip()
-    match = _PER_ENGINE_DMD_ID_RE.match(raw)
+    match = PER_ENGINE_DMD_ID_RE.match(raw)
     if match:
-        return f"{match.group('prefix').lower()}_{match.group('domain').lower()}_{match.group('geom').lower()}"
+        hwid = match.group("hwid")
+        mid = f"_{hwid.lower()}" if hwid else ""
+        sync = "_sync" if match.group("sync") else ""
+        return f"{match.group('prefix').lower()}{mid}_{match.group('domain').lower()}_{match.group('geom').lower()}{sync}"
     return raw
 
 
@@ -62,16 +66,18 @@ def is_usable_physical_lan_ip(ip: str) -> bool:
 def canonical_dmd_board_key(dmd_id: str, client_ip: str = "") -> str:
     """
     Compute a stable deduplication key representing one physical DMD matrix board:
-    - Both `ArcadeMatrix` (ESP32) and `ArcadeMatrix_RPi` instantiate up to 4 per-domain
-      runners (`rpi_games_128x32`, `rpi_movies_128x32`, ...) on the same physical board.
-    - Grouping by real LAN `client_ip` (when non-loopback / non-Docker-NAT) or by
-      `{platform}_{WxH}` ensures 1 physical board with 4 Showcase engines is counted as
-      1 DMD client with 4 domain slots rather than 4 separate boards.
+    - Hardware-scoped IDs (`esp32_a4cf12_games_128x32`, `rpi_9b03e1_movies_128x32`) carry a
+      deterministic per-board `<hwid>` so two boards of identical platform & resolution never
+      collide even behind Docker NAT (`172.18.0.1`), while all 4 domains + `_sync` on the same
+      board share `board:{prefix}_{hwid}`.
+    - Legacy IDs without `<hwid>` fall back to physical LAN `client_ip` or `board:{prefix}_{WxH}`.
     """
+    raw = str(dmd_id or "").strip()
+    match = PER_ENGINE_DMD_ID_RE.match(raw)
+    if match and match.group("hwid"):
+        return f"board:{match.group('prefix').lower()}_{match.group('hwid').lower()}"
     if is_usable_physical_lan_ip(client_ip):
         return f"ip:{client_ip.strip()}"
-    raw = str(dmd_id or "").strip()
-    match = _PER_ENGINE_DMD_ID_RE.match(raw)
     if match:
         return f"board:{match.group('prefix').lower()}_{match.group('geom').lower()}"
     return f"id:{raw or 'default_dmd'}"

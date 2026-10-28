@@ -16,7 +16,11 @@ from app.application.concurrency import AsyncTaskSupervisor
 from app.application.criteria_parser import parse_domain_criteria
 from app.application.showcase_state import ShowcaseRuntimeState
 from app.config import settings
-from app.domain.board_identity import canonical_dmd_board_key, select_best_udp_ip
+from app.domain.board_identity import (
+    PER_ENGINE_DMD_ID_RE,
+    canonical_dmd_board_key,
+    select_best_udp_ip,
+)
 from app.domain.entities import DomainType, FilterCriteria, PanelGeometry
 from app.domain.ports import IDmdProfileRepository, IFrameStreamerPort
 from app.domain.style_specs import (
@@ -25,10 +29,7 @@ from app.domain.style_specs import (
     normalize_domain_studio_style,
 )
 
-_PER_ENGINE_DMD_ID_RE = re.compile(
-    r"^(?P<prefix>rpi|esp32|http)_(?P<domain>games|movies|series|anime)_(?P<geom>\d+x\d+)(?:_\d+)?$",
-    re.IGNORECASE,
-)
+_PER_ENGINE_DMD_ID_RE = PER_ENGINE_DMD_ID_RE
 
 
 class ClientRegistryService:
@@ -105,7 +106,9 @@ class ClientRegistryService:
             return dmd_id
         m = _PER_ENGINE_DMD_ID_RE.match(dmd_id)
         if m:
-            sibling = f"{m.group('prefix').lower()}_{domain}_{m.group('geom').lower()}"
+            hwid = m.group("hwid")
+            mid = f"_{hwid.lower()}" if hwid else ""
+            sibling = f"{m.group('prefix').lower()}{mid}_{domain}_{m.group('geom').lower()}"
             if (sibling, domain) in self.state.client_configs:
                 return sibling
         board_key = canonical_dmd_board_key(dmd_id, self.state.client_udp_ips.get(dmd_id, ""))
