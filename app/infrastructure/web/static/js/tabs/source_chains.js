@@ -305,3 +305,4 @@ export async function toggleDomainSource(dom, sourceId) {
   pol.disabled_sources = Array.from(dis);
   await saveSourcePolicies();
 }
+
