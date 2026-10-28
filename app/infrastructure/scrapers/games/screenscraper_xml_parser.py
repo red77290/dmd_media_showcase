@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
@@ -235,6 +236,82 @@ def extract_jeux_from_response(resp: Any) -> List[Dict[str, Any]]:
     if isinstance(jeu_single, dict):
         return [jeu_single]
     return []
+
+
+_SS_COOLDOWN_UNTIL_MONOTONIC: float = 0.0
+_SS_FATAL_MARKERS: Tuple[str, ...] = (
+    "api fermée",
+    "api fermee",
+    "api closed",
+    "quota",
+    "threads",
+    "identifiants",
+    "surcharg",
+    "overloaded",
+    "maintenance",
+    "trop de connexions",
+    "blacklisted",
+    "devpassword",
+    "sspassword",
+)
+_SS_NOT_FOUND_MARKERS: Tuple[str, ...] = (
+    "non trouvé",
+    "non trouve",
+    "not found",
+    "aucun jeu",
+    "aucun résultat",
+    "aucun resultat",
+)
+
+
+def is_screenscraper_in_cooldown() -> bool:
+    """Return True while ScreenScraper circuit-breaker cooldown is active."""
+    return time.monotonic() < _SS_COOLDOWN_UNTIL_MONOTONIC
+
+
+def reset_screenscraper_cooldown() -> None:
+    """Reset ScreenScraper circuit-breaker cooldown (used by tests & config reload)."""
+    global _SS_COOLDOWN_UNTIL_MONOTONIC
+    _SS_COOLDOWN_UNTIL_MONOTONIC = 0.0
+
+
+def record_screenscraper_cooldown(reason: str, duration_s: float = 60.0) -> None:
+    """Open a short ScreenScraper cooldown circuit-breaker and log a clear warning."""
+    global _SS_COOLDOWN_UNTIL_MONOTONIC
+    _SS_COOLDOWN_UNTIL_MONOTONIC = time.monotonic() + max(1.0, float(duration_s))
+    logger.warning(
+        "[ScreenScraper] Upstream quota/overload/auth error (%s) -> opening %.0fs cooldown circuit-breaker",
+        reason,
+        duration_s,
+    )
+
+
+def detect_screenscraper_api_error(resp: Any) -> Optional[str]:
+    """
+    Detect ScreenScraper quota, thread-limit, overload, or credential errors returned either
+    via HTTP 401/403/423/429/5xx OR inside plaintext HTTP 200 responses.
+    """
+    status = int(getattr(resp, "status_code", 200) or 200)
+    raw_text = (getattr(resp, "text", "") or "").strip()
+    snippet = re.sub(r"\s+", " ", raw_text)[:140]
+
+    if status in (401, 403, 423, 429) or status >= 500:
+        return f"HTTP {status}" + (f": {snippet}" if snippet else "")
+    if status != 200:
+        return None
+    if not raw_text:
+        return None
+
+    low = raw_text.lower()
+    if any(nf in low for nf in _SS_NOT_FOUND_MARKERS):
+        return None
+    if '"jeux"' in low or '"jeu"' in low or "<jeu" in low:
+        return None
+    if any(marker in low for marker in _SS_FATAL_MARKERS):
+        return f"HTTP 200 error body: {snippet}"
+    if "erreur" in low and not raw_text.startswith("{"):
+        return f"HTTP 200 error body: {snippet}"
+    return None
 
 
 def extract_genre_entries(genres_raw: Any) -> List[Dict[str, str]]:

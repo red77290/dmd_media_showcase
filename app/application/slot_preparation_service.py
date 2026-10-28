@@ -208,6 +208,8 @@ class SlotPreparationService:
                 self.state.client_transports.pop((dmd_id, dom_key), None)
                 self.state.client_last_seen.pop((dmd_id, dom_key), None)
                 self.state.last_played_titles.pop((dmd_id, dom_key), None)
+                self.state.last_played_sources.pop((dmd_id, dom_key), None)
+                self.state.preparing_sources.pop((dmd_id, dom_key), None)
                 self.state.last_claimed_until.pop((dmd_id, dom_key), None)
                 t = self.state.prep_tasks.pop((dmd_id, dom_key), None)
                 AsyncTaskSupervisor.safe_cancel_task(t)
@@ -400,11 +402,15 @@ class SlotPreparationService:
                         return None
                     cand_found = candidates[0]
                     active_exclude.add(cand_found.id)
+                    self.state.preparing_sources[key] = cand_found.source_id or ""
                     iid = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand_found.id}"
                     idir = settings.cache_dir / "consume_once" / dmd_id / domain / iid
-                    fmap = await self.transcoder.transcode_candidate(
-                        cand_found, criteria, geometry, idir
-                    )
+                    try:
+                        fmap = await self.transcoder.transcode_candidate(
+                            cand_found, criteria, geometry, idir
+                        )
+                    finally:
+                        self.state.preparing_sources.pop(key, None)
                     return cand_found, iid, idir, fmap
 
                 job_res = await self.state.execute_with_transcode_gate(
@@ -510,6 +516,7 @@ class SlotPreparationService:
         now_ts = time.time()
         pkg.consumed = True
         self.state.last_played_titles[key] = pkg.card.title
+        self.state.last_played_sources[key] = pkg.card.source_used or pkg.candidate.source_id or ""
         self.state.client_last_seen[key] = now_ts
         board_key = canonical_dmd_board_key(dmd_id, self.state.client_udp_ips.get(dmd_id, ""))
         for other_key in list(self.state.last_claimed_until.keys()):

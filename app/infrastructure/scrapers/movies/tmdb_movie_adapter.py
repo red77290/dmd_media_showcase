@@ -33,6 +33,7 @@ class TmdbMovieAdapter(IScraperSource):
     """
 
     source_id: str = "tmdb_movies"
+    display_name: str = "TMDB (Movies)"
     domain: DomainType = "movies"
     role: str = "primary"
 

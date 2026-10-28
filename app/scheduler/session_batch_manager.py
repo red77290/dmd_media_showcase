@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
 import shutil
 import time
@@ -37,6 +38,7 @@ from app.providers import (
     RawMediaCandidate,
     SeriesProvider,
 )
+from app.providers.games import request_to_criteria
 from app.scheduler.asset_builder import (
     build_static_assets_sync,
     build_video_assets_worker_task,
@@ -614,16 +616,14 @@ class SessionBatchManager(BoundedWorkerExecutorMixin[QueuedVideoJob]):
     async def prepare_on_demand(self, on_demand_req: OnDemandRequest) -> MediaShowcaseItem:
         """Queue a single search item with `HIGH_ON_DEMAND` priority."""
         self.start()
-        provider = self.providers[on_demand_req.domain]
-        cand = await provider.search_on_demand(on_demand_req.query, lang=on_demand_req.lang)
-        if cand is None:
-            raise ValueError(f"No media found for query: {on_demand_req.query}")
-
         synth_req = SessionRegisterRequest(
             count=1,
             lang=on_demand_req.lang,
             width=on_demand_req.width,
             height=on_demand_req.height,
+            systems=list(on_demand_req.systems) if on_demand_req.systems else [],
+            genres=list(on_demand_req.genres) if on_demand_req.genres else [],
+            decades=list(on_demand_req.decades) if on_demand_req.decades else [],
             jacket_panorama=on_demand_req.jacket_panorama,
             marquee_panorama=on_demand_req.marquee_panorama,
             snapshot_panorama_count=on_demand_req.snapshot_panorama_count,
@@ -635,6 +635,17 @@ class SessionBatchManager(BoundedWorkerExecutorMixin[QueuedVideoJob]):
             video_max_duration_s=on_demand_req.video_max_duration_s,
             video_fps=on_demand_req.video_fps,
         )
+        od_criteria = request_to_criteria(on_demand_req.domain, synth_req)
+        provider = self.providers[on_demand_req.domain]
+        sig = inspect.signature(provider.search_on_demand)
+        if "criteria" in sig.parameters:
+            cand = await provider.search_on_demand(
+                on_demand_req.query, lang=on_demand_req.lang, criteria=od_criteria
+            )
+        else:
+            cand = await provider.search_on_demand(on_demand_req.query, lang=on_demand_req.lang)
+        if cand is None:
+            raise ValueError(f"No media found for query: {on_demand_req.query}")
         poster_w, poster_h = synth_req.resolved_poster_dims()
         batch_id = f"od_{uuid.uuid4().hex[:8]}"
         item_key = f"{batch_id}_{cand.id}"

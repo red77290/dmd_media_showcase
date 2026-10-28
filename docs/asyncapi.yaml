@@ -329,8 +329,23 @@ components:
             enum: [games, movies, series, anime]
           lang:
             type: string
+          sources:
+            type: array
+            description: Active ordered scraper adapters for this domain (`source_policies`).
+            items:
+              type: object
+              properties:
+                id: { type: string }
+                label: { type: string }
+                display_name: { type: string }
+                role: { type: string, enum: [primary, fallback] }
+                priority: { type: integer }
+                enabled: { type: boolean }
+                configured: { type: boolean }
+                health: { type: string, enum: [ok, cooldown, unconfigured] }
           systems:
             type: array
+            description: "66 canonical arcade, console, handheld, and home-computer systems (when `domain == 'games'`)."
             items:
               type: object
               properties:
@@ -342,6 +357,12 @@ components:
                   type: array
                   items: { type: string }
                 decades:
+                  type: array
+                  items: { type: string }
+                supported_genres:
+                  type: array
+                  items: { type: string }
+                supported_decades:
                   type: array
                   items: { type: string }
                 sources:
@@ -456,6 +477,12 @@ components:
               rating: { type: string }
               synopsis: { type: string }
               lang: { type: string }
+              source_used:
+                type: string
+                description: >-
+                  Provenance of the resolved media package (single adapter ID such as `igdb`, `screenscraper`,
+                  `arcadeitalia`, `libretro_wikidata`, `tmdb_movies`, `jikan`, or `+`-joined composite provenance
+                  such as `igdb+arcadeitalia` / `tmdb_movies+itunes_movies` when `aggregation_mode == "enrich_missing"`).
               poster_width: { type: integer }
               poster_height: { type: integer }
               poster_rgb565_b64: { type: string }

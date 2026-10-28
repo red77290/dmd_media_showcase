@@ -5,6 +5,7 @@ System, Health, Configuration & AsyncAPI Routes (`app/infrastructure/http/router
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 import dmd_gif_converter
 from fastapi import APIRouter, Query, Request, Response
@@ -20,6 +21,7 @@ from app.infrastructure.http.dependencies import (
     get_batch_manager,
     get_http_client_factory,
     get_mqtt_gateway,
+    get_on_demand_cache,
     get_orchestrator,
     get_profile_store,
     get_scraper_registry,
@@ -88,7 +90,7 @@ async def get_asyncapi_spec() -> Response:
 
 @router.get("/health", response_model=HealthResponse, include_in_schema=False)
 @router.get("/api/v1/health", response_model=HealthResponse, tags=["System & Admin"])
-async def get_health() -> HealthResponse:
+async def get_health(request: Request) -> HealthResponse:
     """Return server health, worker pool saturation, MQTT broker mode, and active scraper chains."""
     bm = get_batch_manager()
     co = get_orchestrator()
@@ -99,11 +101,23 @@ async def get_health() -> HealthResponse:
 
     bm.start()
     srv_cfg = srv_store.get_all()
-    mqtt_port = (
-        mqtt_gw.embedded_broker.port
-        if mqtt_gw.embedded_broker
-        else int(srv_cfg.get("mqtt_port") or 1883)
-    )
+    mqtt_mode_eff = str(srv_cfg.get("mqtt_mode") or "embedded")
+    ext_url = str(srv_cfg.get("mqtt_external_url") or "").strip()
+    req_host_hdr = str(request.headers.get("host") or "").strip()
+    fallback_host = req_host_hdr.split(":")[0] if req_host_hdr else ""
+    if mqtt_gw.external_client is not None or (mqtt_mode_eff == "external" and ext_url):
+        parsed_mqtt = urlparse(ext_url if "://" in ext_url else f"mqtt://{ext_url}")
+        mqtt_mode_eff = "external"
+        mqtt_host = parsed_mqtt.hostname or fallback_host
+        mqtt_port = int(parsed_mqtt.port or 1883)
+    else:
+        mqtt_mode_eff = "embedded"
+        mqtt_host = fallback_host
+        mqtt_port = (
+            mqtt_gw.embedded_broker.port
+            if mqtt_gw.embedded_broker
+            else int(srv_cfg.get("mqtt_port") or 1883)
+        )
     board_keys: Set[str] = set(co.distinct_board_keys())
 
     mqtt_tcp_sessions = 0
@@ -166,7 +180,8 @@ async def get_health() -> HealthResponse:
         avg_job_duration_s=combined_avg_s,
         providers_configured=reg.describe_active_chains(),
         providers_detailed=reg.describe_chains_detailed(),
-        mqtt_mode=str(srv_cfg.get("mqtt_mode") or "embedded"),
+        mqtt_mode=mqtt_mode_eff,
+        mqtt_host=mqtt_host,
         mqtt_port=mqtt_port,
         mqtt_connected_clients=distinct_dmds,
         mqtt_tcp_sessions=mqtt_tcp_sessions,
@@ -220,6 +235,7 @@ async def get_admin_config() -> Dict[str, Any]:
         "providers": reg.describe_chains_detailed(),
         "providers_summary": reg.describe_active_chains(),
         "seen_history": normalized_seen_stats(),
+        "on_demand_cache": get_on_demand_cache().get_stats(),
         "clients": build_connected_clients_snapshot(),
         "dmd_profiles": prof_store.list_profiles(),
     }
@@ -233,15 +249,22 @@ async def update_admin_config(payload: AdminServerConfigPayload) -> Dict[str, An
     """
     srv_store = get_server_config_store()
     reg = get_scraper_registry()
+    od_cache = get_on_demand_cache()
     prev_cfg = srv_store.get_all()
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     updated = srv_store.update(updates)
     new_cfg = srv_store.get_all()
+    if "on_demand_cache_enabled" in updates or "on_demand_cache_max_mb" in updates:
+        od_cache.update_settings(
+            enabled=bool(new_cfg.get("on_demand_cache_enabled", False)),
+            max_mb=int(new_cfg.get("on_demand_cache_max_mb") or 0),
+        )
     applied_live = await apply_runtime_config_live(prev_cfg, new_cfg, set(updates.keys()))
     return {
         "status": "saved",
         "config": updated,
         "applied_live": applied_live,
+        "on_demand_cache": od_cache.get_stats(),
         "vault_status": srv_store.get_vault_status(),
         "providers": reg.describe_chains_detailed(),
         "providers_summary": reg.describe_active_chains(),

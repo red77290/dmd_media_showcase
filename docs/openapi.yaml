@@ -3,7 +3,7 @@
   "info": {
     "title": "DMD Media Showcase Server API",
     "summary": "DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
-    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Resilient Scraper Chains (`Primary` + `Fallback`)**: 2 dedicated metadata & video sources per domain.\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
     "version": "1.0.0"
   },
   "paths": {
@@ -925,6 +925,61 @@
         }
       }
     },
+    "/api/v1/clients/{dmd_id}/queue/async": {
+      "post": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Add To Dmd Priority Queue Async",
+        "description": "Non-blocking asynchronous On-Demand enqueue endpoint (`202 Accepted` in `< 3 ms`).\n- If a persistent conversion cache entry matches `(domain, systems, query, geometry, criteria)`,\n  promotes it immediately (`status='ready'`, `cache_hit=True`) with zero scraper lookup or transcoding.\n- Otherwise schedules both scraper lookup and conversion asynchronously in the background and returns\n  immediately with `status='preparing'`.",
+        "operationId": "add_to_dmd_priority_queue_async_api_v1_clients__dmd_id__queue_async_post",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueAddRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add To Dmd Priority Queue Async Api V1 Clients  Dmd Id  Queue Async Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{dmd_id}/queue/{queue_id}": {
       "delete": {
         "tags": [
@@ -1027,6 +1082,120 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache/on-demand": {
+      "get": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Get On Demand Cache Stats",
+        "description": "Inspect persistent request-keyed On-Demand conversion cache configuration, size, and items.",
+        "operationId": "get_on_demand_cache_stats_api_v1_cache_on_demand_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get On Demand Cache Stats Api V1 Cache On Demand Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Evict On Demand Cache",
+        "description": "Atomically purge all cached On-Demand conversions from disk.",
+        "operationId": "evict_on_demand_cache_api_v1_cache_on_demand_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Evict On Demand Cache Api V1 Cache On Demand Delete"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache/on-demand/config": {
+      "put": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Update On Demand Cache Config",
+        "description": "Enable/disable the persistent On-Demand conversion cache or adjust its MiB quota.",
+        "operationId": "update_on_demand_cache_config_api_v1_cache_on_demand_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnDemandCacheConfigPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Update On Demand Cache Config Api V1 Cache On Demand Config Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache/on-demand/evict": {
+      "post": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Evict On Demand Cache",
+        "description": "Atomically purge all cached On-Demand conversions from disk.",
+        "operationId": "evict_on_demand_cache_api_v1_cache_on_demand_evict_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Evict On Demand Cache Api V1 Cache On Demand Evict Post"
                 }
               }
             }
@@ -1987,6 +2156,43 @@
             ],
             "title": "Screenscraper Dev Pass"
           },
+          "igdb_client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Igdb Client Id"
+          },
+          "igdb_client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Igdb Client Secret"
+          },
+          "source_policies": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Policies"
+          },
           "mqtt_mode": {
             "anyOf": [
               {
@@ -2245,6 +2451,30 @@
               }
             ],
             "title": "Cache Dir"
+          },
+          "on_demand_cache_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Demand Cache Enabled"
+          },
+          "on_demand_cache_max_mb": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1048576.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Demand Cache Max Mb"
           },
           "log_level": {
             "anyOf": [
@@ -3163,16 +3393,7 @@
           "providers_detailed": {
             "additionalProperties": {
               "items": {
-                "additionalProperties": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "boolean"
-                    }
-                  ]
-                },
+                "additionalProperties": true,
                 "type": "object"
               },
               "type": "array"
@@ -3184,6 +3405,11 @@
             "type": "string",
             "title": "Mqtt Mode",
             "default": "embedded"
+          },
+          "mqtt_host": {
+            "type": "string",
+            "title": "Mqtt Host",
+            "default": ""
           },
           "mqtt_port": {
             "type": "integer",
@@ -3505,6 +3731,26 @@
         "title": "MediaShowcaseItem",
         "description": "Normalized media showcase card identical across Games, Movies, Series, and Anime."
       },
+      "OnDemandCacheConfigPayload": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "max_mb": {
+            "type": "integer",
+            "maximum": 1048576.0,
+            "minimum": 0.0,
+            "title": "Max Mb",
+            "description": "Maximum persistent On-Demand conversion cache size in MiB (0 = unlimited when enabled).",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "OnDemandCacheConfigPayload",
+        "description": "Settings payload for the optional Persistent On-Demand Conversion Cache (`PUT /api/v1/cache/on-demand/config`)."
+      },
       "OnDemandRequest": {
         "properties": {
           "query": {
@@ -3528,6 +3774,27 @@
             "type": "string",
             "title": "Lang",
             "default": "fr"
+          },
+          "systems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Systems"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "decades": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Decades"
           },
           "width": {
             "type": "integer",
@@ -3743,6 +4010,24 @@
             "title": "Mark Seen",
             "description": "When False (e.g. FrontendSync), does not record the item in seen_history.json so it can be displayed again.",
             "default": true
+          },
+          "async_prepare": {
+            "type": "boolean",
+            "title": "Async Prepare",
+            "description": "When True, returns immediately (< 3 ms) with status='preparing' while scraper lookup and conversion execute asynchronously in the background (or status='ready' immediately on a persistent cache hit).",
+            "default": false
+          },
+          "render_card_in_stream": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Card In Stream",
+            "description": "Explicitly include or exclude the server-rendered Info Card segment in the unified .rgb565 stream."
           },
           "width": {
             "anyOf": [
@@ -5166,11 +5451,11 @@
   "tags": [
     {
       "name": "System & Admin",
-      "description": "Server health, centralized API credentials (`server_config.json`), and `seen_history.json` management."
+      "description": "Server health, centralized API credentials & source policies (`server_config.json`), and `seen_history.json` management."
     },
     {
       "name": "Discovery",
-      "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` metadata scraper sources."
+      "description": "Live categories, 66 retro/arcade systems, genres, decades, and configurable multi-source metadata & video scraper chains."
     },
     {
       "name": "Consume-Once Protocol",
@@ -5186,7 +5471,7 @@
     },
     {
       "name": "On-Demand & Voice Assistant",
-      "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants."
+      "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/clients/{dmd_id}/queue/async`, `/on-demand`) for WebUI, FrontendSync, and voice assistants."
     },
     {
       "name": "Card Studio & Simulator",

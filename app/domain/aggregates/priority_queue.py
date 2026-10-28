@@ -51,6 +51,11 @@ class QueuedOnDemandEntry:
             "mode": self.mode,
             "mark_seen": self.mark_seen,
             "from_studio_sim": self.from_studio_sim,
+            "source_used": (
+                self.prepared_pkg.card.source_used
+                if self.prepared_pkg and self.prepared_pkg.card.source_used
+                else (self.candidate.source_id or "")
+            ),
             "status": self.status,
             "created_at": self.created_at,
         }

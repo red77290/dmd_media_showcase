@@ -59,6 +59,10 @@ class QueuedOnDemandEntry:
     mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
     mark_seen: bool = True
     from_studio_sim: bool = False
+    cache_hit: bool = False
+    raw_query: str = ""
+    cache_key: str = ""
+    render_signature: str = ""
     status: Literal["queued", "preparing", "ready", "playing"] = "queued"
     created_at: float = field(default_factory=time.time)
     package: Optional[PreparedShowcasePackage] = None
@@ -78,8 +82,18 @@ class QueuedOnDemandEntry:
             "mode": self.mode,
             "mark_seen": self.mark_seen,
             "from_studio_sim": self.from_studio_sim,
+            "cache_hit": self.cache_hit,
             "card_layout": self.criteria.card_layout,
             "card_theme": self.criteria.card_theme,
+            "source_used": (
+                self.package.card.source_used
+                if self.package and self.package.card.source_used
+                else (
+                    ""
+                    if self.candidate.id == "pending"
+                    else (self.candidate.source_id or "")
+                )
+            ),
             "status": self.status,
             "created_at": self.created_at,
         }
@@ -97,6 +111,8 @@ class ShowcaseRuntimeState:
         self.client_transports: Dict[Tuple[str, DomainType], str] = {}
         self.client_last_seen: Dict[Tuple[str, DomainType], float] = {}
         self.last_played_titles: Dict[Tuple[str, DomainType], str] = {}
+        self.last_played_sources: Dict[Tuple[str, DomainType], str] = {}
+        self.preparing_sources: Dict[Tuple[str, DomainType], str] = {}
         self.last_claimed_until: Dict[Tuple[str, DomainType], float] = {}
 
         self.ready_packages: Dict[Tuple[str, DomainType], PreparedShowcasePackage] = {}
@@ -199,11 +215,15 @@ class ShowcaseRuntimeState:
         """Transcode a `MediaCandidate` through the worker gate into a `PreparedShowcasePackage`."""
         item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
         item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
-
-        files_map = await self.execute_with_transcode_gate(
-            lambda: transcoder.transcode_candidate(cand, criteria, geometry, item_dir),
-            should_count_completion=lambda _res: True,
-        )
+        slot_key = (dmd_id, domain)
+        self.preparing_sources[slot_key] = cand.source_id or ""
+        try:
+            files_map = await self.execute_with_transcode_gate(
+                lambda: transcoder.transcode_candidate(cand, criteria, geometry, item_dir),
+                should_count_completion=lambda _res: True,
+            )
+        finally:
+            self.preparing_sources.pop(slot_key, None)
         if not item_dir.exists():
             return None
 

@@ -3,6 +3,99 @@ import { t } from './i18n/index.js';
 
 export const CANONICAL_DOMAINS = ['games', 'movies', 'series', 'anime'];
 
+export const DEFAULT_DOMAIN_SOURCES = {
+  games: [
+    { source_id: 'igdb', display_name: 'IGDB (Twitch)' },
+    { source_id: 'screenscraper', display_name: 'ScreenScraper' },
+    { source_id: 'arcadeitalia', display_name: 'ArcadeItalia (ADB)' },
+    { source_id: 'libretro_wikidata', display_name: 'Libretro + Wikidata' }
+  ],
+  movies: [
+    { source_id: 'tmdb_movies', display_name: 'TMDB Movies' },
+    { source_id: 'itunes_movies', display_name: 'Apple iTunes Movies' }
+  ],
+  series: [
+    { source_id: 'tmdb_series', display_name: 'TMDB Series' },
+    { source_id: 'tvdb_series', display_name: 'TheTVDB v4' },
+    { source_id: 'tvmaze', display_name: 'TVMaze' }
+  ],
+  anime: [
+    { source_id: 'jikan', display_name: 'Jikan (MAL + AnimeThemes)' },
+    { source_id: 'anilist', display_name: 'AniList GraphQL' }
+  ]
+};
+
+export function defaultSourcePolicies() {
+  const out = {};
+  CANONICAL_DOMAINS.forEach(dom => {
+    out[dom] = {
+      ordered_sources: (DEFAULT_DOMAIN_SOURCES[dom] || []).map(s => s.source_id),
+      disabled_sources: [],
+      aggregation_mode: 'enrich_missing'
+    };
+  });
+  return out;
+}
+
+export function normalizeSourcePolicies(providers, rawPolicies) {
+  const out = {};
+  const provObj = providers && typeof providers === 'object' ? providers : {};
+  const polObj = rawPolicies && typeof rawPolicies === 'object' ? rawPolicies : {};
+
+  CANONICAL_DOMAINS.forEach(dom => {
+    const defaults = (DEFAULT_DOMAIN_SOURCES[dom] || []).map(s => s.source_id);
+    const provList = Array.isArray(provObj[dom]) ? provObj[dom] : [];
+    const provIds = provList.map(p => p && p.source_id).filter(Boolean);
+    const rawDomPol = polObj[dom] && typeof polObj[dom] === 'object' ? polObj[dom] : null;
+
+    const seen = new Set();
+    const ordered = [];
+    const pushUnique = sid => {
+      const clean = String(sid || '').trim();
+      if (clean && clean !== 'none' && !seen.has(clean)) {
+        seen.add(clean);
+        ordered.push(clean);
+      }
+    };
+
+    if (rawDomPol && Array.isArray(rawDomPol.ordered_sources)) {
+      rawDomPol.ordered_sources.forEach(pushUnique);
+    }
+    provIds.forEach(pushUnique);
+    defaults.forEach(pushUnique);
+
+    const disabled = [];
+    if (rawDomPol && Array.isArray(rawDomPol.disabled_sources)) {
+      const disSet = new Set();
+      rawDomPol.disabled_sources.forEach(sid => {
+        const clean = String(sid || '').trim();
+        if (clean && seen.has(clean) && !disSet.has(clean)) {
+          disSet.add(clean);
+          disabled.push(clean);
+        }
+      });
+    } else if (provList.length) {
+      provList.forEach(p => {
+        if (p && p.source_id && p.enabled === false && !disabled.includes(p.source_id)) {
+          disabled.push(p.source_id);
+        }
+      });
+    }
+
+    const rawAgg = (rawDomPol && rawDomPol.aggregation_mode)
+      || (provList[0] && provList[0].aggregation_mode)
+      || 'enrich_missing';
+    const aggMode = rawAgg === 'fallback_only' ? 'fallback_only' : 'enrich_missing';
+
+    out[dom] = {
+      ordered_sources: ordered,
+      disabled_sources: disabled,
+      aggregation_mode: aggMode
+    };
+  });
+  return out;
+}
+
 export const STUDIO_DEMO_FALLBACKS = {
   games: {
     candidate_id: '',
@@ -218,6 +311,8 @@ export const uiState = {
   configHydrated: false,
   lastVaultStatus: {},
   lastProviders: {},
+  lastSourcePolicies: defaultSourcePolicies(),
+  sourcePoliciesDirtyUntil: 0,
   lastClients: [],
   lastSeenStats: {},
   lastHealth: null,

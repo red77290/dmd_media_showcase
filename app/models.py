@@ -5,7 +5,7 @@ Canonical Pydantic data models for the DMD Media Showcase API.
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
 DomainType = Literal["games", "movies", "series", "anime"]
@@ -302,6 +302,9 @@ class OnDemandRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Search query (e.g. 'Metal Slug', 'Blade Runner').")
     domain: DomainType = "movies"
     lang: str = "fr"
+    systems: List[str] = Field(default_factory=list)
+    genres: List[str] = Field(default_factory=list)
+    decades: List[str] = Field(default_factory=list)
     width: int = 128
     height: int = 32
     jacket_panorama: bool = True
@@ -338,8 +341,9 @@ class HealthResponse(BaseModel):
     completed_jobs_total: int
     avg_job_duration_s: float
     providers_configured: Dict[str, str]
-    providers_detailed: Dict[str, List[Dict[str, Union[str, bool]]]] = Field(default_factory=dict)
+    providers_detailed: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     mqtt_mode: str = "embedded"
+    mqtt_host: str = ""
     mqtt_port: int = 1883
     mqtt_connected_clients: int = 0
     mqtt_tcp_sessions: int = 0
@@ -378,6 +382,9 @@ class AdminServerConfigPayload(BaseModel):
     screenscraper_pass: Optional[str] = None
     screenscraper_dev_id: Optional[str] = None
     screenscraper_dev_pass: Optional[str] = None
+    igdb_client_id: Optional[str] = None
+    igdb_client_secret: Optional[str] = None
+    source_policies: Optional[Dict[str, Dict[str, Any]]] = None
     mqtt_mode: Optional[Literal["embedded", "external"]] = None
     mqtt_port: Optional[int] = Field(default=None, ge=1, le=65535)
     mqtt_external_url: Optional[str] = None
@@ -401,6 +408,8 @@ class AdminServerConfigPayload(BaseModel):
     session_ttl_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
     batch_ttl_seconds: Optional[int] = Field(default=None, ge=30, le=7200)
     cache_dir: Optional[str] = None
+    on_demand_cache_enabled: Optional[bool] = None
+    on_demand_cache_max_mb: Optional[int] = Field(default=None, ge=0, le=1048576)
     log_level: Optional[Literal["DEBUG", "INFO", "WARNING", "ERROR"]] = None
     mdns_enabled: Optional[bool] = None
     mdns_hostname: Optional[str] = None
@@ -619,6 +628,14 @@ class QueueAddRequest(BaseModel):
         default=True,
         description="When False (e.g. FrontendSync), does not record the item in seen_history.json so it can be displayed again.",
     )
+    async_prepare: bool = Field(
+        default=False,
+        description="When True, returns immediately (< 3 ms) with status='preparing' while scraper lookup and conversion execute asynchronously in the background (or status='ready' immediately on a persistent cache hit).",
+    )
+    render_card_in_stream: Optional[bool] = Field(
+        default=None,
+        description="Explicitly include or exclude the server-rendered Info Card segment in the unified .rgb565 stream.",
+    )
     width: Optional[int] = Field(default=None, ge=32, le=512)
     height: Optional[int] = Field(default=None, ge=16, le=256)
     include_card_intro: Optional[bool] = None
@@ -659,6 +676,8 @@ class QueueItemModel(BaseModel):
     mode: Literal["enqueue_next", "play_now"] = "enqueue_next"
     mark_seen: bool = True
     from_studio_sim: bool = False
+    cache_hit: bool = False
+    source_used: str = ""
     status: Literal["queued", "preparing", "ready", "playing"] = "queued"
     created_at: float
 
@@ -721,6 +740,18 @@ class StudioFullPreviewRequest(StudioCardPreviewRequest):
     video_max_duration_s: float = Field(default=8.0, ge=1.5, le=120.0)
     video_fps: int = Field(default=15, ge=6, le=60)
     video_mode: str = "auto_action"
+
+
+class OnDemandCacheConfigPayload(BaseModel):
+    """Settings payload for the optional Persistent On-Demand Conversion Cache (`PUT /api/v1/cache/on-demand/config`)."""
+
+    enabled: bool = False
+    max_mb: int = Field(
+        default=0,
+        ge=0,
+        le=1048576,
+        description="Maximum persistent On-Demand conversion cache size in MiB (0 = unlimited when enabled).",
+    )
 
 
 

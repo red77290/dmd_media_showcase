@@ -129,11 +129,24 @@ async def test_admin_dashboard_html_css_alignment_and_js_syntax(tmp_path: Path, 
     assert "height: 42px;" in css_code
     assert "align-items: end;" in css_code
 
+    assert 'id="igdb_client_id"' in html
+    assert 'id="igdb_client_secret"' in html
+    assert 'id="screenscraper_dev_id"' in html
+    assert 'id="screenscraper_dev_pass"' in html
+    assert 'id="keys-providers-grid"' in html
+
     # Ensure #test-system-wrap is never hidden with display:none (prevents 3-column grid shift)
     assert "sysWrap.style.display" not in js_code
     assert "sysEl.disabled = !isGames;" in js_code
     assert "X-Showcase-Key" in js_code
     assert "isMaskedSecret" in js_code
+    assert "renderSourceBadge" in js_code
+    assert "onSourcePrimaryChange" in js_code
+    assert "onSourceSecondaryChange" in js_code
+    assert "onSourceStrategyChange" in js_code
+    assert "playing_source" in js_code
+    assert "ready_source" in js_code
+    assert "standby_source" in js_code
 
     # Verify JavaScript syntax across all ES modules + I18N key parity via node when available
     node_bin = shutil.which("node")
@@ -458,7 +471,9 @@ async def test_live_telemetry_multi_engine_board_slots_playback_and_eof_lifecycl
             games_row = by_key[("esp32_games_128x32", "games")]
             assert games_row["is_playing"] is True
             assert games_row["playing_title"] == claimed_games.candidate.title
+            assert games_row["playing_source"] is not None
             assert games_row["ready_title"] is not None  # Standby promoted immediately to Ready!
+            assert games_row["ready_source"] is not None
 
             movies_row = by_key[("rpi_movies_128x32", "movies")]
             assert movies_row["udp_streaming"] is True
@@ -580,6 +595,7 @@ async def test_static_http_session_records_completed_jobs_and_excludes_webui_tes
             assert len(esp_rows) == 1
             assert esp_rows[0]["transport"] == "HTTP"
             assert esp_rows[0]["ready_title"] == "Street Fighter II"
+            assert esp_rows[0]["ready_source"] == "arcadeitalia"
     finally:
         batch_manager.sessions.clear()
         batch_manager.sessions.update(old_sessions)

@@ -128,7 +128,7 @@ class RawMediaCandidate:
     youtube_url: Optional[str] = None
     source_used: str = "live"
     theme_palette: Tuple[int, int, int] = (230, 74, 25)
-    extra_meta: Dict[str, str] = field(default_factory=dict)
+    extra_meta: Dict[str, Any] = field(default_factory=dict)
 
     def add_unique_image(self, url: Optional[str]) -> None:
         """Append an image URL to `snapshot_urls` and `image_urls` if valid and unique."""
@@ -292,6 +292,7 @@ class BaseMediaProvider(ABC):
         self,
         query: str,
         lang: str = "fr",
+        criteria: Optional[Any] = None,
     ) -> Optional[RawMediaCandidate]:
         """Search and return the best matching item for an on-demand / voice request."""
 

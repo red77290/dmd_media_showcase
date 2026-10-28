@@ -61,6 +61,12 @@ def _resolve_http_client_factory() -> Any:
     return create_async_http_client
 
 
+def _resolve_on_demand_cache() -> Any:
+    from app.infrastructure.persistence.on_demand_cache_store import on_demand_cache_store
+
+    return on_demand_cache_store
+
+
 def register_default_ports() -> None:
     """Bind all default Infrastructure singletons into `default_port_registry`."""
     default_port_registry.register("mqtt_gateway", _resolve_mqtt_gateway)
@@ -71,6 +77,7 @@ def register_default_ports() -> None:
     default_port_registry.register("frame_streamer", _resolve_frame_streamer)
     default_port_registry.register("media_transcoder", _resolve_media_transcoder)
     default_port_registry.register("http_client_factory", _resolve_http_client_factory)
+    default_port_registry.register("on_demand_cache", _resolve_on_demand_cache)
 
 
 register_default_ports()

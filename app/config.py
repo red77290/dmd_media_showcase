@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     # Stateless cache, media defaults & session TTLs
     cache_dir: Path = Path("/tmp/dmd_media_showcase_cache")
+    on_demand_cache_enabled: bool = False
+    on_demand_cache_max_mb: int = 0
     batch_ttl_seconds: int = 180
     session_ttl_seconds: int = 1200
     server_master_clip_max_s: float = 12.0
@@ -49,6 +51,8 @@ class Settings(BaseSettings):
     screenscraper_dev_id: str = ""
     screenscraper_dev_pass: str = ""
     tvdb_api_key: str = ""
+    igdb_client_id: str = ""
+    igdb_client_secret: str = ""
 
     # Home-Lab HTTP (default open) & Future Scalable Online HTTPS / API Key Security
     showcase_api_key: str = ""

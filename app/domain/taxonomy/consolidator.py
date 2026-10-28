@@ -48,18 +48,22 @@ class ReferentialConsolidator:
             for sys_id, smeta in RETRO_SYSTEM_CATALOG.items():
                 seen_sys.add(sys_id)
                 supported_sources = (
-                    ["screenscraper", "arcadeitalia", "libretro_wikidata"]
+                    ["igdb", "screenscraper", "arcadeitalia", "libretro_wikidata"]
                     if smeta.get("is_arcade")
-                    else ["screenscraper", "libretro_wikidata"]
+                    else ["igdb", "screenscraper", "libretro_wikidata"]
                 )
+                sys_genres = list(smeta.get("genres", _ALL_CONSOLE_GENRES))
+                sys_decades = list(smeta.get("decades", ["1980s", "1990s"]))
                 systems_out.append(
                     {
                         "id": sys_id,
                         "label": localize_label(smeta["labels"], short_lang, sys_id),
                         "badge": smeta["badge"],
                         "is_arcade": bool(smeta.get("is_arcade")),
-                        "genres": list(smeta.get("genres", _ALL_CONSOLE_GENRES)),
-                        "decades": list(smeta.get("decades", ["1980s", "1990s"])),
+                        "genres": sys_genres,
+                        "decades": sys_decades,
+                        "supported_genres": list(sys_genres),
+                        "supported_decades": list(sys_decades),
                         "sources": supported_sources,
                     }
                 )
@@ -67,15 +71,19 @@ class ReferentialConsolidator:
                 canon_sys = resolve_canonical_system(raw_id)
                 if canon_sys and canon_sys not in seen_sys:
                     seen_sys.add(canon_sys)
+                    dyn_genres = list(_ALL_CONSOLE_GENRES)
+                    dyn_decades = ["1980s", "1990s", "2000s"]
                     systems_out.append(
                         {
                             "id": canon_sys,
                             "label": raw_label or canon_sys.upper(),
                             "badge": canon_sys[:6].upper(),
                             "is_arcade": False,
-                            "genres": list(_ALL_CONSOLE_GENRES),
-                            "decades": ["1980s", "1990s", "2000s"],
-                            "sources": ["screenscraper", "libretro_wikidata"],
+                            "genres": dyn_genres,
+                            "decades": dyn_decades,
+                            "supported_genres": list(dyn_genres),
+                            "supported_decades": list(dyn_decades),
+                            "sources": ["igdb", "screenscraper", "libretro_wikidata"],
                         }
                     )
 
@@ -101,7 +109,7 @@ class ReferentialConsolidator:
                 "sources": sources_info or [],
                 "systems": systems_out,
                 "genres": genres_out,
-                "decades": decades_list[:4],
+                "decades": decades_list[:5],
             }
 
         genre_cat = (

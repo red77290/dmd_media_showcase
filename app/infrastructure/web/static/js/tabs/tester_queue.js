@@ -1,7 +1,7 @@
 import { apiFetch, esc, getActiveApiKey } from '../api.js';
 import { getCurrentUiLang, t } from '../i18n/index.js';
 import { uiState } from '../state.js';
-import { controlDmd } from './overview.js';
+import { controlDmd, renderSourceBadge } from './overview.js';
 import { loadHealthAndConfig } from './runtime_config.js';
 import { loadStudioDmdQueue } from './studio_actions.js';
 
@@ -62,8 +62,17 @@ export async function runLiveTest() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          domain: dom, query: q, lang: contentLang, width: w, height: h,
-          include_video: false, video_mode: vmode, color_boost: cboost
+          domain: dom,
+          query: q,
+          lang: contentLang,
+          width: w,
+          height: h,
+          include_video: false,
+          video_mode: vmode,
+          color_boost: cboost,
+          systems: (dom === 'games' && sys) ? [sys] : [],
+          genres: gen ? [gen] : [],
+          decades: dec ? [dec] : []
         })
       });
       if (!r.ok) throw new Error((await r.json()).detail || 'Not found');
@@ -115,6 +124,8 @@ export async function runLiveTest() {
     btn.disabled = false;
   }
 }
+
+export const runPreviewTest = runLiveTest;
 
 export async function skipSelectedDmd() {
   const dmdId = (document.getElementById('test-target-dmd') || {}).value || '';
@@ -189,7 +200,8 @@ export function renderSearchCandidates() {
         <div class="cand-title">${esc(c.title)} ${c.year ? `<small style="color:var(--muted)">(${esc(c.year)})</small>` : ''}</div>
         <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
           <span class="pill info">${esc(c.badge || c.domain.toUpperCase())}</span>
-          <span class="pill warn">${esc(c.source_id)} • ${(c.lang || 'fr').toUpperCase()}</span>
+          ${renderSourceBadge(c.source_used || c.source_id)}
+          <span class="pill warn">${esc((c.lang || 'fr').toUpperCase())}</span>
           ${vidPill}
         </div>
         <div class="cand-syn">${esc(c.synopsis || c.subtitle || '')}</div>
@@ -211,7 +223,7 @@ export function previewCandidate(idx) {
   document.getElementById('prev-title').textContent = c.title || '—';
   document.getElementById('prev-badge').textContent = c.badge || c.domain.toUpperCase();
   document.getElementById('prev-year').textContent = c.year || '—';
-  document.getElementById('prev-source').textContent = `Source: ${c.source_id || 'auto'} • ★ ${c.rating || 'N/A'} • ${(c.lang || 'fr').toUpperCase()}`;
+  document.getElementById('prev-source').textContent = `Source: ${c.source_used || c.source_id || 'auto'} • ★ ${c.rating || 'N/A'} • ${(c.lang || 'fr').toUpperCase()}`;
   document.getElementById('prev-sub').textContent = c.subtitle || '';
   document.getElementById('prev-synopsis').textContent = c.synopsis || '';
   const imgEl = document.getElementById('prev-img');
@@ -288,12 +300,14 @@ export async function loadTargetDmdQueue() {
     box.innerHTML = items.map((it, i) => {
       const stClass = it.status === 'ready' || it.status === 'playing' ? 'ok' : 'warn';
       const safeQid = esc(it.queue_id).replace(/'/g, "\\'");
+      const srcPill = renderSourceBadge(it.source_used || it.source_id);
       return `<div class="queue-item-row">
         <div class="queue-item-meta">
           <b>#${i + 1} — ${esc(it.title)}</b>
           <span class="pill info">${esc((it.domain || '').toUpperCase())}</span>
           <span class="pill info">${esc((it.lang || 'fr').toUpperCase())}</span>
           <span class="pill ${stClass}">${esc(it.status)}</span>
+          ${srcPill}
           ${it.from_studio_sim ? `<span class="pill ok">${esc(t('pill_sim_studio'))}</span>` : ''}
         </div>
         <button type="button" class="danger mini-btn" onclick="removeQueueItem('${safeDmd}', '${safeQid}')">✕</button>

@@ -36,6 +36,7 @@ from app.domain.taxonomy import (
     resolve_canonical_genre,
     resolve_canonical_system,
 )
+from app.infrastructure.scrapers.games.arcade_aliases import resolve_arcade_query_roms
 from app.infrastructure.scrapers.games.libretro_wikidata_adapter import LibretroWikidataAdapter
 from app.infrastructure.scrapers.http_utils import (
     clean_synopsis_text,
@@ -85,6 +86,7 @@ class ArcadeItaliaAdapter(IScraperSource):
     """
 
     source_id: str = "arcadeitalia"
+    display_name: str = "ArcadeItalia (ADB)"
     domain: DomainType = "games"
     role: str = "fallback"
 
@@ -240,17 +242,30 @@ class ArcadeItaliaAdapter(IScraperSource):
             return None
 
         if fetch_synopsis and (not history or short_lang != "en") and client is not None:
-            wiki_syn, wiki_thumb = await fetch_wikipedia_localized_synopsis(
-                client,
-                clean_title,
-                lang=short_lang,
-                domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
-            )
-            if wiki_syn:
-                cand.synopsis = wiki_syn
-            if wiki_thumb and not cand.poster_url:
-                cand.poster_url = wiki_thumb
-                cand.jacket_url = wiki_thumb
+            try:
+                wiki_syn, wiki_thumb = await asyncio.wait_for(
+                    fetch_wikipedia_localized_synopsis(
+                        client,
+                        clean_title,
+                        lang=short_lang,
+                        domain_hint="jeu vidéo" if short_lang == "fr" else "video game",
+                    ),
+                    timeout=2.5,
+                )
+                if wiki_syn:
+                    cand.synopsis = wiki_syn
+                    cand.extra_meta["synopsis_localized"] = "1"
+                if wiki_thumb and not cand.poster_url:
+                    cand.poster_url = wiki_thumb
+                    cand.jacket_url = wiki_thumb
+            except Exception as exc:
+                logger.warning(
+                    "[ArcadeItalia] Wikipedia synopsis lookup timed out or failed for '%s': %s",
+                    clean_title,
+                    exc,
+                )
+        elif history and short_lang == "en":
+            cand.extra_meta["synopsis_localized"] = "1"
 
         return cand
 
@@ -265,33 +280,19 @@ class ArcadeItaliaAdapter(IScraperSource):
             "game_name": ";".join(clean_roms),
         }
         try:
-            resp = await client.get(ADB_HTTPS_URL, params=params)
+            resp = await client.get(ADB_HTTPS_URL, params=params, timeout=5.0)
             if resp.status_code == 200:
                 rows = resp.json().get("result") or []
                 if isinstance(rows, list) and rows:
                     return [r for r in rows if isinstance(r, dict)]
+            else:
+                logger.warning(
+                    "[ArcadeItalia] HTTPS query '%s' returned HTTP %s",
+                    params["game_name"],
+                    resp.status_code,
+                )
         except Exception as exc:
-            logger.debug("[ArcadeItalia] HTTPS query '%s' failed: %s", params["game_name"], exc)
-        return []
-
-    async def _query_adb_by_title(self, client: Any, title_query: str) -> List[Dict[str, Any]]:
-        """Query ArcadeItalia ADB (`ajax=query_mame&title=...`) strictly over HTTPS."""
-        q_val = (title_query or "").strip()
-        if not q_val:
-            return []
-        params = {
-            "ajax": "query_mame",
-            "lang": "en",
-            "title": q_val,
-        }
-        try:
-            resp = await client.get(ADB_HTTPS_URL, params=params)
-            if resp.status_code == 200:
-                rows = resp.json().get("result") or []
-                if isinstance(rows, list) and rows:
-                    return [r for r in rows if isinstance(r, dict)]
-        except Exception as exc:
-            logger.debug("[ArcadeItalia] HTTPS title query '%s' failed: %s", q_val, exc)
+            logger.warning("[ArcadeItalia] HTTPS query '%s' failed: %s", params["game_name"], exc)
         return []
 
     async def fetch_random_unseen(
@@ -344,7 +345,7 @@ class ArcadeItaliaAdapter(IScraperSource):
             for d in (criteria.decades or [])
             if d and d.strip().lower() != "all"
         ]
-        async with create_async_http_client(timeout=6.0) as client:
+        async with create_async_http_client(timeout=12.0) as client:
             for _ in range(max(3, count * 2)):
                 if len(results) >= count:
                     break
@@ -529,21 +530,21 @@ class ArcadeItaliaAdapter(IScraperSource):
         target_arcade = arcade_systems or ["arcade"]
         q_low = q_clean.lower()
         rom_slug = re.sub(r"[^a-z0-9_]+", "", q_low)
+        alias_roms = resolve_arcade_query_roms(q_clean)
+        alias_rom_set = set(alias_roms)
 
         arcade_candidates: List[MediaCandidate] = []
         try:
-            async with create_async_http_client(timeout=6.0) as client:
-                tasks = [self._query_adb_by_title(client, q_clean)]
-                if 2 <= len(rom_slug) <= 16:
-                    tasks.insert(0, self._query_adb_roms(client, [rom_slug]))
-                batches = await asyncio.gather(*tasks, return_exceptions=True)
+            async with create_async_http_client(timeout=12.0) as client:
+                initial_roms: List[str] = list(alias_roms)
+                if not initial_roms and " " not in q_clean and 2 <= len(rom_slug) <= 16:
+                    initial_roms = [rom_slug]
 
                 merged_rows: List[Dict[str, Any]] = []
                 seen_roms: Set[str] = set()
-                for b in batches:
-                    if not isinstance(b, list):
-                        continue
-                    for r in b:
+                if initial_roms:
+                    direct_rows = await self._query_adb_roms(client, initial_roms)
+                    for r in direct_rows:
                         if not isinstance(r, dict):
                             continue
                         rname = str(r.get("game_name") or "").strip().lower()
@@ -551,13 +552,32 @@ class ArcadeItaliaAdapter(IScraperSource):
                             seen_roms.add(rname)
                             merged_rows.append(r)
 
+                if (
+                    not merged_rows
+                    and alias_roms
+                    and " " not in q_clean
+                    and 2 <= len(rom_slug) <= 16
+                    and rom_slug not in alias_rom_set
+                ):
+                    slug_rows = await self._query_adb_roms(client, [rom_slug])
+                    for r in slug_rows:
+                        if isinstance(r, dict):
+                            rname = str(r.get("game_name") or "").strip().lower()
+                            if rname and rname not in seen_roms:
+                                seen_roms.add(rname)
+                                merged_rows.append(r)
+
                 if not merged_rows and hasattr(self.referential_strategy, "_harvest_from_lista_mame"):
                     specific_sys = arcade_systems[0] if len(arcade_systems) == 1 else None
                     harvested_roms = await self.referential_strategy._harvest_from_lista_mame(  # type: ignore[attr-defined]
                         client, q_clean, sys_key=specific_sys
                     )
                     if harvested_roms:
-                        merged_rows = await self._query_adb_roms(client, harvested_roms[:12])
+                        for hr in await self._query_adb_roms(client, harvested_roms[:12]):
+                            hr_name = str(hr.get("game_name") or "").strip().lower()
+                            if hr_name and hr_name not in seen_roms:
+                                seen_roms.add(hr_name)
+                                merged_rows.append(hr)
 
                 # Also fetch missing parent ROMs for top clone hits so parent sets are preferred
                 missing_parents = [
@@ -577,7 +597,7 @@ class ArcadeItaliaAdapter(IScraperSource):
                     r_rom = str(r.get("game_name") or "").strip().lower()
                     raw_t = str(r.get("title") or "").strip()
                     clean_t = re.sub(r"\s*\([^)]*\)\s*$", "", raw_t).strip().lower()
-                    if r_rom == rom_slug or clean_t == q_low:
+                    if r_rom in alias_rom_set or r_rom == rom_slug or clean_t == q_low:
                         rel = 0
                     elif clean_t.startswith(q_low):
                         rel = 1
@@ -704,7 +724,7 @@ class ArcadeItaliaAdapter(IScraperSource):
                             if len(arcade_candidates) >= target_limit:
                                 break
         except Exception as exc:
-            logger.debug("[ArcadeItalia] Search error for '%s': %s", q_clean, exc)
+            logger.warning("[ArcadeItalia] Search error for '%s': %s", q_clean, exc)
 
         # When both arcade and console systems are requested, reserve space so console ports also surface;
         # when criteria.systems is empty and arcade returned fewer than limit, also query console_adapter.

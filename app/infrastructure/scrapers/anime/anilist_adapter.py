@@ -70,6 +70,7 @@ class AniListAdapter(IScraperSource):
     """
 
     source_id: str = "anilist"
+    display_name: str = "AniList"
     domain: DomainType = "anime"
     role: str = "fallback"
 

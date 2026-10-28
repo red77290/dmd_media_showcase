@@ -42,12 +42,18 @@ from app.infrastructure.http.runtime_reloader import apply_live_log_level
 from app.infrastructure.http.security_middleware import optional_api_key_security_middleware
 from app.infrastructure.mdns_responder import showcase_mdns_responder
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
-from app.infrastructure.persistence import dmd_profile_store, seen_repository, server_config_store
+from app.infrastructure.persistence import (
+    dmd_profile_store,
+    on_demand_cache_store,
+    seen_repository,
+    server_config_store,
+)
 from app.infrastructure.scrapers.http_utils import create_async_http_client
 from app.infrastructure.scrapers.registry import scraper_registry
 from app.infrastructure.web.dashboard_loader import STATIC_WEB_DIR
 from app.models import DomainType
 from app.scheduler.worker_pool import batch_manager
+from app.security.log_redactor import install_secret_log_redaction
 
 __all__ = [
     "ALL_SHOWCASE_DOMAINS",
@@ -58,6 +64,7 @@ __all__ = [
     "consume_once_orchestrator",
     "create_async_http_client",
     "dmd_profile_store",
+    "on_demand_cache_store",
     "release_update_checker",
     "run",
     "scraper_registry",
@@ -75,6 +82,7 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
+install_secret_log_redaction()
 logger = logging.getLogger("dmd_showcase.http")
 
 ALL_SHOWCASE_DOMAINS: Tuple[DomainType, ...] = ("games", "movies", "series", "anime")
@@ -83,11 +91,11 @@ _session_client_meta: Dict[Tuple[str, str], Tuple[str, float]] = {}
 OPENAPI_TAGS = [
     {
         "name": "System & Admin",
-        "description": "Server health, centralized API credentials (`server_config.json`), and `seen_history.json` management.",
+        "description": "Server health, centralized API credentials & source policies (`server_config.json`), and `seen_history.json` management.",
     },
     {
         "name": "Discovery",
-        "description": "Live categories, systems, genres, decades, and `[Primary, Fallback]` metadata scraper sources.",
+        "description": "Live categories, 66 retro/arcade systems, genres, decades, and configurable multi-source metadata & video scraper chains.",
     },
     {
         "name": "Consume-Once Protocol",
@@ -103,7 +111,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "On-Demand & Voice Assistant",
-        "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/on-demand`) for WebUI, FrontendSync, and voice assistants.",
+        "description": "Multi-candidate localized search (`/search`) and per-DMD On-Demand priority queues (`/clients/{dmd_id}/queue`, `/clients/{dmd_id}/queue/async`, `/on-demand`) for WebUI, FrontendSync, and voice assistants.",
     },
     {
         "name": "Card Studio & Simulator",
@@ -148,7 +156,7 @@ app = FastAPI(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
         "### Architecture Highlights\n"
-        "- **Resilient Scraper Chains (`Primary` + `Fallback`)**: 2 dedicated metadata & video sources per domain.\n"
+        "- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
         "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming "
         "(`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at "

@@ -26,10 +26,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .providers-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
   .vault-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .form-grid-3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -80,12 +80,15 @@
   .studio-grid .form-grid-3,
   .kpi-grid,
   .providers-grid,
+  .provider-selects-grid,
+  .vault-grid,
   .cand-grid,
   .studio-dom-tabs,
   .studio-search-bar {
     grid-template-columns: 1fr;
   }
-  .field.span-2 {
+  .field.span-2,
+  .provider-strategy-field {
     grid-column: span 1;
   }
   .studio-search-bar > button {

@@ -13,7 +13,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from app.security.log_redactor import (
+    SecretRedactingLogFilter,
+    install_secret_log_redaction,
+)
+
 logger = logging.getLogger("dmd_showcase.scrapers.http")
+install_secret_log_redaction()
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")

@@ -8,15 +8,21 @@ from app.infrastructure.persistence.mqtt_retained_store import (
     RetainedClientConfigStore,
     mqtt_retained_store,
 )
+from app.infrastructure.persistence.on_demand_cache_store import (
+    FileOnDemandCacheStore,
+    on_demand_cache_store,
+)
 from app.infrastructure.persistence.server_config_store import ServerConfigStore, server_config_store
 
 __all__ = [
     "DmdProfileStore",
+    "FileOnDemandCacheStore",
     "JsonSeenHistoryRepository",
     "RetainedClientConfigStore",
     "ServerConfigStore",
     "dmd_profile_store",
     "mqtt_retained_store",
+    "on_demand_cache_store",
     "seen_repository",
     "server_config_store",
 ]

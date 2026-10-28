@@ -23,12 +23,20 @@ import {
   jumpToQueueStudio,
   renderClients,
   renderHealth,
-  renderProviders,
   renderRuntimeSummary,
   renderSeen,
   renderVaultStatus,
   switchTab
 } from './tabs/overview.js';
+import {
+  moveDomainSource,
+  onSourcePrimaryChange,
+  onSourceSecondaryChange,
+  onSourceStrategyChange,
+  renderProviders,
+  renderSourceBadge,
+  toggleDomainSource
+} from './tabs/source_chains.js';
 import {
   closeProfileEditor,
   deleteDmdProfile,
@@ -43,10 +51,15 @@ import {
   saveDmdProfile
 } from './tabs/profile_editor.js';
 import {
+  evictOnDemandCache,
   loadHealthAndConfig,
+  populateConfigForm,
   refreshAll,
   resetHistory,
+  saveApiKeys,
   saveConfig,
+  saveServerConfig,
+  saveSourcePolicies,
   syncMdnsUi,
   syncMqttModeUi,
   syncReferentials
@@ -89,6 +102,7 @@ import {
   removeQueueItem,
   runCandidateSearch,
   runLiveTest,
+  runPreviewTest,
   skipSelectedDmd
 } from './tabs/tester_queue.js';
 import { checkSystemUpdate, dismissUpdateBanner, renderUpdateBanner } from './update_banner.js';
@@ -113,7 +127,7 @@ export function setUiLang(lang) {
   syncMdnsUi();
   renderRuntimeSummary(uiState.lastServerConfig, uiState.lastHealth);
   renderVaultStatus(uiState.lastVaultStatus);
-  renderProviders(uiState.lastProviders);
+  renderProviders(uiState.lastProviders, uiState.lastSourcePolicies);
   renderClients(uiState.lastClients);
   renderSeen(uiState.lastSeenStats);
   if (uiState.lastHealth) renderHealth(uiState.lastHealth);
@@ -140,6 +154,7 @@ const WINDOW_HANDLERS = {
   dismissUpdateBanner,
   enqueueCandidate,
   enqueueStudioSim,
+  evictOnDemandCache,
   jumpToQueueFromInspector,
   jumpToQueueStudio,
   jumpToStudioChapter,
@@ -147,9 +162,13 @@ const WINDOW_HANDLERS = {
   loadStudioFilters,
   loadTargetDmdQueue,
   markStudioFullDirty,
+  moveDomainSource,
   onPlSlotCount,
   onPlSlotToggle,
   onProfileLangChange,
+  onSourcePrimaryChange,
+  onSourceSecondaryChange,
+  onSourceStrategyChange,
   onStudioAccentModeChange,
   onStudioScrub,
   onStudioTargetDmdChange,
@@ -161,21 +180,27 @@ const WINDOW_HANDLERS = {
   openStudioForDmdDomainFromEditor,
   openStudioFromInspector,
   openTagPickerModal,
+  populateConfigForm,
   previewCandidate,
   redrawCurrentStudioFrame,
   refreshAll,
   removeQueueItem,
   removeSlotTag,
+  renderSourceBadge,
   renderTagPickerOptions,
   requestStudioCardPreviewNow,
   resetHistory,
   returnToDmdRotationEditor,
   runCandidateSearch,
   runLiveTest,
+  runPreviewTest,
   runStudioFullPreview,
   runStudioSearch,
+  saveApiKeys,
   saveConfig,
   saveDmdProfile,
+  saveServerConfig,
+  saveSourcePolicies,
   saveStudioStyleToDmdProfile,
   scheduleStudioCardPreview,
   selectStudioCandidate,
@@ -192,6 +217,7 @@ const WINDOW_HANDLERS = {
   syncMqttModeUi,
   syncReferentials,
   syncStudioResFromActiveDmd,
+  toggleDomainSource,
   togglePwd,
   toggleStudioPlay,
   toggleStudioTate,
