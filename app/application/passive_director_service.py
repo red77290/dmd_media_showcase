@@ -277,7 +277,7 @@ class PassivePlaylistDirectorService:
 
         self.state.client_configs[(dmd_id, domain)] = (geometry, criteria)
         self.state.client_transports[(dmd_id, domain)] = (
-            "UDP-PASSIVE" if criteria.render_card_in_stream else "MQTT+UDP"
+            "UDP-PASSIVE" if criteria.render_card_in_stream else "MQTT+TCP"
         )
 
         active_exclude = {

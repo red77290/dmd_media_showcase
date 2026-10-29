@@ -2181,3 +2181,164 @@ def test_admin_ui_pilotage_sixth_cross_button_and_i18n_parity():
             assert req_key in keys, f"Missing i18n key '{req_key}' in {lang}.js"
 
     assert key_sets["en"] == key_sets["fr"] == key_sets["es"]
+
+
+@pytest.mark.asyncio
+async def test_compact_item_id_and_mqtt_tcp_stream_consume_once(tmp_path: Path, monkeypatch):
+    """
+    Verify:
+    1. Long candidate IDs (80+ chars) produce compact `item_id` values (`<= 24` chars,
+       `^pkg_games_[0-9a-f]{12}$`) so embedded ESP32 buffers never truncate URLs, while
+       `seen_repo` still tracks the full `candidate.id`.
+    2. `MQTT+TCP` (`mqtt_tcp`) clients publish `config`, receive `ready`, publish `start_card`
+       (or stream directly before `start_card` arrives), and consume `.rgb565.stream?purge=true&paced=1&drop_late=1`
+       with `200 OK`, `transport == "MQTT+TCP"`, and automatic package purge on completion.
+    """
+    import re
+    import struct
+    from httpx import ASGITransport, AsyncClient
+    from app.main import app, consume_once_orchestrator
+    from app.config import settings
+    from app.infrastructure.persistence.json_seen_repository import JsonSeenHistoryRepository
+
+    monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache")
+    seen_repo = JsonSeenHistoryRepository(file_path=tmp_path / "data" / "seen_history.json")
+
+    long_cand_id = (
+        "games_libretro_snes_super_mario_world_2_yoshi_s_island_special_edition_1995_usa_rev_1"
+    )
+    seq_counter = {"n": 0}
+
+    class _LongIdChain:
+        async def acquire_unseen_candidates(
+            self, criteria: FilterCriteria, count: int = 1, extra_exclude_ids=None
+        ):
+            seq_counter["n"] += 1
+            cid = f"{long_cand_id}_{seq_counter['n']}"
+            seen_repo.mark_consumed(criteria.domain, cid)
+            return [
+                MediaCandidate(
+                    id=cid,
+                    domain=criteria.domain,
+                    title=f"Yoshi's Island #{seq_counter['n']}",
+                    year="1995",
+                    badge="SNES",
+                    badge_color="#FF6D00",
+                    subtitle="Platformer",
+                    rating="9.6",
+                    synopsis="Baby Mario and Yoshi adventure.",
+                    lang=criteria.lang,
+                    source_id="libretro_wikidata",
+                )
+            ]
+
+    class _DmdsFakeTranscoder:
+        async def transcode_candidate(self, cand, criteria, geometry, item_dir: Path):
+            item_dir.mkdir(parents=True, exist_ok=True)
+            stream_p = item_dir / f"unified_{geometry.width}x{geometry.height}.rgb565.stream"
+            frame_bytes = geometry.width * geometry.height * 2
+            hdr = struct.pack(
+                "<4sBBHHHHH",
+                b"DMDS",
+                1,
+                30,
+                geometry.width,
+                geometry.height,
+                2,
+                33,
+                0,
+            )
+            stream_p.write_bytes(hdr + (b"\x1f\x00" * (frame_bytes // 2) * 2))
+            return {
+                "poster_width": 32,
+                "poster_height": 32,
+                "poster_rgb565_b64": "AA==",
+                "has_panoramas": True,
+                "has_video": True,
+                "unified_stream_path": str(stream_p),
+                "stream_frames": 2,
+                "stream_fps": 30,
+                "stream_duration_s": 0.1,
+            }
+
+    class _NoopStreamer:
+        active_streams_count = 0
+
+        def get_active_stream(self, _dmd_id: str):
+            return None
+
+        async def stop_stream(self, _dmd_id: str) -> None:
+            pass
+
+    published = []
+
+    class _CaptureMqtt:
+        def set_handlers(self, **_kwargs) -> None:
+            pass
+
+        async def publish_json(self, topic: str, payload, retain: bool = False) -> None:
+            published.append((topic, payload, retain))
+
+    orch = ConsumeOnceOrchestrator(
+        chain_service=_LongIdChain(),  # type: ignore[arg-type]
+        seen_repo=seen_repo,
+        transcoder=_DmdsFakeTranscoder(),  # type: ignore[arg-type]
+        streamer=_NoopStreamer(),  # type: ignore[arg-type]
+        mqtt_gateway=_CaptureMqtt(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr("app.main.consume_once_orchestrator", orch)
+    monkeypatch.setattr(
+        "app.infrastructure.http.dependencies.get_orchestrator",
+        lambda: orch,
+    )
+    monkeypatch.setattr(
+        "app.infrastructure.http.routers.consume_once.get_orchestrator",
+        lambda: orch,
+    )
+
+    dmd_id = "esp32_ab12cd_games_128x32"
+    try:
+        await orch.handle_mqtt_client_config(
+            dmd_id,
+            {
+                "dmd_id": dmd_id,
+                "client_ip": "192.168.1.31",
+                "transport": "mqtt_tcp",
+                "width": 128,
+                "height": 32,
+                "domains": {"games": {"lang": "fr", "video_fps": 20}},
+            },
+        )
+        for _ in range(80):
+            if (dmd_id, "games") in orch.ready_packages:
+                break
+            await asyncio.sleep(0.02)
+
+        ready_pkg = orch.ready_packages[(dmd_id, "games")]
+        assert len(ready_pkg.item_id) <= 24
+        assert re.match(r"^pkg_games_[0-9a-f]{12}$", ready_pkg.item_id)
+        assert seen_repo.is_seen("games", f"{long_cand_id}_1")
+        assert orch.client_transports[(dmd_id, "games")] == "MQTT+TCP"
+
+        # Stream directly via HTTP TCP even BEFORE `start_card` (zero-race claim fallback)
+        first_item_id = ready_pkg.item_id
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(
+                f"/api/v1/games/stream/{first_item_id}.rgb565.stream?purge=true&paced=1&drop_late=1"
+            )
+            assert resp.status_code == 200
+            assert resp.headers.get("x-dmd-paced") == "1"
+            assert resp.headers.get("x-dmd-drop-late") == "1"
+            assert resp.content[:4] == b"DMDS"
+            assert len(resp.content) >= 16 + (128 * 32 * 2)
+
+            clients_resp = await client.get("/api/v1/clients")
+            assert clients_resp.status_code == 200
+            row = next(c for c in clients_resp.json()["clients"] if c["dmd_id"] == dmd_id)
+            assert row["transport"] == "MQTT+TCP"
+
+        assert first_item_id not in orch.active_packages
+    finally:
+        for task in list(orch._prep_tasks.values()):
+            task.cancel()

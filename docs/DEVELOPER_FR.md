@@ -36,8 +36,8 @@ dmd_media_showcase/
 │   │   ├── showcase_state.py             # Conteneur d'état partagé ShowcaseRuntimeState
 │   │   ├── concurrency.py                # DynamicConcurrencyLimiter & verrous par clé
 │   │   ├── criteria_parser.py            # Normalisation des critères de filtrage par domaine
-│   │   ├── client_registry_service.py    # Enregistrement DMD, hello, LWT & télémétrie source live
-│   │   ├── slot_preparation_service.py   # Préparation Ready/Standby, claim & purge disque
+│   │   ├── client_registry_service.py    # Enregistrement DMD, client_transports (MQTT+TCP par défaut), LWT & télémétrie
+│   │   ├── slot_preparation_service.py   # IDs compacts pkg_<domain>_<12hex>, slots Ready/Standby, claim & purge disque
 │   │   ├── on_demand_queue_service.py    # File prioritaire On-Demand & promotion Studio zéro-retranscodage
 │   │   ├── passive_director_service.py   # Boucles playlists serveur Modes 2A/2B & contrôles temps réel
 │   │   ├── studio_preview_service.py     # Aperçu fiche <100ms & séquence complète DMDS
@@ -48,7 +48,7 @@ dmd_media_showcase/
 │   ├── container.py                      # Composition Root câblant les adaptateurs aux Ports Domaine
 │   ├── infrastructure/                   # Adaptateurs Concrets Entrants & Sortants
 │   │   ├── http/                         # Middleware sécurité, reloader live & 6 routeurs FastAPI
-│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, consume_once, rotation_batch
+│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, consume_once (TCP DMDS cadencé), rotation_batch
 │   │   ├── web/                          # WebUI Control Center externalisé (zéro HTML/JS dans Python)
 │   │   │   ├── dashboard_loader.py       # Chargeur portable de index.html, CSS & modules ES
 │   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ modules ES)
@@ -65,7 +65,7 @@ dmd_media_showcase/
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
 │   │   │   ├── series/                   # tmdb_series_adapter, tvmaze_adapter (+ tvdb_adapter)
 │   │   │   └── anime/                    # jikan_animethemes_adapter, anilist_adapter
-│   │   ├── streaming/                    # FfmpegUdpClockStreamer (ffmpeg -re -> UDP DMDF)
+│   │   ├── streaming/                    # FfmpegUdpClockStreamer (Mode 2B Passif :4210 & MQTT+UDP DMDF optionnel)
 │   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.4)
 │   ├── security/                         # Coffre-fort natif 3 niveaux & caviardage des logs
 │   │   ├── vault.py                      # Chargeur runtime de l'extension native C _prod_vault*.so
@@ -156,6 +156,10 @@ Ajoutez `"custom_retro"` dans `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources
 7. **Bundles Portables Hermétiques (`Windows_x64`, `macOS`, `Linux_x64`) & Résilience TLS Archives Rétro** :
    - Les exécutables PyInstaller figés résolvent `yt-dlp` via `resolve_ytdlp_command()` (dispatch précoce `[sys.executable, "--internal-ytdlp"]` dans `app/main.py` + repli Python `yt_dlp.YoutubeDL` dans `youtube_resolver.py`), éliminant tout besoin d'un binaire `yt-dlp.exe` externe malgré le `PATH` hermétique.
    - `enforce_hermetic_environment()` exporte le magasin CA `certifi` embarqué (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), tandis que `default_http_download_bytes()` (`imaging_primitives.py`) bascule automatiquement (avec cache par hôte) vers un contexte TLS non vérifié lorsqu'une archive rétro comme `adb.arcadeitalia.net` présente un certificat expiré.
+
+8. **Streaming Principal `MQTT+TCP` (`DMDS`), Identifiants `item_id` Compacts & Transports Clients** :
+   - Les Modèles 1 et 2A (`supports_local_card: true`) utilisent `MQTT+TCP` par défaut : MQTT (`:1883`) gère `config`, `ready` retenu et `start_card`, tandis que `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (`consume_once.py`) diffuse les trames `DMDS` RGB565LE cadencées côté serveur (`X-DMD-Paced: 1`, `X-DMD-Drop-Late: 1`, omission de `Content-Length` si `drop_late=1` saute les trames en retard) et purge le package disque en fin de flux.
+   - Maintenir le format `pkg_<domain>_<12hex>` (`<= 24` caractères) pour `item_id` dans `SlotPreparationService`, `OnDemandQueueService` et `StudioPreviewService` (zéro allocation heap côté ESP32), et préserver les profils `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` par défaut, `HTTP`, `UDP-PASSIVE` pour le Mode 2B `:4210`, et `MQTT+UDP` optionnel).
 
 ---
 

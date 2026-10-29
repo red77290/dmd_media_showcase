@@ -36,8 +36,8 @@ dmd_media_showcase/
 │   │   ├── showcase_state.py             # Estado compartido ShowcaseRuntimeState
 │   │   ├── concurrency.py                # DynamicConcurrencyLimiter y bloqueos por clave
 │   │   ├── criteria_parser.py            # Normalización de criterios por dominio
-│   │   ├── client_registry_service.py    # Registro DMD, hello, LWT y telemetría de fuente en vivo
-│   │   ├── slot_preparation_service.py   # Preparación Ready/Standby, claim y limpieza en disco
+│   │   ├── client_registry_service.py    # Registro DMD, client_transports (MQTT+TCP por defecto), LWT y telemetría
+│   │   ├── slot_preparation_service.py   # IDs compactos pkg_<domain>_<12hex>, Ready/Standby, claim y limpieza
 │   │   ├── on_demand_queue_service.py    # Cola prioritaria On-Demand y promoción Studio
 │   │   ├── passive_director_service.py   # Listas gestionadas por servidor Modos 2A/2B y controles
 │   │   ├── studio_preview_service.py     # Vista previa <100ms y secuencia completa DMDS
@@ -47,7 +47,7 @@ dmd_media_showcase/
 │   │   └── consume_once_orchestrator.py  # Fachada ligera de orquestación
 │   ├── container.py                      # Composition Root que conecta adaptadores con puertos
 │   ├── infrastructure/                   # Adaptadores Concretos de Entrada y Salida
-│   │   ├── http/                         # Middleware de seguridad, reloader en vivo y 6 routers FastAPI
+│   │   ├── http/                         # Middleware de seguridad, reloader en vivo y 6 routers FastAPI (consume_once TCP DMDS)
 │   │   ├── web/                          # WebUI Control Center externalizada (index.html, CSS y 15+ módulos ES)
 │   │   ├── rendering/                    # Motor modular HUB75 RGB565LE (incl. panoramas YOKO/TATE zoom-to-cover)
 │   │   ├── mqtt/                         # EmbeddedMqttBroker (:1883) & ShowcaseMqttGateway
@@ -57,7 +57,7 @@ dmd_media_showcase/
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
 │   │   │   ├── series/                   # tmdb_series_adapter, tvmaze_adapter (+ tvdb_adapter)
 │   │   │   └── anime/                    # jikan_animethemes_adapter, anilist_adapter
-│   │   ├── streaming/                    # FfmpegUdpClockStreamer (ffmpeg -re -> UDP DMDF)
+│   │   ├── streaming/                    # FfmpegUdpClockStreamer (Modo 2B Pasivo :4210 y MQTT+UDP DMDF opcional)
 │   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.4)
 │   ├── security/                         # Bóveda nativa de 3 niveles y redacción de logs
 │   │   ├── vault.py                      # Cargador en tiempo de ejecución de _prod_vault*.so
@@ -147,6 +147,10 @@ Añada `"custom_retro"` a `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`.
    - Los ejecutables PyInstaller congelados resuelven `yt-dlp` mediante `resolve_ytdlp_command()` (despacho temprano `[sys.executable, "--internal-ytdlp"]` en `app/main.py` más respaldo en proceso `yt_dlp.YoutubeDL` en `youtube_resolver.py`) sin requerir un binario `yt-dlp.exe` externo.
    - `enforce_hermetic_environment()` exporta los certificados raíz `certifi` incluidos (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), mientras que `default_http_download_bytes()` (`imaging_primitives.py`) reintenta con contexto TLS no verificado (cacheado por host) cuando archivos retro como `adb.arcadeitalia.net` presentan certificados caducados.
 8. **Cascada CSS, Paridad I18n y Tablas Responsivas del WebUI (`app/infrastructure/web/static/`)**: Mantener paridad al 100 % entre `js/i18n/{en,fr,es}.js`, conservar el estado compartido (incluidas las insignias de fuente `playing_source`, `ready_source`, `standby_source`, `preparing_source`, `source_used`) en `uiState` (`js/state.js`), respetar el orden `css/dashboard.css` → `css/studio.css` → `css/responsive.css` (todos los `@media` en `responsive.css`), envolver cada `<table>` en `.table-wrap` y registrar cada manejador inline `onclick`/`onchange` en `WINDOW_HANDLERS` de `js/app.js`.
+
+9. **Streaming Principal `MQTT+TCP` (`DMDS`), Identificadores `item_id` Compactos y Transportes de Cliente**:
+   - Los Modelos 1 y 2A (`supports_local_card: true`) utilizan `MQTT+TCP` por defecto: MQTT (`:1883`) gestiona `config`, `ready` retenido y `start_card`, mientras que `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (`consume_once.py`) emite fotogramas `DMDS` RGB565LE con marcapasos del servidor (`X-DMD-Paced: 1`, `X-DMD-Drop-Late: 1`, omitiendo `Content-Length` cuando `drop_late=1` salta fotogramas atrasados) y purga el paquete en disco al finalizar.
+   - Mantener `item_id` con el formato `pkg_<domain>_<12hex>` (`<= 24` caracteres) en `SlotPreparationService`, `OnDemandQueueService` y `StudioPreviewService` (cero heap en ESP32), y preservar `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` por defecto, `HTTP`, `UDP-PASSIVE` para Modo 2B `:4210` y `MQTT+UDP` opcional).
 
 ---
 

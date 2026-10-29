@@ -501,7 +501,7 @@ class OnDemandQueueService:
 
             # Fast-Path (0 ms Request-Keyed Persistent Cache Hit): skip BOTH scraper search AND transcode
             if self.on_demand_cache is not None and self.on_demand_cache.is_enabled():
-                item_id = f"pkg_{eff_domain}_{uuid.uuid4().hex[:8]}_cached"
+                item_id = f"pkg_{eff_domain}_{uuid.uuid4().hex[:12]}"
                 item_dir = (
                     settings.cache_dir
                     / "consume_once"

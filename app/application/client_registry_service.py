@@ -230,7 +230,7 @@ class ClientRegistryService:
                         key,
                         "UDP-PASSIVE"
                         if (cfg_source == "server" and not supports_local_card)
-                        else "MQTT+UDP",
+                        else "MQTT+TCP",
                     ),
                     "client_ip": self.state.client_udp_ips.get(dmd_id)
                     or (str(prof.get("udp_ip") or "") if prof else ""),
@@ -286,7 +286,7 @@ class ClientRegistryService:
                     "online": self.state.client_online.get(dmd_id, False),
                     "transport": "UDP-PASSIVE"
                     if not prof.get("supports_local_card", True)
-                    else "MQTT+UDP",
+                    else "MQTT+TCP",
                     "client_ip": self.state.client_udp_ips.get(dmd_id)
                     or str(prof.get("udp_ip") or ""),
                     "udp_port": int(prof.get("udp_port") or 4210),
@@ -376,7 +376,7 @@ class ClientRegistryService:
             if p_existing is not None and p_existing.get("config_source") == "server":
                 continue
             ip = self.state.client_udp_ips.get(cid, "")
-            tr = self.state.client_transports.get((cid, dom), "MQTT+UDP")
+            tr = self.state.client_transports.get((cid, dom), "MQTT+TCP")
             raw_p = self.state.client_raw_configs.get(cid)
             all_entries.append((cid, dom, geom, crit, tr, ip, raw_p))
 

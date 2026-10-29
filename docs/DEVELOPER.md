@@ -36,8 +36,8 @@ dmd_media_showcase/
 │   │   ├── showcase_state.py             # Shared ShowcaseRuntimeState container
 │   │   ├── concurrency.py                # DynamicConcurrencyLimiter & key locks
 │   │   ├── criteria_parser.py            # Domain criteria normalization & defaults
-│   │   ├── client_registry_service.py    # DMD registration, hello, LWT & live source telemetry
-│   │   ├── slot_preparation_service.py   # Ready/Standby slot preparation, claim & disk purge
+│   │   ├── client_registry_service.py    # DMD registration, client_transports (MQTT+TCP default), LWT & live telemetry
+│   │   ├── slot_preparation_service.py   # Compact pkg_<domain>_<12hex> IDs, Ready/Standby slots, claim & disk purge
 │   │   ├── on_demand_queue_service.py    # Priority playback queue & zero-retranscode Studio promotion
 │   │   ├── passive_director_service.py   # Server-managed Mode 2A/2B playlist loops & live controls
 │   │   ├── studio_preview_service.py     # <100ms Card preview & full DMDS sequence builder
@@ -48,7 +48,7 @@ dmd_media_showcase/
 │   ├── container.py                      # Composition Root wiring Infrastructure adapters to Domain ports
 │   ├── infrastructure/                   # Inbound & Outbound Concrete Adapters
 │   │   ├── http/                         # FastAPI middleware, runtime reloader & 6 modular routers
-│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, consume_once, rotation_batch
+│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, consume_once (paced DMDS TCP), rotation_batch
 │   │   ├── web/                          # Externalized Control Center WebUI (zero HTML/JS in Python)
 │   │   │   ├── dashboard_loader.py       # Portable resource loader for index.html, CSS & ES modules
 │   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ ES modules)
@@ -65,7 +65,7 @@ dmd_media_showcase/
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
 │   │   │   ├── series/                   # tmdb_series_adapter, tvmaze_adapter (+ tvdb_adapter)
 │   │   │   └── anime/                    # jikan_animethemes_adapter, anilist_adapter
-│   │   ├── streaming/                    # FfmpegUdpClockStreamer (ffmpeg -re -> UDP DMDF)
+│   │   ├── streaming/                    # FfmpegUdpClockStreamer (Mode 2B Passive :4210 & optional MQTT+UDP DMDF)
 │   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.4)
 │   ├── security/                         # 3-Tier Native Vault & Secret Log Redaction
 │   │   ├── vault.py                      # Runtime loader for compiled C extension _prod_vault*.so
@@ -156,6 +156,10 @@ Append `"custom_retro"` to `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`
 7. **Hermetic Portable Bundles (`Windows_x64`, `macOS`, `Linux_x64`) & Retro-Archive TLS Resilience**:
    - Frozen PyInstaller executables resolve `yt-dlp` via `resolve_ytdlp_command()` (`[sys.executable, "--internal-ytdlp"]` early dispatch in `app/main.py` plus in-process `yt_dlp.YoutubeDL` fallback in `youtube_resolver.py`) so hermetic `PATH` isolation never requires an external `yt-dlp.exe` binary.
    - `enforce_hermetic_environment()` exports bundled `certifi` CA roots (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), while `default_http_download_bytes()` (`imaging_primitives.py`) retries with an unverified TLS context (cached per host) when legacy retro archives such as `adb.arcadeitalia.net` serve expired certificates.
+
+8. **Real-Time `MQTT+TCP` (`DMDS`) Primary Streaming, Compact `item_id`s & Client Transports**:
+   - Models 1 and 2A (`supports_local_card: true`) default to `MQTT+TCP`: MQTT (`:1883`) handles `config`, retained `ready`, and `start_card`, while `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (`consume_once.py`) streams server-clocked `DMDS` RGB565LE frames (`X-DMD-Paced: 1`, `X-DMD-Drop-Late: 1`, omitting `Content-Length` when `drop_late=1` seeks past late frames) and purges the consumed package on EOF.
+   - Keep `item_id` formatted as `pkg_<domain>_<12hex>` (`<= 24` chars) across `SlotPreparationService`, `OnDemandQueueService`, and `StudioPreviewService` so embedded clients never allocate heap buffers, and preserve `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` default, `HTTP`, `UDP-PASSIVE` for Mode 2B `:4210`, and optional `MQTT+UDP`).
 
 ---
 

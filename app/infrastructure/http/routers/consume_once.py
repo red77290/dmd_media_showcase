@@ -117,7 +117,13 @@ async def stream_consume_once_poster(
     item_id: str,
 ) -> Response:
     """Serve the binary RGB565 mini-jacket for `item_id` over HTTP/HTTPS."""
-    pkg = get_orchestrator().active_packages.get(item_id)
+    co = get_orchestrator()
+    pkg = co.active_packages.get(item_id)
+    if pkg is None:
+        for (slot_dmd, slot_dom), rpkg in list(co.ready_packages.items()):
+            if rpkg.item_id == item_id:
+                pkg = await co.claim_next_package(slot_dmd, slot_dom, item_id=item_id)
+                break
     if pkg is None:
         raise HTTPException(
             status_code=404,
@@ -148,7 +154,7 @@ async def stream_consume_once_sequence(
     background_tasks: BackgroundTasks,
     purge: bool = Query(
         default=True,
-        description="Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)",
+        description="Purge package from disk immediately after HTTP TCP response completes (pass purge=false only when preloading before an explicit stop_stream purge)",
     ),
     paced: bool = Query(
         default=False,
@@ -161,10 +167,10 @@ async def stream_consume_once_sequence(
 ) -> Response:
     """
     Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
-    for `item_id` and immediately purge the consumed files from disk once the HTTP response completes
-    (unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).
+    for `item_id` over HTTP TCP (`MQTT+TCP` or `HTTP` Consume-Once) and immediately purge the consumed
+    files from disk once the HTTP response completes (unless `purge=false` is explicitly passed).
 
-    ### Binary HTTP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
+    ### Binary HTTP TCP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
     - `0..3` (`char[4]`): `"DMDS"` (`0x44 0x4D 0x44 0x53`)
     - `4` (`uint8`): `version` (`1`)
     - `5` (`uint8`): `fps` (`8..60`)
@@ -175,15 +181,25 @@ async def stream_consume_once_sequence(
     - `14..15` (`uint16le`): `reserved` (`0`)
     - `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.
 
-    For real-time UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.
+    For passive Mode 2B UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.
     """
     co = get_orchestrator()
     pkg = co.active_packages.get(item_id)
+    if pkg is None:
+        for (slot_dmd, slot_dom), rpkg in list(co.ready_packages.items()):
+            if rpkg.item_id == item_id:
+                pkg = await co.claim_next_package(slot_dmd, slot_dom, item_id=item_id)
+                break
     if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
         raise HTTPException(
             status_code=404,
             detail=f"Stream '{item_id}' not found or already consumed and purged.",
         )
+
+    claim_slot = (pkg.dmd_id, domain)
+    if claim_slot in co.state.client_configs and co.state.client_transports.get(claim_slot) != "HTTP":
+        co.state.client_transports[claim_slot] = "MQTT+TCP"
+    co.state.client_last_seen[claim_slot] = time.time()
 
     stream_path = pkg.unified_stream_path
     file_size = stream_path.stat().st_size

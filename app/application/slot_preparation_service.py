@@ -240,7 +240,10 @@ class SlotPreparationService:
             for dom_key, dom_cfg in engines_map.items():
                 if dom_key in VALID_DOMAINS and isinstance(dom_cfg, dict):
                     dom: DomainType = dom_key  # type: ignore[assignment]
-                    self.state.client_transports[(dmd_id, dom)] = "MQTT+UDP"
+                    raw_tr = str(dom_cfg.get("transport") or payload.get("transport") or "").strip().lower()
+                    self.state.client_transports[(dmd_id, dom)] = (
+                        "MQTT+UDP" if raw_tr == "mqtt_udp" else "MQTT+TCP"
+                    )
                     if not is_restored:
                         self.state.client_last_seen[(dmd_id, dom)] = now_ts
                     elif saved_at > 0 and (dmd_id, dom) not in self.state.client_last_seen:
@@ -251,7 +254,10 @@ class SlotPreparationService:
             dom_raw = str(payload.get("domain") or "games")
             if dom_raw in VALID_DOMAINS:
                 dom_single: DomainType = dom_raw  # type: ignore[assignment]
-                self.state.client_transports[(dmd_id, dom_single)] = "MQTT+UDP"
+                raw_tr_single = str(payload.get("transport") or "").strip().lower()
+                self.state.client_transports[(dmd_id, dom_single)] = (
+                    "MQTT+UDP" if raw_tr_single == "mqtt_udp" else "MQTT+TCP"
+                )
                 if not is_restored:
                     self.state.client_last_seen[(dmd_id, dom_single)] = now_ts
                 elif saved_at > 0 and (dmd_id, dom_single) not in self.state.client_last_seen:
@@ -426,7 +432,7 @@ class SlotPreparationService:
                     cand_found = candidates[0]
                     active_exclude.add(cand_found.id)
                     self.state.preparing_sources[key] = cand_found.source_id or ""
-                    iid = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand_found.id}"
+                    iid = f"pkg_{domain}_{uuid.uuid4().hex[:12]}"
                     idir = settings.cache_dir / "consume_once" / dmd_id / domain / iid
                     try:
                         fmap = await self.transcoder.transcode_candidate(
@@ -606,7 +612,13 @@ class SlotPreparationService:
         if declared_ip and declared_ip not in ("0.0.0.0", "127.0.0.1"):
             self.state.client_udp_ips[dmd_id] = declared_ip
         if (dmd_id, domain) in self.state.client_configs:
-            self.state.client_transports[(dmd_id, domain)] = "MQTT+UDP"
+            ev_tr = str(event_payload.get("transport") or "").strip().lower()
+            if ev_type == "start_stream" or ev_tr == "mqtt_udp":
+                self.state.client_transports[(dmd_id, domain)] = "MQTT+UDP"
+            elif ev_tr in ("mqtt_tcp", "tcp", "http_tcp"):
+                self.state.client_transports[(dmd_id, domain)] = "MQTT+TCP"
+            else:
+                self.state.client_transports.setdefault((dmd_id, domain), "MQTT+TCP")
             self.state.client_last_seen[(dmd_id, domain)] = time.time()
         if ev_type in ("start_card", "start_stream", "client_online"):
             self.state.client_online[dmd_id] = True

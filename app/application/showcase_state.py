@@ -214,7 +214,7 @@ class ShowcaseRuntimeState:
         criteria: FilterCriteria,
     ) -> Optional[PreparedShowcasePackage]:
         """Transcode a `MediaCandidate` through the worker gate into a `PreparedShowcasePackage`."""
-        item_id = f"pkg_{domain}_{uuid.uuid4().hex[:8]}_{cand.id}"
+        item_id = f"pkg_{domain}_{uuid.uuid4().hex[:12]}"
         item_dir = settings.cache_dir / "consume_once" / dmd_id / domain / item_id
         slot_key = (dmd_id, domain)
         self.preparing_sources[slot_key] = cand.source_id or ""

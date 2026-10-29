@@ -1578,7 +1578,7 @@
           "Consume-Once Protocol"
         ],
         "summary": "Stream Consume Once Sequence",
-        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` and immediately purge the consumed files from disk once the HTTP response completes\n(unless `purge=false` is passed by an `mqtt_udp` client that purges on `stop_stream`).\n\n### Binary HTTP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)\n- `0..3` (`char[4]`): `\"DMDS\"` (`0x44 0x4D 0x44 0x53`)\n- `4` (`uint8`): `version` (`1`)\n- `5` (`uint8`): `fps` (`8..60`)\n- `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)\n- `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)\n- `10..11` (`uint16le`): `total_frames` (`1..65535`)\n- `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)\n- `14..15` (`uint16le`): `reserved` (`0`)\n- `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.\n\nFor real-time UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.",
+        "description": "Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` over HTTP TCP (`MQTT+TCP` or `HTTP` Consume-Once) and immediately purge the consumed\nfiles from disk once the HTTP response completes (unless `purge=false` is explicitly passed).\n\n### Binary HTTP TCP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)\n- `0..3` (`char[4]`): `\"DMDS\"` (`0x44 0x4D 0x44 0x53`)\n- `4` (`uint8`): `version` (`1`)\n- `5` (`uint8`): `fps` (`8..60`)\n- `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)\n- `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)\n- `10..11` (`uint16le`): `total_frames` (`1..65535`)\n- `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)\n- `14..15` (`uint16le`): `reserved` (`0`)\n- `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.\n\nFor passive Mode 2B UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.",
         "operationId": "stream_consume_once_sequence_api_v1__domain__stream__item_id__rgb565_stream_get",
         "parameters": [
           {
@@ -1611,11 +1611,11 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)",
+              "description": "Purge package from disk immediately after HTTP TCP response completes (pass purge=false only when preloading before an explicit stop_stream purge)",
               "default": true,
               "title": "Purge"
             },
-            "description": "Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)"
+            "description": "Purge package from disk immediately after HTTP TCP response completes (pass purge=false only when preloading before an explicit stop_stream purge)"
           },
           {
             "name": "paced",

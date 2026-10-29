@@ -216,7 +216,7 @@ class StudioPreviewService:
     ) -> Optional[PreparedShowcasePackage]:
         if not prev.preview_dir.exists():
             return None
-        item_id = f"pkg_{prev.domain}_{uuid.uuid4().hex[:8]}_{prev.candidate.id}"
+        item_id = f"pkg_{prev.domain}_{uuid.uuid4().hex[:12]}"
         item_dir = (
             settings.cache_dir / "consume_once" / target_slot_dmd_id / prev.domain / item_id
         )

@@ -1,34 +1,47 @@
 asyncapi: 2.6.0
 info:
-  title: DMD Media Showcase Server — MQTT 3.1.1 & UDP DMDF Streaming Protocol
+  title: DMD Media Showcase Server — MQTT 3.1.1 Control Plane, Paced TCP DMDS & Passive UDP DMDF Streaming Protocol
   version: 1.1.4
   description: |
     Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server**,
-    powering **ArcadeMatrix (ESP32 / ESP32-S3)**, **Server-Managed Passive ESP32 Receivers**, and **ArcadeMatrix_RPi** HUB75 LED panels.
+    powering **ArcadeMatrix (ESP32 / ESP32-S3)**, **Server-Managed Hybrid & Passive ESP32 Receivers**, and **ArcadeMatrix_RPi** HUB75 LED panels.
 
     ### Protocol Architecture
     1. **MQTT 3.1.1 Control Plane (`:1883`)**:
        - Uses `retain=True` for server availability (`dmd_showcase/server/status`), consolidated scraper
          referentials (`dmd_showcase/catalog/{domain}/referential`), client-driven DMD configurations
-         (`dmd_showcase/clients/{dmd_id}/config`), server-managed passive/hybrid hardware announcements
+         (`dmd_showcase/clients/{dmd_id}/config`), server-managed hybrid/passive hardware announcements
          (`dmd_showcase/clients/{dmd_id}/hello`, persisted against `./data/dmd_profiles.json`), and per-domain
-         prepared Consume-Once slots (`dmd_showcase/clients/{dmd_id}/{domain}/ready`).
+         prepared Consume-Once slots (`dmd_showcase/clients/{dmd_id}/{domain}/ready`) carrying compact
+         collision-free `item_id` values (`pkg_<domain>_<12hex>`, `<= 24` chars).
        - Uses `dmd_showcase/clients/{dmd_id}/command` for real-time server-to-DMD live control and on-demand
          card push (`action: "play_card" | "skip" | "pause" | "resume" | "stop"`).
        - Uses `LWT` (Last Will and Testament) on both server and DMD clients for instant disconnect cleanup
          while preserving background `N+1` media transcoding tasks across rotation slot switches.
-    2. **Real-Time UDP `DMDF` Data Plane (`udp://{client_ip}:{udp_port}`)**:
-       - Triggered when a client-driven/hybrid DMD publishes `{"action": "start_stream", "item_id": "...", "udp_ip": "...", "udp_port": ...}`
-         or automatically clocked by the server for 100% passive `supports_local_card: false` receivers (`:4210`).
+    2. **Primary Data Plane (`MQTT+TCP` Default — Models 1 & 2A, `supports_local_card: true`)**:
+       - **Scoped MQTT + Real-Time Paced HTTP TCP `DMDS` Streaming (`:8890`)** (`transport: "mqtt_tcp"`, default):
+         the DMD connects to MQTT (`:1883`), publishes `config` or `hello`, claims the retained `ready` slot via
+         `{"action": "start_card", "item_id": "..."}`, optionally disconnects MQTT on single-engine ESP32 to free
+         LwIP socket buffers (`~4 KB`), and streams Phase 2 pixels over raw `HTTP/1.0` TCP (`lwip_socket`) via
+         `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (documented in `/openapi.json`).
+       - The server responds with `X-DMD-Paced: 1` and `X-DMD-Drop-Late: 1` (omitting `Content-Length`), emits the
+         **16-byte Little-Endian `<4sBBHHHHH` `DMDS` header**, paces every RGB565LE frame at `1 / fps` on a monotonic
+         wall-clock so ESP32 `TCP_WND` never stalls and zero client-side buffering heap is needed, skips intermediate
+         frames cleanly if Wi-Fi lags (`drop_late=1`), and purges the `.rgb565.stream` cache file on EOF (`purge=true`).
+       - Works identically across Docker Desktop / Rancher Desktop VM NAT and bare-metal Linux with zero UDP packet loss
+         and zero MTU chunk reassembly overhead.
+    3. **Passive Mode 2B (`UDP-PASSIVE :4210`) & Optional `MQTT+UDP` Data Plane (`udp://{client_ip}:{udp_port}`)**:
+       - Automatically clocked by the server for 100% passive `supports_local_card: false` receivers (`UDP-PASSIVE`, `:4210`),
+         or triggered explicitly when an optional `transport: "mqtt_udp"` client publishes
+         `{"action": "start_stream", "item_id": "...", "udp_ip": "...", "udp_port": ...}`.
        - `FfmpegUdpClockStreamer` strips the 16-byte `DMDS` file header (`<4sBBHHHHH`), clocks raw RGB565LE
          frames via a dedicated monotonic thread at the negotiated `video_fps`, and slices each frame into Wi-Fi MTU-safe
          UDP datagrams (`<= 1418` bytes total: **10-byte Little-Endian `<4sHBBH` `DMDF` header** + `<= 1408` bytes RGB565LE = `6` chunks per `128x32` frame).
-       - Clients automatically fall back to HTTP `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
-         (`DMDS` 16-byte header) if container-to-LAN UDP is blocked by host VM NAT.
-    3. **`N+1` Background Pipelining, On-Demand Queue & Strict Consume-Once**:
+    4. **`N+1` Background Pipelining, On-Demand Queue & Strict Consume-Once**:
        - Publishing `start_card` immediately marks item `N` consumed in `seen_history.json` (unless `mark_seen: false`
          was set by `FrontendSync` on-demand playback), updates the retained `ready` topic to `{"ready": false}`,
-         and starts preparing unseen item `N+1` in the background.
+         and starts preparing unseen item `N+1` in the background while preserving item `N`'s stream file on disk
+         until the HTTP TCP `DMDS` (`?purge=true`) or UDP `DMDF` session finishes.
   contact:
     name: ArcadeMatrix Community
     url: https://t.me/+DrSdAO8UMUViNmE0
@@ -47,8 +60,8 @@ servers:
     url: udp://{client_ip}:{udp_port}
     protocol: udp
     description: >-
-      Unidirectional real-time `ffmpeg -re` UDP `DMDF` RGB565LE chunk stream sent from the Showcase server
-      to the UDP socket bound by the active DMD (`4210` on passive ESP32 receivers, `5568 + domain_idx` on multi-engine ESP32, ephemeral/configured port on RPi).
+      Unidirectional real-time UDP `DMDF` RGB565LE chunk stream sent from the Showcase server to the UDP socket bound
+      by passive Mode 2B ESP32 receivers (`4210`, `UDP-PASSIVE`) or optional `mqtt_udp` clients (`5568 + domain_idx` on ESP32, ephemeral/configured port on RPi).
     variables:
       client_ip:
         default: 192.168.1.50
@@ -105,10 +118,11 @@ channels:
     servers:
       - embeddedMqttBroker
     description: >-
-      Retained hardware announcement (`retain=True`) for `server`-managed passive or hybrid ESP32 receivers
-      (`dmd_showcase/clients/{dmdId}/hello`). Declares panel geometry (`width`, `height`), LAN UDP target
-      (`udp_ip`, `udp_port`), local Info Card capability (`supports_local_card`), and default `lang` while
-      leaving playlists, filters, and presets to `./data/dmd_profiles.json` on the Showcase server.
+      Retained hardware announcement (`retain=True`) for `server`-managed hybrid (`supports_local_card: true`, Model 2A `MQTT+TCP`)
+      or passive (`supports_local_card: false`, Model 2B `UDP-PASSIVE :4210`) ESP32 receivers (`dmd_showcase/clients/{dmdId}/hello`).
+      Declares panel geometry (`width`, `height`), preferred transport (`mqtt_tcp` default when `supports_local_card: true`),
+      optional LAN UDP target (`udp_ip`, `udp_port`), local Info Card capability (`supports_local_card`), and default `lang`
+      while leaving playlists, filters, and presets to `./data/dmd_profiles.json` on the Showcase server.
     parameters:
       dmd_id:
         $ref: '#/components/parameters/DmdIdParam'
@@ -124,7 +138,9 @@ channels:
   dmd_showcase/clients/{dmd_id}/config:
     servers:
       - embeddedMqttBroker
-    description: Retained client-driven DMD geometry, LAN IP (`client_ip` / `udp_ip`), UDP port, and per-domain filter criteria (`retain=True`).
+    description: >-
+      Retained client-driven DMD geometry, transport (`mqtt_tcp` default for paced HTTP TCP `DMDS` `:8890`, or optional `mqtt_udp`),
+      LAN IP (`client_ip` / `udp_ip`), optional UDP port, and per-domain filter criteria (`retain=True`).
     parameters:
       dmd_id:
         $ref: '#/components/parameters/DmdIdParam'
@@ -142,7 +158,8 @@ channels:
       - embeddedMqttBroker
     description: >-
       Authoritative retained Consume-Once slot state (`retain=True`). Publishes `{"ready": true, "card": {...}}`
-      when an unseen item and its unified stream are ready on disk, or `{"ready": false}` while warming `N+1`
+      with a compact collision-free `item_id` (`pkg_<domain>_<12hex>`, `<= 24` chars) when an unseen item and its
+      unified `.rgb565.stream` (`DMDS`) are ready on disk, or `{"ready": false}` while warming `N+1`
       so rotating DMD engines can yield their turn immediately without stalling.
     parameters:
       dmd_id:
@@ -162,7 +179,8 @@ channels:
     servers:
       - embeddedMqttBroker
     description: >-
-      Real-time per-domain lifecycle commands published by the DMD (`start_card`, `start_stream`, `stop_stream`).
+      Real-time per-domain lifecycle commands published by the DMD (`start_card` for primary `MQTT+TCP` Consume-Once lock + `N+1` prep,
+      plus optional `start_stream` / `stop_stream` for `mqtt_udp` sessions).
       The legacy domain-less topic `dmd_showcase/clients/{dmd_id}/events` is also accepted.
     parameters:
       dmd_id:
@@ -170,7 +188,7 @@ channels:
       domain:
         $ref: '#/components/parameters/DomainParam'
     publish:
-      summary: Trigger `start_card` (Consume-Once lock + `N+1` prep), `start_stream` (`ffmpeg -re` UDP), or `stop_stream`
+      summary: Trigger `start_card` (`MQTT+TCP` Consume-Once lock + `N+1` prep), optional `start_stream` (`mqtt_udp` `DMDF`), or `stop_stream`
       bindings:
         mqtt:
           qos: 0
@@ -200,7 +218,7 @@ channels:
   dmd_showcase/clients/{dmd_id}/stream_state:
     servers:
       - embeddedMqttBroker
-    description: Server-to-DMD stream lifecycle notifications (`stream_started`, `stream_eof`).
+    description: Server-to-DMD stream lifecycle notifications (`stream_started`, `stream_eof`) for UDP `DMDF` sessions.
     parameters:
       dmd_id:
         $ref: '#/components/parameters/DmdIdParam'
@@ -217,8 +235,9 @@ channels:
     servers:
       - udpDmdfStreamer
     description: >-
-      Real-time binary UDP datagram stream (`DMDF`) carrying MTU-safe RGB565LE framebuffer slices
-      clocked by `ffmpeg -re` toward `{udp_ip}:{udp_port}` between `start_stream` and `stream_eof` / `stop_stream`.
+      Real-time binary UDP datagram stream (`DMDF`) carrying MTU-safe RGB565LE framebuffer slices clocked by
+      `FfmpegUdpClockStreamer` toward `{udp_ip}:{udp_port}` for Mode 2B passive receivers (`UDP-PASSIVE :4210`,
+      `supports_local_card: false`) or optional `mqtt_udp` sessions between `start_stream` and `stream_eof` / `stop_stream`.
     subscribe:
       summary: Receive real-time `DMDF` 10-byte header + RGB565LE pixel chunk datagrams over UDP
       message:
@@ -288,8 +307,15 @@ components:
             type: boolean
             default: false
             description: >-
-              `true` (Model 2A Hybrid) if the ESP32 renders Phase 1 Info Cards locally;
-              `false` (Model 2B 100% Passive) if the server composites the Info Card directly into the RGB565 UDP `DMDF` stream.
+              `true` (Model 2A Hybrid, `MQTT+TCP` default) if the ESP32 renders Phase 1 Info Cards locally and streams Phase 2 over paced HTTP TCP `DMDS` (`:8890`);
+              `false` (Model 2B 100% Passive, `UDP-PASSIVE :4210`) if the server composites the Info Card directly into the RGB565 UDP `DMDF` stream.
+          transport:
+            type: string
+            enum: [mqtt_tcp, mqtt_udp]
+            default: mqtt_tcp
+            description: >-
+              Data-plane streaming transport for hybrid (`supports_local_card: true`) receivers (`mqtt_tcp` default for real-time paced HTTP TCP `DMDS` `:8890`,
+              or optional `mqtt_udp` for UDP `DMDF`).
           width:
             type: integer
             example: 128
@@ -301,13 +327,13 @@ components:
             description: Real LAN IPv4 of the DMD receiver (bypasses Docker bridge NAT `172.18.0.1`).
           udp_ip:
             type: string
-            description: Target IPv4 for real-time UDP `DMDF` datagrams.
+            description: Target IPv4 for real-time UDP `DMDF` datagrams (Mode 2B `UDP-PASSIVE` or optional `mqtt_udp`).
             example: 192.168.1.60
           udp_port:
             type: integer
             default: 4210
             example: 4210
-            description: UDP socket port bound by the receiver (`4210` default for passive ESP32 receivers).
+            description: UDP socket port bound by the receiver (`4210` default for passive Mode 2B ESP32 receivers).
           lang:
             type: string
             default: fr
@@ -396,15 +422,22 @@ components:
             enum: [client, server]
             default: client
             description: "`client` when the DMD firmware owns its rotation and domain filters (Model 1)."
+          transport:
+            type: string
+            enum: [mqtt_tcp, mqtt_udp]
+            default: mqtt_tcp
+            description: >-
+              Primary streaming transport (`mqtt_tcp` default: MQTT `:1883` control plane + real-time paced HTTP TCP `DMDS` `:8890`
+              `?purge=true&paced=1&drop_late=1`; `mqtt_udp` optional legacy UDP `DMDF`).
           client_ip:
             type: string
             description: Real LAN IPv4 of the DMD client (bypasses Docker bridge NAT `172.18.0.1`).
           udp_ip:
             type: string
-            description: Explicit target IPv4 for UDP `DMDF` datagrams.
+            description: Optional explicit target IPv4 for UDP `DMDF` datagrams when `transport == "mqtt_udp"`.
           udp_port:
             type: integer
-            description: Default UDP receiver port bound by the DMD client.
+            description: Optional UDP receiver port bound by the DMD client when `transport == "mqtt_udp"`.
             example: 5568
           width: { type: integer, example: 128 }
           height: { type: integer, example: 32 }
@@ -414,6 +447,10 @@ components:
             additionalProperties:
               type: object
               properties:
+                transport:
+                  type: string
+                  enum: [mqtt_tcp, mqtt_udp]
+                  default: mqtt_tcp
                 systems:
                   oneOf:
                     - type: array
@@ -461,13 +498,17 @@ components:
           ready:
             type: boolean
             description: "`true` when an unseen item is ready to play immediately; `false` while preparing in background."
-          item_id: { type: string }
+          item_id:
+            type: string
+            maxLength: 24
+            example: pkg_games_a1b2c3d4e5f6
+            description: Compact collision-free package identifier (`pkg_<domain>_<12hex>`, `<= 24` chars).
           domain: { type: string }
           card:
             type: object
             properties:
-              id: { type: string }
-              item_id: { type: string }
+              id: { type: string, example: pkg_games_a1b2c3d4e5f6 }
+              item_id: { type: string, maxLength: 24, example: pkg_games_a1b2c3d4e5f6 }
               domain: { type: string }
               title: { type: string }
               year: { type: string }
@@ -505,7 +546,9 @@ components:
           action:
             type: string
             enum: [start_card, start_stream, stop_stream]
-            description: Primary command field (`event` is accepted as an alias).
+            description: >-
+              Primary command field (`event` is accepted as an alias). `MQTT+TCP` clients publish `start_card` to lock Consume-Once
+              and trigger background `N+1` preparation before opening paced HTTP TCP `DMDS` (`?purge=true&paced=1&drop_late=1`).
           event:
             type: string
             enum: [start_card, start_stream, stop_stream]
@@ -515,15 +558,25 @@ components:
             enum: [games, movies, series, anime]
           item_id:
             type: string
+            maxLength: 24
+            example: pkg_games_a1b2c3d4e5f6
+          transport:
+            type: string
+            enum: [mqtt_tcp, mqtt_udp]
+            default: mqtt_tcp
+          purge:
+            type: boolean
+            default: true
+            description: Whether the consumed stream cache file should be purged once streaming finishes.
           client_ip:
             type: string
-            description: Real LAN IPv4 of the DMD client for UDP streaming.
+            description: Optional real LAN IPv4 of the DMD client for `mqtt_udp` streaming.
           udp_ip:
             type: string
-            description: Target IPv4 for UDP `DMDF` datagrams.
+            description: Optional target IPv4 for UDP `DMDF` datagrams (`mqtt_udp`).
           udp_port:
             type: integer
-            description: UDP port bound by the DMD client receiver socket (`1024..65535`).
+            description: Optional UDP port bound by the DMD client receiver socket (`1024..65535`, `mqtt_udp`).
 
     ClientCommandMessage:
       name: ClientCommandMessage
@@ -546,6 +599,7 @@ components:
             enum: [games, movies, series, anime]
           item_id:
             type: string
+            example: pkg_games_a1b2c3d4e5f6
           mode:
             type: string
             enum: [enqueue_next, play_now]
@@ -569,6 +623,7 @@ components:
             enum: [stream_started, stream_eof]
           item_id:
             type: string
+            example: pkg_games_a1b2c3d4e5f6
           domain:
             type: string
 
@@ -578,6 +633,12 @@ components:
       contentType: application/octet-stream
       summary: 10-byte Little-Endian `<4sHBBH` header + `<= 1408`-byte RGB565LE framebuffer slice (`<= 1418` bytes/UDP packet).
       description: |
+        > **Transport Note**: Models 1 & 2A (`supports_local_card: true`) use **`MQTT+TCP` (`mqtt_tcp`) by default** — streaming
+        > real-time server-paced `DMDS` frames (`<4sBBHHHHH` 16-byte header + `X-DMD-Paced: 1`) over HTTP TCP `:8890`
+        > (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`, documented in `/openapi.json`).
+        > The UDP `DMDF` datagram format below powers **Model 2B Passive Receivers (`UDP-PASSIVE :4210`, `supports_local_card: false`)**
+        > and optional `mqtt_udp` sessions.
+
         Each video or panorama frame (`width * height * 2` bytes of Little-Endian RGB565 pixels, e.g. `8192` bytes
         for `128x32` = `6` chunks of `<= 1408` bytes fitting ESP32 `UDP_RECVMBOX_SIZE=6` & `kRxBaWin=6`) is split into MTU-safe UDP datagrams packed in Little-Endian
         (`struct.pack("<4sHBBH", b"DMDF", frame_seq, chunk_idx, total_chunks, byte_offset) + payload`):
@@ -591,16 +652,14 @@ components:
         | `8..9` | `uint16le` (`H`) | `byte_offset` | Destination byte offset (`chunk_idx * 1408`) in RGB565LE framebuffer |
         | `10..N` | `uint8[<=1408]` | `payload` | Raw Little-Endian RGB565 pixel bytes (`1..1408` bytes) |
 
-        **Reassembly & Watchdog Contract (ESP32 & Raspberry Pi)**:
+        **Reassembly & Watchdog Contract (Mode 2B Passive ESP32 & Optional `mqtt_udp`)**:
         - Copy `payload` directly into `framebuffer_bytes[byte_offset .. byte_offset + len(payload)]` if bounds-valid
           and `total_chunks <= 64`.
         - Set bit `(1 << chunk_idx)` in a 64-bit `chunk_mask`; commit the frame when `chunk_mask == (1 << total_chunks) - 1`
           (or flush partial non-zero `chunk_mask` if `frame_seq` advances on minor Wi-Fi packet loss).
-        - Combine MQTT `stream_eof` with a local `2,500 ms` UDP inactivity watchdog (`millis() - lastUdpPacketMs > 2500`)
-          plus a max duration ceiling so a dropped Wi-Fi packet or server restart never freezes the display.
-        - If zero UDP packets arrive within `850ms` of `start_stream` on client-driven/hybrid engines (e.g. Docker Desktop VM NAT blocking host UDP),
-          seamlessly play/fall back to the HTTP TCP stream `/api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
-          (`DMDS` 16-byte `<4sBBHHHHH` header).
+        - On optional `mqtt_udp` clients, combine MQTT `stream_eof` with a local `2,500 ms` UDP inactivity watchdog
+          (`millis() - lastUdpPacketMs > 2500`) and fall back to paced HTTP TCP `DMDS`
+          (`/api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`) if VM NAT blocks UDP.
       payload:
         type: string
         format: binary

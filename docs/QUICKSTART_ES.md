@@ -21,7 +21,7 @@ services:
     container_name: dmd-media-showcase
     restart: unless-stopped
     ports:
-      - "8890:8890"       # API REST FastAPI + Panel Admin + Swagger UI
+      - "8890:8890"       # API REST FastAPI + Stream HTTP TCP DMDS en Tiempo Real + Panel Admin + Swagger UI
       - "1883:1883"       # Broker MQTT 3.1.1 Integrado
       - "5353:5353/udp"   # Autodescubrimiento en Red Local mDNS (dmdmediashowcase.local)
     volumes:
@@ -76,7 +76,7 @@ Todos los archivos persistentes del servidor residen en `/app/data`:
 El montaje **`${DMD_DATA_PATH:-./data}:/app/data`** en `docker-compose.yml` utiliza una carpeta real del host (configurable mediante `DMD_DATA_PATH=/mnt/nas/dmd_showcase` en `.env`), **100 % inmune a `docker compose down -v`** (`-v` solo elimina volúmenes con nombre de Docker, nunca directorios del host). Para **Portainer** o despliegues sin rutas locales, utilice un volumen con nombre (`-v dmd_showcase_data:/app/data`) y evite la bandera `-v` al detener el stack.
 
 > [!TIP]
-> **NAT de Docker Bridge y Streaming UDP (`client_ip`)**: Tanto `ArcadeMatrix_RPi` como `ArcadeMatrix` (ESP32) detectan y declaran automáticamente su IP LAN real (`client_ip` / `udp_ip`) en sus mensajes MQTT `config` y `start_stream`, permitiendo que `ffmpeg -re` envíe paquetes UDP `DMDF` directamente al DMD incluso en modo bridge (`172.18.0.1`).
+> **Por qué `MQTT + TCP` (`DMDS` `:8890`) es el Transporte por Defecto en Docker y VMs de Escritorio**: Los Modelos 1 (`ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi`) y 2A (`supports_local_card: true`) combinan **MQTT `:1883`** (`config`, `ready`, `start_card`) con **Streaming HTTP TCP `DMDS` Sincronizado en Tiempo Real (`:8890`)** (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` + `X-DMD-Paced: 1`). Esto garantiza **cero pérdida de paquetes UDP por NAT de VM en Docker Desktop / Rancher Desktop**, **cero sobrecarga de reensamblado MTU**, **cero heap en el cliente** (`lwip_socket` lee `HTTP/1.0` crudo directamente en `m_frame565` mientras la cadencia del servidor mantiene `TCP_WND` abierto) e identificadores `item_id` compactos sin colisiones (`pkg_<domain>_<12hex>`, `<= 24` caracteres). Para receptores pasivos UDP `:4210` opcionales (**Modelo 2B**, `UDP-PASSIVE`, `supports_local_card: false`) o `mqtt_udp` heredado (`MQTT+UDP`), el cliente declara su IP LAN real (`client_ip` / `udp_ip`) para que los paquetes UDP `DMDF` eviten el NAT de Docker bridge en Linux (`172.18.0.1`).
 
 ---
 
@@ -125,13 +125,13 @@ Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en s
    - Verifique que el indicador visual se ponga en verde: **`🟢 Comunicación OK`**.
 3. Añada cualquiera de los 4 motores Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`) a su rotación.
 4. La WebUI del DMD consulta automáticamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar dinámicamente las listas de **Sistemas** (`55+` plataformas), **Géneros** y **Décadas**.
-5. Ajuste la **Velocidad de desplazamiento de la sinopsis** (`1 = Lento` a `10 = Turbo`, hasta `160 px/s`) y guarde los cambios.
+5. Ajuste la **Velocidad de desplazamiento de la sinopsis** (`1 = Lento` a `10 = Turbo`, hasta `160 px/s`) y guarde los cambios — el DMD transmite automáticamente mediante **`MQTT+TCP`** (MQTT `:1883` + stream HTTP TCP `DMDS` `:8890` sincronizado en el servidor, con `HTTP` y `MQTT+UDP` opcional también soportados).
 
-### 3.2 Receptores ESP32 Pasivos e Híbridos Gestionados en el Servidor (`config_source: "server"`)
+### 3.2 Receptores ESP32 Híbridos (Modelo 2A) y Pasivos UDP (Modelo 2B) Gestionados en el Servidor (`config_source: "server"`)
 
-Para marquesinas o toppers dedicados en `ESP32_STD` (sin PSRAM) o `ESP32-S3` sin WebUI local (~180 líneas de C++ escuchando en UDP `:4210`):
-1. Flashee el esqueleto de referencia de la **[Guía de Integración ESP32 y Receptor Pasivo](ESP32_INTEGRATION_ES.md)** (anuncia automáticamente geometría e IP LAN mediante `POST /api/v1/clients/hello` o MQTT `dmd_showcase/clients/{dmd_id}/hello`).
-2. Abra `http://dmdmediashowcase.local:8890/`, seleccione el panel detectado, elija su idioma de emisión (`lang`), active dominios/categorías y guarde su perfil en `./data/dmd_profiles.json` — ¡el servidor renderiza incluso la Ficha Informativa de la Fase 1 directamente dentro del stream UDP `DMDF` RGB565!
+Para marquesinas o toppers dedicados en `ESP32_STD` (sin PSRAM) o `ESP32-S3` sin WebUI local — ya sea en **Modelo 2A Híbrido** (`supports_local_card: true`, Ficha Informativa local a 60 FPS + stream `MQTT+TCP` `DMDS` `:8890`) o en **Modelo 2B Pasivo** (`supports_local_card: false`, ~180 líneas de C++ escuchando en `UDP-PASSIVE` `:4210` `DMDF`):
+1. Flashee el firmware de referencia de la **[Guía de Integración ESP32 y Receptor Pasivo](ESP32_INTEGRATION_ES.md)** (anuncia automáticamente geometría e IP LAN mediante MQTT `dmd_showcase/clients/{dmd_id}/hello` o `POST /api/v1/clients/hello`).
+2. Abra `http://dmdmediashowcase.local:8890/`, seleccione el panel detectado, elija su idioma de emisión (`lang`), active dominios/categorías y guarde su perfil en `./data/dmd_profiles.json` — el Modelo 2A transmite mediante HTTP TCP `DMDS` (`:8890`), mientras que el Modelo 2B renderiza incluso la Ficha Informativa de la Fase 1 directamente dentro del stream UDP `DMDF` (`:4210`) RGB565.
 
 ### 3.3 Vincular Showcase con Recalbox / Batocera / RetroPie (`FrontendSync` Showcase en Juego)
 

@@ -168,7 +168,7 @@ export function renderClients(clients) {
     return;
   }
   tb.innerHTML = uiState.lastClients.map(c => {
-    const transport = c.transport || 'MQTT+UDP';
+    const transport = c.transport || 'MQTT+TCP';
     const seenSuffix = c.last_seen_ago_s != null ? ` • ${Number(c.last_seen_ago_s)}s` : '';
     const ipInfo = (c.client_ip ? `${esc(c.client_ip)} • ${esc(transport)}` : esc(transport)) + esc(seenSuffix);
     const cfgSrc = c.config_source || 'client';

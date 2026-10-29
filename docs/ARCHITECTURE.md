@@ -30,8 +30,8 @@ flowchart TD
 
     subgraph APP["Application Services (app/application/)"]
         ORCH["ConsumeOnceOrchestrator (Facade)"]
-        REG_SVC["ClientRegistryService\n(Live Source Telemetry)"]
-        PREP_SVC["SlotPreparationService"]
+        REG_SVC["ClientRegistryService\n(MQTT+TCP / HTTP / UDP-PASSIVE / MQTT+UDP\n& Live Source Telemetry)"]
+        PREP_SVC["SlotPreparationService\n(Compact pkg_<domain>_<12hex> IDs)"]
         QUEUE_SVC["OnDemandQueueService"]
         DIR_SVC["PassivePlaylistDirectorService"]
         STUDIO_SVC["StudioPreviewService"]
@@ -50,12 +50,13 @@ flowchart TD
         SCRAPERS["11 Scraper Adapters + Referentials\ngames(4): igdb, screenscraper, arcadeitalia, libretro_wikidata\nmovies(2), series(3), anime(2)"]
         RENDER["Modular Rendering Engine (rendering/)\ncard_geometry, card_layout_engine,\npanorama_and_static (YOKO/TATE), video_pipeline"]
         PERSIST["Persistence & 3-Tier Security\nserver_config (source_policies), dmd_profiles,\nseen_history, _prod_vault, SecretRedactingLogFilter"]
-        UDP["FfmpegUdpClockStreamer\n(ffmpeg -re -> DMDF 10-Byte UDP)"]
+        UDP["FfmpegUdpClockStreamer\n(Mode 2B Passive :4210 & Optional MQTT+UDP DMDF)"]
     end
 
     BROWSER -->|"GET / & /static/*"| STATIC
     BROWSER -->|"REST /api/v1/*"| ROUTERS
-    ENG <-->|"MQTT Retain + Events"| MQTT
+    ENG <-->|"MQTT Retain + start_card"| MQTT
+    ROUTERS ==>|"HTTP TCP DMDS :8890 (?paced=1&drop_late=1)"| ENG
     ROUTERS --> ORCH
     MQTT --> ORCH
     ORCH --> REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC
@@ -64,7 +65,7 @@ flowchart TD
     REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC --> AGG & VO & PORTS
     CHAIN & AGG_SVC --> TAX & AGG & PORTS
     PORTS -.->|"Wired via app/container.py"| SCRAPERS & RENDER & PERSIST & UDP
-    UDP ==>|"UDP DMDF Frames (client_ip:udp_port)"| ENG
+    UDP -.->|"UDP DMDF (:4210 Passive / Optional MQTT+UDP)"| ENG
 ```
 
 ---
@@ -126,7 +127,18 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
 
 ---
 
-## 4. Real-Time MQTT Handshake, `N+1` Pipelining & UDP `DMDF` Protocol
+## 4. Real-Time `MQTT + TCP` (`DMDS`) Primary Pipeline, `N+1` Pipelining & Passive UDP `DMDF`
+
+`ShowcaseRuntimeState.client_transports` tracks four deterministic client transport profiles surfaced live in `ClientRegistryService` and the Admin UI:
+- **`MQTT+TCP` (Default & Recommended — Model 1 `ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi` & Model 2A Hybrid `supports_local_card: true`)**: Pairs the **MQTT (`:1883`) Control Plane** (`config`, `ready`, `start_card` with `retain=True` + `LWT`) with **Real-Time Paced HTTP TCP `DMDS` Streaming (`:8890`)** (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
+  - **Why `MQTT + TCP` (`DMDS`) is Default**:
+    1. **Zero Docker Desktop / Rancher Desktop VM UDP NAT Loss**: Inbound TCP `:8890` traverses every container bridge and host VM NAT natively without UDP return-pinhole timeouts or firewall drops.
+    2. **Zero MTU Chunk Reassembly Overhead**: Contiguous RGB565LE frames arrive in stream order without per-packet bitmask reassembly.
+    3. **Zero Client-Side Heap & Zero `TCP_WND` Stalls**: Embedded clients open a raw `lwip_socket` (`HTTP/1.0`, `Connection: close`) reading straight into `m_frame565`, while the server's `_paced_dmds_generator()` (`X-DMD-Paced: 1`) clocks frames monotonically at `fps` and `drop_late=1` (`X-DMD-Drop-Late: 1`) seeks past stale frames on wall-clock jitter so LwIP `TCP_WND` never stalls with `TCP ZeroWindow`.
+    4. **Compact Collision-Free `item_id`s**: Every prepared package uses `pkg_<domain>_<12hex>` (`<= 24` chars), fitting fixed embedded stack buffers with zero heap allocation.
+- **`HTTP`**: Stateless HTTP Consume-Once polling (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` + `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
+- **`UDP-PASSIVE` (Model 2B — `supports_local_card: false`)**: Ultra-minimal ~180-line passive UDP `:4210` `DMDF` framebuffer receiver where the server composites even Phase 1 Info Cards directly into the RGB565 stream (`render_card_in_stream=True`).
+- **`MQTT+UDP` (Optional Legacy `mqtt_udp`)**: Explicit `start_stream` event triggering `FfmpegUdpClockStreamer` `DMDF` datagrams to `{udp_ip}:{udp_port}`.
 
 > **Crash & Container-Restart Resilience (`RetainedClientConfigStore`):** Every Mode 1 retained `dmd_showcase/clients/{dmd_id}/config` payload published to the Embedded MQTT Broker (`:1883`) is atomically persisted to `./data/mqtt_retained_clients.json`. On server or Docker restart, `ShowcaseMqttGateway` reloads all persisted DMD rotation slots into `EmbeddedMqttBroker.retained` and triggers `N / N+1` background pre-warming immediately while keeping `online=False` until live client traffic arrives.
 
@@ -134,50 +146,45 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
 sequenceDiagram
     participant DMD as DMD Client (ESP32 / RPi)
     participant MQTT as Showcase MQTT (:1883)
+    participant HTTP as FastAPI consume_once (:8890)
     participant ORCH as ConsumeOnceOrchestrator
     participant PREP as SlotPreparationService
     participant FFMPEG as FfmpegUdpClockStreamer
 
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/config (retain=True, client_ip, domains)
-    MQTT->>ORCH: handle_mqtt_client_config() -> ClientRegistryService
-    ORCH->>PREP: ensure_slot_prepared() (prepares Unseen Item N: Card + Unified DMDS Stream)
+    MQTT->>ORCH: handle_mqtt_client_config() -> client_transports = "MQTT+TCP"
+    ORCH->>PREP: ensure_slot_prepared() (prepares Unseen Item N: pkg_<domain>_<12hex>)
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, card, source_used)
     MQTT->>DMD: Deliver Retained Ready Card (Item N)
 
     Note over DMD: Rotation turn starts -> Phase 1: Info Card (Poster + Scrolling Synopsis)
-    DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/events {"event":"start_card", "item_id": N}
+    DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/events {"action":"start_card", "item_id": N}
+    Note over DMD: ESP32 closes MQTT TCP socket (0 sockets open during Card dwell!)
     MQTT->>ORCH: claim_next_package(N) -> DualSlotPipeline.claim_ready() + mark_consumed(N)
     ORCH->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=False)
     ORCH->>PREP: Background N+1 Pipelining: immediately prepare Standby Item N+1!
 
-    Note over DMD: Info Card finishes scrolling -> DMD requests video/panorama stream
-    DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/events {"event":"start_stream", "item_id": N, "udp_ip": client_ip, "udp_port": port}
-    MQTT->>ORCH: handle_mqtt_client_event("start_stream")
-    ORCH->>MQTT: PUBLISH stream_started
-    ORCH->>FFMPEG: Start monotonic DMDF real-time transmitter thread
-    loop Every Frame (15-25 FPS)
-        FFMPEG-->>DMD: UDP DMDF Chunks (10-Byte Header + <=1408B RGB565LE Payload) to client_ip:udp_port
+    alt Primary MQTT+TCP Mode (Models 1 & 2A — Default)
+        Note over DMD: Info Card finishes scrolling -> Raw LwIP HTTP/1.0 TCP DMDS stream
+        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1&drop_late=1
+        HTTP-->>DMD: 200 OK (X-DMD-Paced: 1, 16-Byte DMDS Header + Frame 0)
+        loop Monotonic Server-Clocked Frames (15-25 FPS)
+            HTTP-->>DMD: Contiguous RGB565LE Frame (width * height * 2 bytes) -> m_frame565
+        end
+        HTTP->>PREP: Response EOF -> purge_consumed_package(N) (immediate disk cleanup)
+    else Passive Mode 2B (UDP-PASSIVE :4210) or Optional Legacy MQTT+UDP (start_stream)
+        ORCH->>FFMPEG: Start monotonic DMDF real-time transmitter thread
+        loop Every Frame (15-25 FPS)
+            FFMPEG-->>DMD: UDP DMDF Chunks (10-Byte Header + <=1408B RGB565LE) to udp_ip:udp_port
+        end
+        FFMPEG->>ORCH: EOF -> stream_eof + purge_consumed_package(N)
     end
-    FFMPEG->>ORCH: EOF reached
-    ORCH->>MQTT: PUBLISH stream_eof {"event":"stream_eof", "item_id": N}
-    ORCH->>PREP: purge_consumed_package(N) (immediate disk cleanup)
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, Item N+1)
 ```
 
-### Binary UDP `DMDF` Packet Header (10 Bytes, Little-Endian `<4sHBBH`)
+### Binary HTTP TCP `DMDS` Unified Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH` — Primary Transport)
 
-> Full machine-readable specification (MQTT 3.1.1 topics + UDP `DMDF` datagrams): [`docs/asyncapi.yaml`](asyncapi.yaml) (served directly from disk via `app/asyncapi_spec.py` at `GET /asyncapi.yaml` and `GET /api/v1/asyncapi.yaml`).
-
-| Offset | Type | Field | Description |
-| :--- | :--- | :--- | :--- |
-| `0..3` | `char[4]` | `magic` | `"DMDF"` (`0x44 0x4D 0x44 0x46`) |
-| `4..5` | `uint16le` | `frame_seq` | Wrapping monotonic frame sequence number (`0..65535`) |
-| `6` | `uint8` | `chunk_idx` | Zero-based chunk index within the current frame (`0..total_chunks-1`) |
-| `7` | `uint8` | `total_chunks` | Total chunks required to assemble the complete frame (`1..64`) |
-| `8..9` | `uint16le` | `byte_offset` | Byte offset (`chunk_idx * 1408`) inside the target RGB565LE framebuffer |
-| `10..N` | `uint8[]` | `payload` | Raw RGB565LE pixel slice (`<= 1408` bytes, MTU-safe `<= 1418` bytes/UDP packet = `6` chunks for `128x32`) |
-
-### Binary HTTP `DMDS` Unified Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
+Served by `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` with response headers `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, and `X-DMD-Drop-Late: 1`:
 
 | Offset | Type | Field | Description |
 | :--- | :--- | :--- | :--- |
@@ -189,4 +196,17 @@ sequenceDiagram
 | `10..11` | `uint16le` | `total_frames` | Total concatenated RGB565LE frames (`1..65535`) |
 | `12..13` | `uint16le` | `frame_dur_ms` | Nominal per-frame duration in ms (`round(1000 / fps)`) |
 | `14..15` | `uint16le` | `reserved` | Reserved (`0`) |
-| `16..EOF` | `uint8[]` | `frames` | Contiguous `total_frames * width * height * 2` RGB565LE bytes |
+| `16..EOF` | `uint8[]` | `frames` | Server-paced `width * height * 2`-byte RGB565LE frames (`total_frames` nominal; wall-clock skipped when `drop_late=1`) |
+
+### Binary UDP `DMDF` Packet Header (10 Bytes, Little-Endian `<4sHBBH` — Mode 2B Passive `:4210` & Optional `MQTT+UDP`)
+
+> Full machine-readable specification (MQTT 3.1.1 topics + UDP `DMDF` datagrams): [`docs/asyncapi.yaml`](asyncapi.yaml) (served directly from disk via `app/asyncapi_spec.py` at `GET /asyncapi.yaml` and `GET /api/v1/asyncapi.yaml`).
+
+| Offset | Type | Field | Description |
+| :--- | :--- | :--- | :--- |
+| `0..3` | `char[4]` | `magic` | `"DMDF"` (`0x44 0x4D 0x44 0x46`) |
+| `4..5` | `uint16le` | `frame_seq` | Wrapping monotonic frame sequence number (`0..65535`) |
+| `6` | `uint8` | `chunk_idx` | Zero-based chunk index within the current frame (`0..total_chunks-1`) |
+| `7` | `uint8` | `total_chunks` | Total chunks required to assemble the complete frame (`1..64`) |
+| `8..9` | `uint16le` | `byte_offset` | Byte offset (`chunk_idx * 1408`) inside the target RGB565LE framebuffer |
+| `10..N` | `uint8[]` | `payload` | Raw RGB565LE pixel slice (`<= 1408` bytes, MTU-safe `<= 1418` bytes/UDP packet = `6` chunks for `128x32`) |
