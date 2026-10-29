@@ -136,6 +136,7 @@ class ShowcaseRuntimeState:
         self.director_playlist_cursors: Dict[str, Tuple[int, int]] = {}
 
         self.metrics = WorkerMetricsTracker()
+        self.active_tcp_streams: int = 0
         self._transcode_sem: Optional[DynamicAsyncLimiter] = None
         self._transcode_sem_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -167,6 +168,36 @@ class ShowcaseRuntimeState:
         ev = self.director_wake_events.get(dmd_id)
         if ev is not None:
             ev.set()
+
+    async def yield_standby_if_busy(
+        self,
+        key: Tuple[str, DomainType],
+        defer_started_at: Optional[float],
+    ) -> Tuple[bool, Optional[float]]:
+        """Yield N+2 standby prep to missing N+1 sibling slots or active paced TCP live streams."""
+        if key not in self.ready_packages:
+            return False, None
+        sibling_missing_ready = any(
+            other_k != key
+            and other_k not in self.ready_packages
+            and AsyncTaskSupervisor.is_task_live(self.prep_tasks.get(other_k))
+            for other_k in list(self.client_configs.keys())
+        )
+        if sibling_missing_ready:
+            self.metrics.fairness_waiting_jobs += 1
+            try:
+                await asyncio.sleep(0.05)
+            finally:
+                self.metrics.fairness_waiting_jobs = max(0, self.metrics.fairness_waiting_jobs - 1)
+            return True, defer_started_at
+        if self.active_tcp_streams > 0:
+            now_mono = time.monotonic()
+            started = now_mono if defer_started_at is None else defer_started_at
+            if (now_mono - started) < 25.0:
+                await asyncio.sleep(0.15)
+                return True, started
+            return False, started
+        return False, None
 
     async def execute_with_transcode_gate(
         self,

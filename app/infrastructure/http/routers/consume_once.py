@@ -217,6 +217,7 @@ async def stream_consume_once_sequence(
 
             async def _paced_dmds_generator() -> AsyncIterator[bytes]:
                 fh = stream_path.open("rb")
+                co.state.active_tcp_streams += 1
                 try:
                     now_wall = time.time()
                     co.state.client_last_seen[claim_key] = now_wall
@@ -226,15 +227,16 @@ async def stream_consume_once_sequence(
                         yield first_payload
                     t0 = time.perf_counter()
                     frame_idx = 1
+                    frame_period_s = 1.0 / float(eff_fps)
                     while frame_idx < total_frames_avail:
-                        target_t = t0 + (frame_idx / float(eff_fps))
+                        target_t = t0 + (frame_idx * frame_period_s)
                         now_perf = time.perf_counter()
                         sleep_s = target_t - now_perf
                         if sleep_s > 0.001:
                             await asyncio.sleep(sleep_s)
                             now_perf = time.perf_counter()
                             sleep_s = target_t - now_perf
-                        if drop_late and sleep_s < -(1.25 / float(eff_fps)):
+                        if drop_late and sleep_s < -(1.25 * frame_period_s):
                             due_frame = int((now_perf - t0) * float(eff_fps))
                             if due_frame >= total_frames_avail:
                                 break
@@ -242,10 +244,10 @@ async def stream_consume_once_sequence(
                                 frame_idx = due_frame
                                 fh.seek(16 + frame_idx * frame_bytes)
                         elif not drop_late and sleep_s <= 0.001:
-                            if sleep_s < -0.35:
-                                # Re-anchor monotonic clock only after a genuine TCP window / client stall (>350ms)
-                                # so transient OS/GIL scheduling jitter catches back up to exact target FPS.
-                                t0 = now_perf - (frame_idx / float(eff_fps))
+                            if sleep_s < -frame_period_s:
+                                # Re-anchor monotonic clock as soon as the stream falls >1 frame behind
+                                # so subsequent frames resume smooth nominal FPS instead of bursting at 30+ FPS.
+                                t0 = now_perf - (frame_idx * frame_period_s)
                             await asyncio.sleep(0.0015)
 
                         chunk = fh.read(frame_bytes)
@@ -258,6 +260,7 @@ async def stream_consume_once_sequence(
                         yield chunk
                         frame_idx += 1
                 finally:
+                    co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
                     fh.close()
                     co.state.last_claimed_until.pop(claim_key, None)
                     if purge:

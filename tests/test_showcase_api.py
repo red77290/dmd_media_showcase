@@ -847,3 +847,50 @@ async def test_zero_copy_ffmpeg_pipe_streamer_skips_dmds_header_without_temp_fil
         assert captured_pkts[0][:4] == DMDF_MAGIC
     finally:
         await streamer.stop_stream("esp32_test")
+
+
+def test_direct_16bit_jacket_panorama_1px_stepping_and_unclamped_high_fps(tmp_path: Path):
+    """Verify tall box-art jackets on 128x32 step by exact 1 px/frame without GIF shimmer and honor >25 FPS overrides."""
+    from dmd_gif_converter import rgb565_le_to_rgb888
+    from app.infrastructure.rendering.panorama_and_static import convert_image_to_panorama_gif_and_stream
+
+    # Synthetic 256x358 (~5:7 box-art) with unique vertical row gradient so 1 px shifts are exact
+    jacket = np.zeros((358, 256, 3), dtype=np.uint8)
+    for y in range(358):
+        jacket[y, :, 0] = (y * 3) & 0xFF
+        jacket[y, :, 1] = ((357 - y) * 5) & 0xFF
+        jacket[y, :, 2] = 120
+    buf = io.BytesIO()
+    Image.fromarray(jacket, mode="RGB").save(buf, format="PNG")
+
+    res = convert_image_to_panorama_gif_and_stream(
+        raw_image_bytes=buf.getvalue(),
+        out_dir=tmp_path,
+        stem="jacket_1px",
+        width=128,
+        height=32,
+        fps=40,
+        duration_s=4.0,
+        color_boost=False,
+    )
+    assert res is not None
+    raw = (tmp_path / res[1]).read_bytes()
+    hdr = read_rgb565_stream_header(raw[:16])
+    assert hdr["fps"] == 40
+    assert hdr["width"] == 128
+    assert hdr["height"] == 32
+
+    fbytes = 128 * 32 * 2
+    frames = [
+        rgb565_le_to_rgb888(raw[16 + i * fbytes : 16 + (i + 1) * fbytes], 128, 32)
+        for i in range(hdr["total_frames"])
+    ]
+    # Every moving transition must shift row `y + 1` of frame `k` onto row `y` of frame `k + 1` cleanly (1 px/frame, 0 shimmer!)
+    moving_steps = 0
+    for k in range(len(frames) - 1):
+        if np.array_equal(frames[k], frames[k + 1]):
+            continue
+        moving_steps += 1
+        assert np.array_equal(frames[k][1:, :, :], frames[k + 1][:-1, :, :])
+    assert moving_steps >= 140
+

@@ -385,25 +385,15 @@ class SlotPreparationService:
     async def prepare_slot_task(self, dmd_id: str, domain: DomainType) -> None:
         key = (dmd_id, domain)
         try:
+            standby_defer_started_at: Optional[float] = None
             while key in self.state.client_configs and (
                 key not in self.state.ready_packages or key not in self.state.standby_packages
             ):
-                if key in self.state.ready_packages:
-                    sibling_missing_ready = any(
-                        other_k != key
-                        and other_k not in self.state.ready_packages
-                        and AsyncTaskSupervisor.is_task_live(self.state.prep_tasks.get(other_k))
-                        for other_k in list(self.state.client_configs.keys())
-                    )
-                    if sibling_missing_ready:
-                        self.state.metrics.fairness_waiting_jobs += 1
-                        try:
-                            await asyncio.sleep(0.05)
-                        finally:
-                            self.state.metrics.fairness_waiting_jobs = max(
-                                0, self.state.metrics.fairness_waiting_jobs - 1
-                            )
-                        continue
+                yielded, standby_defer_started_at = await self.state.yield_standby_if_busy(
+                    key, standby_defer_started_at
+                )
+                if yielded:
+                    continue
 
                 cfg_pair = self.state.client_configs.get(key)
                 if not cfg_pair:

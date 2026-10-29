@@ -4,7 +4,6 @@ Static Poster, Marquee & Scrolling Panorama Asset Builder (`app/infrastructure/r
 
 from __future__ import annotations
 
-import inspect
 import io
 import logging
 import time
@@ -21,7 +20,6 @@ from app.infrastructure.rendering.imaging_primitives import (
 )
 from dmd_gif_converter import (
     DmdMediaProcessor,
-    extract_frames_from_gif,
     rgb888_to_rgb565_le,
     write_rgb565_stream,
 )
@@ -74,6 +72,23 @@ def _composite_pil_to_opaque_rgb(pil_src: Image.Image) -> Image.Image:
     return pil_src.convert("RGB")
 
 
+def _enhance_panorama_strip(
+    processor: DmdMediaProcessor,
+    strip_pil: Image.Image,
+    color_boost: bool,
+) -> Image.Image:
+    """Apply single-pass 24-bit LED color enhancement across the full panorama strip (zero per-frame shimmer)."""
+    if not color_boost:
+        return strip_pil
+    enhance_fn = getattr(processor, "_enhance_for_led", None)
+    if callable(enhance_fn):
+        try:
+            return enhance_fn(strip_pil, True)
+        except Exception:
+            return strip_pil
+    return strip_pil
+
+
 def convert_image_to_panorama_gif_and_stream(
     raw_image_bytes: bytes,
     out_dir: Path,
@@ -87,20 +102,22 @@ def convert_image_to_panorama_gif_and_stream(
 ) -> Optional[Tuple[str, str, str]]:
     """
     Convert a static image (jacket, marquee, or snapshot) into:
-    1. Aspect-ratio-preserving scrolling `.gif` (`left -> right` when wider than panel, else `top -> bottom`)
-    2. Binary `.rgb565.stream` (`DMDS`)
+    1. Aspect-ratio-preserving scrolling `.gif` (`left -> right` on TATE, `top -> bottom` on YOKO)
+    2. True 16-bit `.rgb565.stream` (`DMDS`) built directly from the 24-bit Lanczos strip at exact
+       `1 px/frame` integer stepping across the full `6..60` FPS range (zero GIF palette dithering shimmer)
     3. Static `.rgb565` pan surface
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     pan_h = height * 2 + 8
     src_img_path = out_dir / f"_src_{stem}.png"
-    rot_src_path = out_dir / f"_rot_src_{stem}.png"
 
     processor = DmdMediaProcessor()
     try:
         with Image.open(io.BytesIO(raw_image_bytes)) as pil_src:
             rgb_src = _composite_pil_to_opaque_rgb(pil_src)
             src_w, src_h = rgb_src.size
+            if src_w <= 0 or src_h <= 0 or width <= 0 or height <= 0:
+                return None
             rgb_src.save(src_img_path, format="PNG")
 
         axis = resolve_showcase_panorama_axis(src_w, src_h, width, height, scroll_direction)
@@ -113,83 +130,87 @@ def convert_image_to_panorama_gif_and_stream(
             smart_color_boost=color_boost,
             stem=stem,
         )
-
-        supports_native_direction = (
-            "scroll_direction" in inspect.signature(processor.process_image_panorama).parameters
-        )
-
-        if supports_native_direction or axis != "horizontal":
-            extra_kwargs = {"scroll_direction": axis} if supports_native_direction else {}
-            res = processor.process_image_panorama(
-                input_image=src_img_path,
-                output_dir=out_dir,
-                width=width,
-                height=height,
-                fps=max(6, fps),
-                duration_s=duration_s,
-                smart_color_boost=color_boost,
-                export_gif=True,
-                export_rgb565_stream=True,
-                stem=stem,
-                **extra_kwargs,
-            )
-            src_img_path.unlink(missing_ok=True)
-            if res.gif_path and res.rgb565_stream_path and res.frame_count > 0:
-                logger.info(
-                    "[CONVERTER] Built panorama '%s' via dmd_gif_converter pipeline (%dx%d, axis=%s, %d frames @ %dfps)",
-                    stem,
-                    width,
-                    height,
-                    axis,
-                    res.frame_count,
-                    res.fps,
-                )
-                return res.gif_path.name, res.rgb565_stream_path.name, static_rgb565_path.name
-            return None
-
-        # Compatibility fallback for older `dmd_gif_converter` wheels lacking `scroll_direction`:
-        # center-cap ultra-wide spans without distorting aspect ratio, rotate 90 deg CW so Left->Right
-        # maps to Top->Bottom, run FFmpeg Lanczos + Smart Color Boost, then rotate frames 90 deg CCW.
-        max_pan_dist_x = max(width * 4, round(width * 1.35 * max(2.5, float(duration_s))))
-        scaled_w_est = round(src_w * (float(height) / float(max(1, src_h))))
-        if scaled_w_est - width > max_pan_dist_x and scaled_w_est > 0:
-            keep_src_w = min(
-                src_w,
-                max(16, int(round((width + max_pan_dist_x) * (float(src_h) / float(height))))),
-            )
-            trim_left = max(0, (src_w - keep_src_w) // 2)
-            rgb_for_rot = rgb_src.crop((trim_left, 0, trim_left + keep_src_w, src_h))
-        else:
-            rgb_for_rot = rgb_src
-
-        rgb_for_rot.transpose(Image.Transpose.ROTATE_270).save(rot_src_path, format="PNG")
-        rot_res = processor.process_image_panorama(
-            input_image=rot_src_path,
-            output_dir=out_dir,
-            width=height,
-            height=width,
-            fps=max(6, fps),
-            duration_s=duration_s,
-            smart_color_boost=color_boost,
-            export_gif=True,
-            export_rgb565_stream=False,
-            stem=f"_rot_{stem}",
-        )
         src_img_path.unlink(missing_ok=True)
-        rot_src_path.unlink(missing_ok=True)
-        if not rot_res.gif_path or not rot_res.gif_path.exists():
+
+        eff_fps = max(6, min(60, int(fps)))
+        req_dur_s = max(1.5, float(duration_s))
+        scale = max(float(width) / float(src_w), float(height) / float(src_h))
+
+        if axis == "horizontal":
+            min_span_w = width + max(16, width // 4)
+            if int(round(src_w * scale)) < min_span_w:
+                scale = float(min_span_w) / float(src_w)
+            scaled_w = max(width + 1, int(round(src_w * scale)))
+            scaled_h = max(height, int(round(src_h * scale)))
+            resized = rgb_src.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+            if scaled_h > height:
+                crop_y = (scaled_h - height) // 2
+                resized = resized.crop((0, crop_y, scaled_w, crop_y + height))
+            strip_pil = _enhance_panorama_strip(processor, resized, color_boost)
+            strip_arr = np.asarray(strip_pil, dtype=np.uint8)
+            scroll_dist = max(0, strip_arr.shape[1] - width)
+        else:
+            min_span_h = height + max(16, height // 2)
+            if int(round(src_h * scale)) < min_span_h:
+                scale = float(min_span_h) / float(src_h)
+            scaled_w = max(width, int(round(src_w * scale)))
+            scaled_h = max(height + 1, int(round(src_h * scale)))
+            resized = rgb_src.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+            if scaled_w > width:
+                crop_x = (scaled_w - width) // 2
+                resized = resized.crop((crop_x, 0, crop_x + width, scaled_h))
+            strip_pil = _enhance_panorama_strip(processor, resized, color_boost)
+            strip_arr = np.asarray(strip_pil, dtype=np.uint8)
+            scroll_dist = max(0, strip_arr.shape[0] - height)
+
+        # Guarantee buttery-smooth 1 px/frame integer stepping for all standard box-art jackets,
+        # posters, and 16:9/4:3 snapshots; only step >1 px on extreme >220px panoramic strips.
+        max_1px_dist = max(220, int(round(eff_fps * max(8.5, req_dur_s * 2.25))))
+        if scroll_dist <= max_1px_dist:
+            step_px = 1
+        else:
+            target_travel_frames = max(24, int(round(eff_fps * max(2.5, req_dur_s))))
+            step_px = max(1, int(round(float(scroll_dist) / float(target_travel_frames))))
+
+        travel_positions = list(range(0, scroll_dist + 1, step_px))
+        if not travel_positions:
+            travel_positions = [0]
+        elif travel_positions[-1] != scroll_dist:
+            travel_positions.append(scroll_dist)
+
+        hold_frames = max(2, min(8, int(round(eff_fps * 0.20))))
+        positions = (
+            [0] * hold_frames
+            + travel_positions
+            + [scroll_dist] * hold_frames
+        )
+        if len(positions) < 20:
+            pad_total = 20 - len(positions)
+            pad_start = pad_total // 2
+            pad_end = pad_total - pad_start
+            positions = ([0] * pad_start) + positions + ([scroll_dist] * pad_end)
+
+        if axis == "horizontal":
+            frames_rgb = [
+                np.ascontiguousarray(strip_arr[:, pos : pos + width, :])
+                for pos in positions
+            ]
+        else:
+            frames_rgb = [
+                np.ascontiguousarray(strip_arr[pos : pos + height, :, :])
+                for pos in positions
+            ]
+
+        if not frames_rgb:
             return None
 
-        rot_frames, eff_fps = extract_frames_from_gif(rot_res.gif_path)
-        rot_res.gif_path.unlink(missing_ok=True)
-        if not rot_frames:
-            return None
-
-        ltr_frames = [np.ascontiguousarray(np.rot90(f, k=1)) for f in rot_frames]
         gif_out_path = out_dir / f"{stem}_{width}x{height}.gif"
         stream_out_path = out_dir / f"{stem}_{width}x{height}.rgb565.stream"
-        pil_frames = [Image.fromarray(f, mode="RGB") for f in ltr_frames]
-        frame_dur_ms = max(20, int(round(1000.0 / max(1, eff_fps))))
+
+        write_rgb565_stream(frames_rgb, stream_out_path, fps=eff_fps)
+
+        pil_frames = [Image.fromarray(f, mode="RGB") for f in frames_rgb]
+        frame_dur_ms = max(20, int(round(1000.0 / float(eff_fps))))
         pil_frames[0].save(
             gif_out_path,
             format="GIF",
@@ -199,20 +220,20 @@ def convert_image_to_panorama_gif_and_stream(
             loop=0,
             disposal=2,
         )
-        write_rgb565_stream(ltr_frames, stream_out_path, fps=eff_fps)
+
         logger.info(
-            "[CONVERTER] Built panorama '%s' via horizontal rotation fallback (%dx%d, axis=%s, %d frames @ %dfps)",
+            "[CONVERTER] Built direct 16-bit panorama '%s' (%dx%d, axis=%s, step=%dpx, %d frames @ %dfps)",
             stem,
             width,
             height,
             axis,
-            len(ltr_frames),
+            step_px,
+            len(frames_rgb),
             eff_fps,
         )
         return gif_out_path.name, stream_out_path.name, static_rgb565_path.name
     except Exception as exc:
         src_img_path.unlink(missing_ok=True)
-        rot_src_path.unlink(missing_ok=True)
         logger.info("[CONVERTER] Panorama conversion error for %s: %s", stem, exc)
         return None
 
