@@ -538,66 +538,39 @@ class SlotPreparationService:
 
         now_ts = time.time()
         pkg.consumed = True
+        for aid, other_pkg in list(self.state.active_packages.items()):
+            if other_pkg.dmd_id == dmd_id and other_pkg.domain == domain and other_pkg.consumed and aid != pkg.item_id:
+                await self.purge_consumed_package(aid)
+
         self.state.last_played_titles[key] = pkg.card.title
         self.state.last_played_sources[key] = pkg.card.source_used or pkg.candidate.source_id or ""
         self.state.client_last_seen[key] = now_ts
         board_key = canonical_dmd_board_key(dmd_id, self.state.client_udp_ips.get(dmd_id, ""))
         for other_key in list(self.state.last_claimed_until.keys()):
-            if other_key != key:
-                other_board = canonical_dmd_board_key(
-                    other_key[0], self.state.client_udp_ips.get(other_key[0], "")
-                )
-                if other_board == board_key:
-                    self.state.last_claimed_until.pop(other_key, None)
+            if other_key != key and canonical_dmd_board_key(other_key[0], self.state.client_udp_ips.get(other_key[0], "")) == board_key:
+                self.state.last_claimed_until.pop(other_key, None)
         display_window_s = max(10.0, float(pkg.card.stream_duration_s or 0.0) + 8.0)
         self.state.last_claimed_until[key] = now_ts + display_window_s
         should_mark_seen = self.state.package_mark_seen.pop(pkg.item_id, True)
         self.state.priority_item_ids.discard(pkg.item_id)
         if should_mark_seen:
             self.seen_repo.mark_consumed(domain, pkg.candidate.id)
-
         self._pop_claimed_priority(dmd_id, pkg.item_id)
 
         next_priority_pkg = self._take_next_priority_pkg(dmd_id, domain)
         if next_priority_pkg is not None:
             self.state.ready_packages[key] = next_priority_pkg
-            await self.mqtt.publish_json(
-                f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-                {
-                    "ready": True,
-                    "item_id": next_priority_pkg.item_id,
-                    "domain": domain,
-                    "card": next_priority_pkg.card.to_dict(),
-                },
-                retain=True,
-            )
+            ready_msg = {"ready": True, "item_id": next_priority_pkg.item_id, "domain": domain, "card": next_priority_pkg.card.to_dict()}
+            await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/ready", ready_msg, retain=True)
         else:
             standby_pkg = self.state.standby_packages.pop(key, None)
             if standby_pkg is not None and not standby_pkg.consumed:
                 self.state.ready_packages[key] = standby_pkg
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-                    {
-                        "ready": True,
-                        "item_id": standby_pkg.item_id,
-                        "domain": domain,
-                        "card": standby_pkg.card.to_dict(),
-                    },
-                    retain=True,
-                )
-                logger.info(
-                    "[ORCHESTRATOR] Promoted N+1 standby slot '%s' ('%s') to ready for dmd='%s' domain='%s'",
-                    standby_pkg.item_id,
-                    standby_pkg.candidate.title,
-                    dmd_id,
-                    domain,
-                )
+                ready_msg = {"ready": True, "item_id": standby_pkg.item_id, "domain": domain, "card": standby_pkg.card.to_dict()}
+                await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/ready", ready_msg, retain=True)
+                logger.info("[ORCHESTRATOR] Promoted N+1 standby slot '%s' ('%s') to ready for dmd='%s' domain='%s'", standby_pkg.item_id, standby_pkg.candidate.title, dmd_id, domain)
             else:
-                await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{dmd_id}/{domain}/ready",
-                    {"ready": False, "item_id": pkg.item_id, "domain": domain},
-                    retain=True,
-                )
+                await self.mqtt.publish_json(f"dmd_showcase/clients/{dmd_id}/{domain}/ready", {"ready": False, "item_id": pkg.item_id, "domain": domain}, retain=True)
         self._schedule_hook(dmd_id, domain)
         return pkg
 
@@ -707,9 +680,13 @@ class SlotPreparationService:
             )
 
             async def _on_stream_eof(
-                client_dmd_id: str, finished_item_id: str, _ok: bool
+                client_dmd_id: str, finished_item_id: str, completed_ok: bool
             ) -> None:
                 self.state.last_claimed_until.pop((client_dmd_id, domain), None)
+                if not completed_ok:
+                    # Stream was cancelled (e.g. `stop_stream` for TCP fallback or rotation):
+                    # let `stop_stream` or the subsequent HTTP `?purge=true` request manage disk cleanup.
+                    return
                 eof_msg = {
                     "event": "stream_eof",
                     "item_id": finished_item_id,
@@ -740,21 +717,33 @@ class SlotPreparationService:
             )
 
         elif ev_type == "stop_stream":
+            purge_requested = bool(event_payload.get("purge", True))
+            reason = str(event_payload.get("reason") or "").strip().lower()
+            preserve_for_fallback = (not purge_requested) or reason in (
+                "udp_timeout",
+                "http_fallback",
+                "tcp_fallback",
+            )
             logger.info(
-                "[ORCHESTRATOR] Event 'stop_stream' from dmd='%s' item='%s'", dmd_id, item_id
+                "[ORCHESTRATOR] Event 'stop_stream' from dmd='%s' item='%s' (reason='%s', preserve_for_fallback=%s)",
+                dmd_id,
+                item_id,
+                reason or "done",
+                preserve_for_fallback,
             )
             self.state.last_claimed_until.pop((dmd_id, domain), None)
             await self.streamer.stop_stream(dmd_id)
-            if item_id:
-                await self.purge_consumed_package(item_id)
-            else:
-                consumed_ids = [
-                    aid
-                    for aid, pkg in list(self.state.active_packages.items())
-                    if pkg.dmd_id == dmd_id and pkg.domain == domain and pkg.consumed
-                ]
-                for aid in consumed_ids:
-                    await self.purge_consumed_package(aid)
+            if not preserve_for_fallback:
+                if item_id:
+                    await self.purge_consumed_package(item_id)
+                else:
+                    consumed_ids = [
+                        aid
+                        for aid, pkg in list(self.state.active_packages.items())
+                        if pkg.dmd_id == dmd_id and pkg.domain == domain and pkg.consumed
+                    ]
+                    for aid in consumed_ids:
+                        await self.purge_consumed_package(aid)
 
         elif ev_type == "client_offline":
             logger.info(

@@ -19,7 +19,7 @@ import socket
 import struct
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.domain.ports.frame_streamer import IFrameStreamerPort
 from app.portable_env import get_ffmpeg_binary
@@ -27,8 +27,21 @@ from app.portable_env import get_ffmpeg_binary
 logger = logging.getLogger("dmd_showcase.streaming.udp")
 
 DMDF_MAGIC = b"DMDF"
+DMDH_MAGIC = b"DMDH"
+DMDA_MAGIC = b"DMDA"
 DMDF_HEADER_FORMAT = "<4sHBBH"
 MAX_UDP_PAYLOAD_BYTES = 1024
+NAT_PINHOLE_TTL_S = 180.0
+
+
+class _UdpPinholeProtocol(asyncio.DatagramProtocol):
+    """Receives client-initiated `DMDH` UDP punch datagrams on `:5569` to establish NAT return mappings."""
+
+    def __init__(self, streamer: "FfmpegUdpClockStreamer") -> None:
+        self._streamer = streamer
+
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        self._streamer.record_udp_hello_datagram(data, addr)
 
 
 def pack_dmdf_frame_chunks(
@@ -74,6 +87,87 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
         self._active_procs: Dict[str, asyncio.subprocess.Process] = {}
         self._active_meta: Dict[str, Dict[str, Any]] = {}
         self._packet_sink = packet_sink
+        self._nat_pinholes: Dict[str, Tuple[str, int, float]] = {}
+        self._listener_transport: Optional[asyncio.DatagramTransport] = None
+        self._listener_port: int = 0
+
+    async def start_listener(self, host: str = "0.0.0.0", port: int = 5569) -> bool:
+        """Bind the server UDP listener (`:5569`, or `0` for OS-assigned ephemeral) so NAT/VM-bridged DMD clients can punch a return pinhole."""
+        if port < 0:
+            return False
+        if self._listener_transport is not None and not self._listener_transport.is_closing():
+            return True
+        loop = asyncio.get_running_loop()
+        try:
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: _UdpPinholeProtocol(self),
+                local_addr=(host, int(port)),
+                reuse_port=False,
+            )
+            self._listener_transport = transport
+            sock_info = transport.get_extra_info("sockname")
+            self._listener_port = int(sock_info[1]) if sock_info else int(port)
+            logger.info(
+                "[UDP STREAM] Bound NAT pinhole & DMDF server socket on %s:%d/udp",
+                host,
+                self._listener_port,
+            )
+            return True
+        except OSError as exc:
+            logger.warning(
+                "[UDP STREAM] Could not bind UDP pinhole listener on %s:%d (%s) — falling back to ephemeral sockets",
+                host,
+                port,
+                exc,
+            )
+            self._listener_transport = None
+            self._listener_port = 0
+            return False
+
+    async def stop_listener(self) -> None:
+        """Close the `:5569` server UDP listener if active."""
+        transport = self._listener_transport
+        self._listener_transport = None
+        self._listener_port = 0
+        if transport is not None and not transport.is_closing():
+            transport.close()
+
+    def record_udp_hello_datagram(self, data: bytes, addr: Tuple[str, int]) -> None:
+        """Record a client `DMDH|<dmd_id>[|<lan_ip>]` UDP punch datagram and reply with `DMDA`."""
+        if len(data) < 4 or data[:4] != DMDH_MAGIC:
+            return
+        raw_tail = data[4:].lstrip(b"| :\x00").decode("utf-8", errors="ignore").strip()
+        parts = [p.strip() for p in raw_tail.split("|") if p.strip()]
+        dmd_id = parts[0] if len(parts) >= 1 else ""
+        declared_ip = parts[1] if len(parts) >= 2 else ""
+        now_mono = time.monotonic()
+        entry = (str(addr[0]), int(addr[1]), now_mono)
+        if dmd_id:
+            self._nat_pinholes[dmd_id] = entry
+        if declared_ip and declared_ip not in ("0.0.0.0", "127.0.0.1"):
+            self._nat_pinholes[f"@ip:{declared_ip}"] = entry
+        if addr[0] and addr[0] not in ("0.0.0.0", "127.0.0.1"):
+            self._nat_pinholes[f"@ip:{addr[0]}"] = entry
+
+        if self._listener_transport is not None and not self._listener_transport.is_closing():
+            try:
+                self._listener_transport.sendto(DMDA_MAGIC + b"\x01\x00\x00\x00", addr)
+            except OSError:
+                pass
+
+    def resolve_nat_pinhole(self, dmd_id: str, udp_ip: str) -> Optional[Tuple[str, int]]:
+        """Return a fresh `(ip, port)` NAT pinhole tuple if the client punched `:5569` recently."""
+        now_mono = time.monotonic()
+        for key in (dmd_id, f"@ip:{udp_ip}"):
+            if not key:
+                continue
+            entry = self._nat_pinholes.get(key)
+            if entry is not None:
+                pin_ip, pin_port, ts = entry
+                if (now_mono - ts) <= NAT_PINHOLE_TTL_S:
+                    return (pin_ip, pin_port)
+                self._nat_pinholes.pop(key, None)
+        return None
 
     @staticmethod
     def _is_task_live(task: Optional[asyncio.Task[None]]) -> bool:
@@ -263,11 +357,28 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
             frame_seq = 0
             consecutive_icmp_refused = 0
             icmp_aborted = False
+            logged_pinhole = False
             while not icmp_aborted:
                 try:
                     frame_buf = await proc.stdout.readexactly(frame_bytes)
                 except asyncio.IncompleteReadError:
                     break
+                pinhole_addr: Optional[Tuple[str, int]] = None
+                if (
+                    self._packet_sink is None
+                    and self._listener_transport is not None
+                    and not self._listener_transport.is_closing()
+                ):
+                    pinhole_addr = self.resolve_nat_pinhole(dmd_id, udp_ip)
+                    if pinhole_addr is not None and not logged_pinhole:
+                        logged_pinhole = True
+                        logger.info(
+                            "[UDP STREAM] Routing DMDF chunks for dmd_id='%s' via NAT pinhole %s:%d (source :%d)",
+                            dmd_id,
+                            pinhole_addr[0],
+                            pinhole_addr[1],
+                            self._listener_port,
+                        )
                 packets = pack_dmdf_frame_chunks(frame_buf, frame_seq)
                 for pkt_idx, pkt in enumerate(packets):
                     if self._packet_sink is not None:
@@ -278,6 +389,13 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                     # burst drops while taking < 0.7 ms per 128x32 frame.
                     if pkt_idx > 0 and (pkt_idx % 4) == 0:
                         await asyncio.sleep(0.0006)
+                    if pinhole_addr is not None and self._listener_transport is not None:
+                        try:
+                            self._listener_transport.sendto(pkt, pinhole_addr)
+                            consecutive_icmp_refused = 0
+                        except OSError:
+                            pass
+                        continue
                     try:
                         if use_connected_udp:
                             sock.send(pkt)

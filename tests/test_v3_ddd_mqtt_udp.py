@@ -55,6 +55,7 @@ from app.infrastructure.streaming.ffmpeg_udp_streamer import (
     DMDF_HEADER_FORMAT,
     DMDF_MAGIC,
     FfmpegUdpClockStreamer,
+    _UdpPinholeProtocol,
     pack_dmdf_frame_chunks,
 )
 from app.main import app
@@ -1715,3 +1716,180 @@ async def test_favicon_route_returns_200_svg():
         resp = await client.get("/favicon.ico")
         assert resp.status_code == 200
         assert "image/svg+xml" in resp.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_udp_nat_pinhole_hello_and_dmdf_return_routing(tmp_path: Path):
+    """
+    Verify `FfmpegUdpClockStreamer` records `DMDH|<dmd_id>|<ip>` NAT pinholes, replies `DMDA`,
+    and routes `DMDF` chunks back through the client's NAT pinhole even when `udp_ip` is unreachable.
+    """
+    sent_datagrams: List[tuple[bytes, tuple[str, int]]] = []
+
+    class _FakeDatagramTransport:
+        def is_closing(self) -> bool:
+            return False
+
+        def sendto(self, data: bytes, addr=None) -> None:
+            sent_datagrams.append((bytes(data), addr))
+
+        def close(self) -> None:
+            pass
+
+    streamer = FfmpegUdpClockStreamer()
+    bound = await streamer.start_listener(host="127.0.0.1", port=0)
+    if bound:
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_sock.setblocking(False)
+        loop = asyncio.get_running_loop()
+        try:
+            client_sock.bind(("127.0.0.1", 0))
+            hello_pkt = b"DMDH|esp32_nat_client|192.168.1.31"
+            await loop.sock_sendto(client_sock, hello_pkt, ("127.0.0.1", streamer._listener_port))
+            ack_data = await asyncio.wait_for(loop.sock_recv(client_sock, 64), timeout=1.5)
+            assert ack_data[:4] == b"DMDA"
+            assert streamer.resolve_nat_pinhole("esp32_nat_client", "192.0.2.99") is not None
+            assert streamer.resolve_nat_pinhole("other_id", "192.168.1.31") is not None
+        except PermissionError:
+            pass
+        finally:
+            client_sock.close()
+            await streamer.stop_listener()
+
+    # Deterministic transport-level verification (exercises `_UdpPinholeProtocol` + `ffmpeg -re` routing):
+    streamer._listener_transport = _FakeDatagramTransport()  # type: ignore[assignment]
+    streamer._listener_port = 5569
+    proto = _UdpPinholeProtocol(streamer)
+    proto.datagram_received(b"DMDH|esp32_nat_client|192.168.1.31", ("172.18.0.1", 51422))
+    assert len(sent_datagrams) == 1
+    assert sent_datagrams[0] == (b"DMDA\x01\x00\x00\x00", ("172.18.0.1", 51422))
+    assert streamer.resolve_nat_pinhole("esp32_nat_client", "192.168.1.31") == ("172.18.0.1", 51422)
+    assert streamer.resolve_nat_pinhole("passive_profile", "192.168.1.31") == ("172.18.0.1", 51422)
+
+    stream_file = tmp_path / "nat_test.rgb565.stream"
+    frames = [np.full((32, 128, 3), fill_value=val, dtype=np.uint8) for val in (40, 120, 200)]
+    write_rgb565_stream(frames, str(stream_file), fps=30)
+
+    done_ev = asyncio.Event()
+
+    async def _on_eof(_dmd: str, _item: str, ok: bool) -> None:
+        if ok:
+            done_ev.set()
+
+    started = await streamer.start_udp_clock_stream(
+        dmd_id="esp32_nat_client",
+        item_id="nat_item_01",
+        stream_path=stream_file,
+        width=128,
+        height=32,
+        fps=30,
+        udp_ip="192.0.2.99",
+        udp_port=5568,
+        on_eof=_on_eof,
+    )
+    assert started is True
+    await asyncio.wait_for(done_ev.wait(), timeout=5.0)
+    dmdf_pkts = [pkt for pkt, dst in sent_datagrams if pkt[:4] == DMDF_MAGIC and dst == ("172.18.0.1", 51422)]
+    assert len(dmdf_pkts) == 24  # 3 frames * 8 chunks (128x32 RGB565 = 8192 B = 8x1024 B)
+    await streamer.stop_listener()
+
+
+@pytest.mark.asyncio
+async def test_stop_stream_tcp_fallback_preserves_package_and_paced_http_stream(tmp_path: Path):
+    """
+    Verify `stop_stream` with `{"purge": False, "reason": "tcp_fallback"}` stops UDP without
+    deleting `.rgb565.stream`, allowing immediate `?purge=true&paced=1` HTTP fallback + clean purge.
+    """
+    item_id = "fallback_test_item_99"
+    item_dir = tmp_path / item_id
+    item_dir.mkdir(parents=True, exist_ok=True)
+    stream_path = item_dir / f"{item_id}.rgb565.stream"
+    frames = [np.full((32, 128, 3), fill_value=v, dtype=np.uint8) for v in (10, 90)]
+    write_rgb565_stream(frames, str(stream_path), fps=30)
+    expected_bytes = stream_path.read_bytes()
+
+    cand = MediaCandidate(
+        id="ss_99",
+        domain="games",
+        source_id="screenscraper",
+        title="Metal Warriors",
+        year="1995",
+        badge="SNES",
+        badge_color="#00E5FF",
+        subtitle="SNES",
+        rating="8.8",
+        synopsis="LucasArts mecha action classic.",
+    )
+    card = ShowcaseCard(
+        item_id=item_id,
+        domain="games",
+        title="Metal Warriors",
+        year="1995",
+        badge="SNES",
+        badge_color="#00E5FF",
+        subtitle="SNES",
+        rating="8.8",
+        synopsis="LucasArts mecha action classic.",
+        lang="en",
+        source_used="screenscraper",
+        poster_width=32,
+        poster_height=32,
+        poster_rgb565_b64="",
+        has_video=True,
+        stream_frames=2,
+        stream_fps=30,
+        stream_duration_s=0.1,
+    )
+    pkg = PreparedShowcasePackage(
+        item_id=item_id,
+        dmd_id="esp32_fallback_dmd",
+        domain="games",
+        candidate=cand,
+        geometry=PanelGeometry(width=128, height=32),
+        card=card,
+        item_dir=item_dir,
+        unified_stream_path=stream_path,
+        consumed=True,
+    )
+    consume_once_orchestrator.active_packages[item_id] = pkg
+
+    await consume_once_orchestrator.handle_mqtt_client_event(
+        "esp32_fallback_dmd",
+        {
+            "action": "stop_stream",
+            "domain": "games",
+            "item_id": item_id,
+            "purge": False,
+            "reason": "tcp_fallback",
+        },
+    )
+    assert item_id in consume_once_orchestrator.active_packages
+    assert stream_path.exists()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true&paced=1")
+        assert resp.status_code == 200
+        assert resp.headers.get("X-DMD-Paced") == "1"
+        assert resp.content == expected_bytes
+
+    assert item_id not in consume_once_orchestrator.active_packages
+    assert not stream_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_mdns_responder_skips_advertising_on_nat_isolated_docker_bridge(monkeypatch):
+    """
+    Verify `ShowcaseMdnsResponder` never binds `:5353` or advertises unreachable `172.18.0.2`
+    Docker bridge A records when `HOST_LAN_IP` is not set.
+    """
+    import app.infrastructure.mdns_responder as mdns_mod
+
+    monkeypatch.delenv("HOST_LAN_IP", raising=False)
+    monkeypatch.delenv("SHOWCASE_HOST_IP", raising=False)
+    monkeypatch.setattr(mdns_mod, "_is_container_env", lambda: True)
+    monkeypatch.setattr(mdns_mod, "detect_lan_ipv4", lambda: "172.18.0.2")
+
+    responder = mdns_mod.ShowcaseMdnsResponder(hostname="dmdmediashowcase")
+    await responder.start(port=8890)
+    assert responder.is_nat_isolated is True
+    assert responder.is_running is False

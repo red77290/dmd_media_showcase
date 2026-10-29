@@ -53,6 +53,7 @@ from app.infrastructure.http.runtime_reloader import apply_live_log_level
 from app.infrastructure.http.security_middleware import optional_api_key_security_middleware
 from app.infrastructure.mdns_responder import showcase_mdns_responder
 from app.infrastructure.mqtt.showcase_mqtt_gateway import showcase_mqtt_gateway
+from app.infrastructure.streaming.ffmpeg_udp_streamer import udp_clock_streamer
 from app.infrastructure.persistence import (
     dmd_profile_store,
     on_demand_cache_store,
@@ -146,6 +147,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         settings.effective_max_workers,
     )
     batch_manager.start()
+    await udp_clock_streamer.start_listener(host=settings.host, port=settings.udp_stream_port)
     await showcase_mqtt_gateway.start()
     await consume_once_orchestrator.start_server_managed_profiles()
     if settings.mdns_enabled:
@@ -157,6 +159,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await consume_once_orchestrator.stop_server_managed_profiles()
         await showcase_mdns_responder.stop()
         await showcase_mqtt_gateway.stop()
+        await udp_clock_streamer.stop_listener()
         await batch_manager.stop()
 
 

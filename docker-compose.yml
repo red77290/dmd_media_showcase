@@ -7,6 +7,7 @@ services:
     ports:
       - "${PORT:-8890}:8890"
       - "${MQTT_PORT:-1883}:1883"
+      - "${UDP_STREAM_PORT:-5569}:5569/udp"
       - "5353:5353/udp"
     env_file:
       - path: .env
@@ -16,6 +17,7 @@ services:
       - HOST_LAN_IP
       - MQTT_MODE
       - MQTT_PORT
+      - UDP_STREAM_PORT
       - MQTT_EXTERNAL_URL
       - MAX_CONCURRENT_JOBS
       - FFMPEG_THREADS_PER_JOB

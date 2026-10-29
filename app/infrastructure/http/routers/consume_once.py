@@ -4,9 +4,13 @@ Stateless Consume-Once HTTP Polling & Streaming Routes (`app/infrastructure/http
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import asyncio
+import struct
+import time
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 
 from app.domain.entities import PanelGeometry
 from app.infrastructure.http.dependencies import get_orchestrator
@@ -146,6 +150,10 @@ async def stream_consume_once_sequence(
         default=True,
         description="Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)",
     ),
+    paced: bool = Query(
+        default=False,
+        description="Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND",
+    ),
 ) -> Response:
     """
     Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
@@ -173,7 +181,63 @@ async def stream_consume_once_sequence(
             detail=f"Stream '{item_id}' not found or already consumed and purged.",
         )
 
-    raw_bytes = pkg.unified_stream_path.read_bytes()
+    stream_path = pkg.unified_stream_path
+    file_size = stream_path.stat().st_size
+    if paced and file_size > 16:
+        with stream_path.open("rb") as probe_fh:
+            hdr = probe_fh.read(16)
+        if len(hdr) == 16 and hdr[:4] == b"DMDS":
+            _, _ver, hdr_fps, width, height, _total_frames, _frame_dur_ms, _res = struct.unpack(
+                "<4sBBHHHHH", hdr
+            )
+            frame_bytes = max(2, int(width) * int(height) * 2)
+            eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
+            claim_key = (pkg.dmd_id, domain)
+
+            async def _paced_dmds_generator() -> AsyncIterator[bytes]:
+                fh = stream_path.open("rb")
+                try:
+                    now_wall = time.time()
+                    co.state.client_last_seen[claim_key] = now_wall
+                    co.state.last_claimed_until[claim_key] = now_wall + 15.0
+                    first_payload = fh.read(16 + frame_bytes)
+                    if first_payload:
+                        yield first_payload
+                    t0 = time.monotonic()
+                    frame_idx = 1
+                    while True:
+                        chunk = fh.read(frame_bytes)
+                        if not chunk:
+                            break
+                        target_t = t0 + (frame_idx / float(eff_fps))
+                        sleep_s = target_t - time.monotonic()
+                        if sleep_s > 0.001:
+                            await asyncio.sleep(sleep_s)
+                        if (frame_idx % 15) == 0:
+                            ts_now = time.time()
+                            co.state.client_last_seen[claim_key] = ts_now
+                            co.state.last_claimed_until[claim_key] = ts_now + 15.0
+                        yield chunk
+                        frame_idx += 1
+                finally:
+                    fh.close()
+                    co.state.last_claimed_until.pop(claim_key, None)
+                    if purge:
+                        await co.purge_consumed_package(item_id)
+
+            return StreamingResponse(
+                _paced_dmds_generator(),
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Length": str(file_size),
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "X-DMD-Consume-Once": "1",
+                    "X-DMD-Paced": "1",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+    raw_bytes = stream_path.read_bytes()
     if purge:
         background_tasks.add_task(co.purge_consumed_package, item_id)
     return Response(

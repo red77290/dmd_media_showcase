@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     host: str = "0.0.0.0"
     port: int = 8890
+    udp_stream_port: int = 5569
     mdns_enabled: bool = True
     mdns_hostname: str = "dmdmediashowcase"
     log_level: str = "INFO"

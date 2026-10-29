@@ -41,9 +41,14 @@ DNS_CLASS_IN = 1
 DNS_QU_FLAG = 0x8000
 
 
+def _is_container_env() -> bool:
+    """Return True when running inside a Docker / OCI container runtime."""
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
 def _is_docker_bridge_ipv4(ip: str) -> bool:
     """Return True when `ip` looks like an internal Docker bridge IP (`172.16.0.0/12`) inside a container."""
-    if not Path("/.dockerenv").exists():
+    if not _is_container_env():
         return False
     parts = ip.split(".")
     if len(parts) != 4 or not all(p.isdigit() for p in parts):
@@ -300,6 +305,10 @@ class ShowcaseMdnsResponder:
     def _clean_hostname(self) -> str:
         return self.hostname.lower().removesuffix(".local").strip(".") or DEFAULT_MDNS_HOSTNAME
 
+    @property
+    def is_running(self) -> bool:
+        return self._transport is not None and not self._transport.is_closing()
+
     def _send_announcement(self) -> None:
         if self._transport is None:
             return
@@ -362,6 +371,22 @@ class ShowcaseMdnsResponder:
         self.ipv4 = detect_lan_ipv4()
         self.is_nat_isolated = _is_docker_bridge_ipv4(self.ipv4)
         clean = self._clean_hostname()
+
+        # Never advertise an unroutable internal Docker bridge IP (172.16.0.0/12) over
+        # port-forwarded UDP :5353 — doing so poisons physical LAN clients (such as ESP32
+        # mDNS resolvers) with an unreachable container address unless HOST_LAN_IP is set.
+        if self.is_nat_isolated:
+            logger.info(
+                "[MDNS] Container bridge IP %s detected without HOST_LAN_IP; skipping internal :5353 "
+                "advertising so LAN clients are never poisoned with a non-routable bridge IP. "
+                "Set HOST_LAN_IP in .env, use 'network_mode: host' on Linux, or run "
+                "'./scripts/register_macos_mdns.sh' on macOS for 'http://%s.local:%d' "
+                "(ArcadeMatrix ESP32 auto-discovers Showcase via HTTP/MQTT).",
+                self.ipv4,
+                clean,
+                self.port,
+            )
+            return
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
