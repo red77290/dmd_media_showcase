@@ -134,7 +134,7 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
   - **Why `MQTT + TCP` (`DMDS`) is Default**:
     1. **Zero Docker Desktop / Rancher Desktop VM UDP NAT Loss**: Inbound TCP `:8890` traverses every container bridge and host VM NAT natively without UDP return-pinhole timeouts or firewall drops.
     2. **Zero MTU Chunk Reassembly Overhead**: Contiguous RGB565LE frames arrive in stream order without per-packet bitmask reassembly.
-    3. **Zero Client-Side Heap & Zero `TCP_WND` Stalls**: Embedded clients open a raw `lwip_socket` (`HTTP/1.0`, `Connection: close`) reading straight into `m_frame565`, while the server's `_paced_dmds_generator()` (`X-DMD-Paced: 1`) clocks frames monotonically at `fps` and `drop_late=1` (`X-DMD-Drop-Late: 1`) seeks past stale frames on wall-clock jitter so LwIP `TCP_WND` never stalls with `TCP ZeroWindow`.
+    3. **Zero Client-Side Heap & Zero `TCP_WND` Stalls**: Embedded clients open a raw `lwip_socket` (`HTTP/1.1`, `Connection: close`, omitting `drop_late=1` so `Content-Length` is preserved and Uvicorn emits unchunked `DMDS`) reading straight into `m_frame565`, while the server's `_paced_dmds_generator()` (`X-DMD-Paced: 1`) clocks frames monotonically at `fps` (and optional `drop_late=1` / `X-DMD-Drop-Late: 1` seeks past stale frames for HTTP/1.1 chunk-decoding clients) so LwIP `TCP_WND` never stalls with `TCP ZeroWindow`.
     4. **Compact Collision-Free `item_id`s**: Every prepared package uses `pkg_<domain>_<12hex>` (`<= 24` chars), fitting fixed embedded stack buffers with zero heap allocation.
 - **`HTTP`**: Stateless HTTP Consume-Once polling (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` + `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
 - **`UDP-PASSIVE` (Model 2B — `supports_local_card: false`)**: Ultra-minimal ~180-line passive UDP `:4210` `DMDF` framebuffer receiver where the server composites even Phase 1 Info Cards directly into the RGB565 stream (`render_card_in_stream=True`).
@@ -165,8 +165,8 @@ sequenceDiagram
     ORCH->>PREP: Background N+1 Pipelining: immediately prepare Standby Item N+1!
 
     alt Primary MQTT+TCP Mode (Models 1 & 2A — Default)
-        Note over DMD: Info Card finishes scrolling -> Raw LwIP HTTP/1.0 TCP DMDS stream
-        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1&drop_late=1
+        Note over DMD: Info Card finishes scrolling -> Raw LwIP HTTP/1.1 TCP DMDS stream
+        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1
         HTTP-->>DMD: 200 OK (X-DMD-Paced: 1, 16-Byte DMDS Header + Frame 0)
         loop Monotonic Server-Clocked Frames (15-25 FPS)
             HTTP-->>DMD: Contiguous RGB565LE Frame (width * height * 2 bytes) -> m_frame565

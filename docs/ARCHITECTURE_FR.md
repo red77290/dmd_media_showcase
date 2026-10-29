@@ -134,7 +134,7 @@ En remplacement des paires statiques `[Primaire, Fallback]` codées en dur, `Scr
   - **Pourquoi `MQTT + TCP` (`DMDS`) est le transport par défaut** :
     1. **Zéro Perte NAT UDP VM Docker Desktop / Rancher Desktop** : La connexion TCP entrante sur `:8890` traverse nativement les ponts réseau conteneurs et NAT des VMs hôtes sans expiration de trou NAT UDP retour ni blocage pare-feu.
     2. **Zéro Surcharge de Réassemblage MTU** : Les trames RGB565LE contiguës arrivent dans l'ordre du flux sans masque binaire de réassemblage par paquet.
-    3. **Zéro Heap Client & Zéro Blocage `TCP_WND`** : Les clients embarqués ouvrent un `lwip_socket` brut (`HTTP/1.0`, `Connection: close`) lisant directement dans `m_frame565`, tandis que `_paced_dmds_generator()` côté serveur (`X-DMD-Paced: 1`) cadence les trames de manière monotone à `fps` et que `drop_late=1` (`X-DMD-Drop-Late: 1`) saute les trames en retard par `seek` horloge temps réel pour éviter tout engorgement `TCP ZeroWindow` de LwIP `TCP_WND`.
+    3. **Zéro Heap Client & Zéro Blocage `TCP_WND`** : Les clients embarqués ouvrent un `lwip_socket` brut (`HTTP/1.1`, `Connection: close`, sans `drop_late=1` pour conserver `Content-Length` et un flux `DMDS` non-chunké) lisant directement dans `m_frame565`, tandis que `_paced_dmds_generator()` côté serveur (`X-DMD-Paced: 1`) cadence les trames de manière monotone à `fps` (avec option `drop_late=1` / `X-DMD-Drop-Late: 1` pour les clients HTTP/1.1 chunk-decoding) afin d'éviter tout engorgement `TCP ZeroWindow` de LwIP `TCP_WND`.
     4. **Identifiants `item_id` Compacts sans Collision** : Chaque package préparé reçoit un identifiant `pkg_<domain>_<12hex>` (`<= 24` caractères), logeant dans des buffers fixes sur pile embarquée sans aucune allocation dynamique.
 - **`HTTP`** : Polling HTTP Consume-Once sans état (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` + `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
 - **`UDP-PASSIVE` (Modèle 2B — `supports_local_card: false`)** : Récepteur framebuffer UDP `:4210` `DMDF` ultra-minimal (~180 lignes) où le serveur compose directement la Fiche Info (Phase 1) dans le flux RGB565 (`render_card_in_stream=True`).
@@ -165,8 +165,8 @@ sequenceDiagram
     ORCH->>PREP: Pipelining N+1 en tâche de fond : prépare immédiatement Standby N+1 !
 
     alt Mode Principal MQTT+TCP (Modèles 1 & 2A — Par défaut)
-        Note over DMD: Fin du synopsis -> Flux TCP HTTP/1.0 DMDS brut LwIP
-        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1&drop_late=1
+        Note over DMD: Fin du synopsis -> Flux TCP HTTP/1.1 DMDS brut LwIP
+        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1
         HTTP-->>DMD: 200 OK (X-DMD-Paced: 1, En-tête DMDS 16 octets + Trame 0)
         loop Trames Cadencées Côté Serveur (15-25 FPS)
             HTTP-->>DMD: Trame RGB565LE contiguë (width * height * 2 octets) -> m_frame565

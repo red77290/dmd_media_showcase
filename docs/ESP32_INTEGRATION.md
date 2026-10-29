@@ -11,9 +11,9 @@
 
 > [!IMPORTANT]
 > **Why `MQTT + TCP` (`DMDS` `:8890`) is the Default & Recommended Transport for Models 1 & 2A**
-> 1. **Zero Docker Desktop / Rancher Desktop VM UDP NAT Loss**: Inbound HTTP TCP `:8890` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`) traverses every container bridge and host VM NAT natively without UDP return-pinhole timeouts or firewall drops.
+> 1. **Zero Docker Desktop / Rancher Desktop VM UDP NAT Loss**: Inbound HTTP TCP `:8890` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`) traverses every container bridge and host VM NAT natively without UDP return-pinhole timeouts or firewall drops.
 > 2. **Zero MTU Chunk Reassembly Overhead**: Full contiguous RGB565LE frames arrive in stream order (`16-byte` Little-Endian `<4sBBHHHHH` `DMDS` header + `width * height * 2` bytes/frame) with zero per-packet bitmask reassembly.
-> 3. **Zero Client-Side Heap & Zero `TCP_WND` Stalls**: Embedded clients open a raw `lwip_socket` (`HTTP/1.0`, `Connection: close`) reading straight into `m_frame565`. Server-side monotonic pacing (`X-DMD-Paced: 1`) clocks frames at the target FPS so the ESP32 never sleeps with unread socket bytes (`0` `TCP ZeroWindow` stalls), while `drop_late=1` (`X-DMD-Drop-Late: 1`, omitting `Content-Length`) seeks past late frames on wall-clock jitter.
+> 3. **Zero Client-Side Heap & Zero `TCP_WND` Stalls**: Embedded clients open a raw `lwip_socket` (`HTTP/1.1`, `Connection: close`, omitting `drop_late=1` so `Content-Length` is preserved and Uvicorn emits **100% raw unchunked binary `DMDS`**) reading straight into `m_frame565`. Server-side monotonic pacing (`X-DMD-Paced: 1`) clocks frames at the target FPS with automatic jitter re-anchoring so the ESP32 never sleeps with unread socket bytes (`0` `TCP ZeroWindow` stalls), while `ArcadeMatrix` also embeds a zero-heap `HttpChunkedDecoder` fallback (`drop_late=1` omits `Content-Length` / enables `Transfer-Encoding: chunked` for full HTTP/1.1 chunk-decoding clients such as Python `httpx`).
 > 4. **Compact Collision-Free `item_id`s (`<= 24` chars)**: Every prepared package uses `pkg_<domain>_<12hex>` (e.g. `pkg_games_a1b2c3d4e5f6`), fitting fixed stack buffers on `ESP32_STD` with zero heap allocation.
 
 ---
@@ -25,7 +25,7 @@
 Designed for feature-rich multi-engine firmware where the ESP32 owns its local screen rotation (`Clock`, `Weather`, `Scoreboard`, `AudioSpectrum`, `RetroGames`, `Movies`, `Series`, `Anime`), preemption stack (`DisplayArbiter`), and on-device WebUI.
 
 - **Configuration Authority**: The ESP32 WebUI dynamically queries `GET /api/v1/{domain}/filters?lang={ui_lang}` to populate localized dropdowns, stores per-engine filter settings locally, and publishes its retained configuration to `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
-- **Scoped MQTT + Paced TCP `DMDS` Streaming**: Core 0 claims the retained `ready` card over MQTT (`start_card`), **immediately closes the MQTT TCP socket** (`0` open sockets during Phase 1 Card scroll), and streams Phase 2 (`Panoramas + Snapshots + Video`) over raw LwIP `HTTP/1.0` TCP `DMDS` (`:8890`, `?purge=true&paced=1&drop_late=1`).
+- **Scoped MQTT + Paced TCP `DMDS` Streaming**: Core 0 claims the retained `ready` card over MQTT (`start_card`), **immediately closes the MQTT TCP socket** (`0` open sockets during Phase 1 Card scroll), and streams Phase 2 (`Panoramas + Snapshots + Video`) over raw LwIP TCP `DMDS` (`:8890`, `?purge=true&paced=1`).
 - **Rotation Behavior**: When a Showcase engine's turn arrives, if the retained slot (`dmd_showcase/clients/{dmd_id}/{domain}/ready`) reports `{"ready": false}`, the engine yields its turn in **`0 ms`** (`m_skipTurnImmediately = true`) so the panel immediately displays the next local engine (`Clock`, `Weather`, etc.) without ever showing a black screen or stalling.
 - **Production Reference Implementation (`ArcadeMatrix`)**:
   - Header & Engine Contract: [`src/engines/MediaShowcaseEngines.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.h)
@@ -39,7 +39,7 @@ Designed for lightweight dedicated Showcase displays that want crisp 60 FPS hard
 
 - **Hardware Announcement Only**: On boot, the ESP32 publishes a tiny retained payload to `dmd_showcase/clients/{dmd_id}/hello` (`retain=True`) declaring only its panel geometry and LAN endpoint (`width`, `height`, `config_source: "server"`, `supports_local_card: true`, and fallback `lang`).
 - **Centralized Profile Persistence (`./data/dmd_profiles.json`)**: All domain playlists (`games`, `movies`, `series`, `anime`), scraper filters (`systems`, `genres`, `decades`), AI framing/colorimetry (`video_mode`, `color_boost`), and broadcast content language (`lang`) are configured centrally in the **Showcase Web Admin Dashboard** (`http://dmdmediashowcase.local:8890/`) and persisted in `./data/dmd_profiles.json`.
-- **Hybrid Rendering Split**: The ESP32 renders **Phase 1 (Info Card)** locally at 60 FPS (mini-jacket + colored badge + smooth scrolling localized synopsis pushed via `ready` or `dmd_showcase/clients/{dmd_id}/command` `play_card`, acknowledged via `start_card`), then opens `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` on `:8890` to stream **Phase 2 (Panoramas + Video)** over Paced HTTP TCP `DMDS` (with optional legacy `mqtt_udp` `start_stream` support).
+- **Hybrid Rendering Split**: The ESP32 renders **Phase 1 (Info Card)** locally at 60 FPS (mini-jacket + colored badge + smooth scrolling localized synopsis pushed via `ready` or `dmd_showcase/clients/{dmd_id}/command` `play_card`, acknowledged via `start_card`), then opens `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1` on `:8890` to stream **Phase 2 (Panoramas + Video)** over Paced HTTP TCP `DMDS` (with optional legacy `mqtt_udp` `start_stream` support).
 
 ---
 
@@ -61,7 +61,7 @@ Designed for ultra-minimal, zero-maintenance hardware builds (`ESP32_STD` WROOM-
 | **Playlist & Filter Storage** | ESP32 Flash (`config.json`) | Server (`./data/dmd_profiles.json`) | Server (`./data/dmd_profiles.json`) |
 | **ESP32 Firmware Size / UI** | Full Multi-Engine OS + Rich WebUI | ~320 LoC C++ (Scoped MQTT + LwIP TCP `DMDS` + Card Font) | **~120–180 LoC C++** (Zero UI, Zero Fonts, Zero JSON) |
 | **Phase 1 Info Card Rendering** | Local 60 FPS on ESP32 Core 1 | Local 60 FPS on ESP32 Core 1 | **Server-rendered into RGB565 UDP stream** |
-| **Phase 2 Panoramas + Video** | **Paced HTTP TCP `DMDS` (`:8890`, `?paced=1&drop_late=1`)** *(optional `mqtt_udp`)* | **Paced HTTP TCP `DMDS` (`:8890`, `?paced=1&drop_late=1`)** *(optional `mqtt_udp`)* | **Passive UDP `DMDF` (`:4210`)** |
+| **Phase 2 Panoramas + Video** | **Paced HTTP TCP `DMDS` (`:8890`, `?purge=true&paced=1`)** *(optional `mqtt_udp`)* | **Paced HTTP TCP `DMDS` (`:8890`, `?purge=true&paced=1`)** *(optional `mqtt_udp`)* | **Passive UDP `DMDF` (`:4210`)** |
 | **SRAM Footprint (`128x32`)** | `8 KB` frame + `2 KB` (`32x32`) / `6 KB` (`48x64`) poster | `8 KB` frame + `2–6 KB` poster | **`8 KB` single (`16 KB` ping-pong) — `0 B` poster/JSON** |
 | **`ESP32_STD` (No PSRAM)** | Qualified (`128x32` at **8-bit HUB75**, `64x64`, `128x64`) | Qualified (`128x32` up to `128x64`) | **Qualified (`128x32` up to `256x64` single-buffer)** |
 | **Core 0 CPU Load** | Low (Scoped MQTT + Base64 poster + `lwip_recv` into `frame565`) | Low (Scoped MQTT + Base64 poster + `lwip_recv` into `frame565`) | **Minimal (pure non-blocking UDP `memcpy`)** |
@@ -77,7 +77,7 @@ To guarantee rock-solid **60 FPS** (`16.67 ms` frame cadence), ESP32 integration
 
 - **Core 0 (`PRO_CPU` — Network & Protocol Worker)**:
   - Runs the Espressif Wi-Fi / LwIP TCP/IP stack and mDNS resolver (`dmdmediashowcase.local` on `224.0.0.251:5353`).
-  - **Models 1 & 2A (`MQTT+TCP` Default)**: Executes a short **Scoped MQTT `:1883` session** (`config` or `hello` $\to$ retained `ready` $\to$ `start_card` $\to$ immediate TCP socket close so `0` sockets remain open during Card scroll), then opens a zero-heap raw `lwip_socket` (`HTTP/1.0`, `TCP_NODELAY`, `250 ms` `SO_RCVTIMEO`) to `:8890` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`), reading the **16-byte Little-Endian `<4sBBHHHHH` `DMDS` header** followed by server-clocked (`X-DMD-Paced: 1`) contiguous RGB565LE frames straight into `frame565`.
+  - **Models 1 & 2A (`MQTT+TCP` Default)**: Executes a short **Scoped MQTT `:1883` session** (`config` or `hello` $\to$ retained `ready` $\to$ `start_card` $\to$ immediate TCP socket close so `0` sockets remain open during Card scroll), then opens a zero-heap raw `lwip_socket` (`HTTP/1.1`, `Connection: close`, `TCP_NODELAY`, `250 ms` `SO_RCVTIMEO`) to `:8890` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`), reading the **16-byte Little-Endian `<4sBBHHHHH` `DMDS` header** followed by server-clocked (`X-DMD-Paced: 1`, unchunked `Content-Length`) contiguous RGB565LE frames straight into `frame565`.
   - **Model 2B (`UDP-PASSIVE :4210`)**: Runs periodic HTTP `POST /api/v1/clients/hello` heartbeats and reassembles non-blocking **UDP `DMDF` datagrams** (`10-byte` Little-Endian `<4sHBBH` header + `<= 1408 B` RGB565LE slice = `<= 1418 B` UDP payload, zero IP fragmentation under standard `1500 B` Wi-Fi MTU).
 - **Core 1 (`APP_CPU` — Real-Time 60 FPS HUB75 Render Loop)**:
   - Exclusively drives `IDrawingSurface` / HUB75 DMA presentation at 60 FPS.
@@ -173,8 +173,8 @@ sequenceDiagram
 
     Note over C1,UDP: "4. PHASE 2 — PACED HTTP TCP DMDS STREAM (DEFAULT) OR PASSIVE UDP DMDF"
     alt "Primary MQTT+TCP Mode (Models 1 & 2A — Default)"
-        C0->>SRV: "Raw LwIP HTTP/1.0 GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1&drop_late=1"
-        SRV-->>C0: "200 OK (X-DMD-Paced: 1, 16-Byte DMDS Header + Frame 0)"
+        C0->>SRV: "Raw LwIP HTTP/1.1 GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1"
+        SRV-->>C0: "200 OK (Content-Length + X-DMD-Paced: 1, 16-Byte DMDS Header + Frame 0)"
         loop "15-25 FPS Monotonic Server-Clocked Frames (Zero TCP_WND Stall)"
             SRV-->>C0: "Contiguous RGB565LE Frame (W * H * 2 B) -> lwip_recv into frame565"
             C0->>C1: "Tear-free Even/Odd frameSeq + consumedFrameSeq handoff"
@@ -210,7 +210,7 @@ stateDiagram-v2
     WarmingWait --> Phase1Card: "ready == true / command: play_card"
     WarmingWait --> Phase2Stream: "UDP DMDF stream starts (Model 2B)"
 
-    Phase1Card --> Phase2Stream: "Synopsis scroll done -> GET .rgb565.stream?purge=true&paced=1&drop_late=1"
+    Phase1Card --> Phase2Stream: "Synopsis scroll done -> GET .rgb565.stream?purge=true&paced=1"
     Phase1Card --> Phase1Card: "command: pause / resume"
     Phase1Card --> WarmingWait: "command: skip"
 
@@ -237,7 +237,7 @@ stateDiagram-v2
    - As soon as item `N` (`pkg_<domain>_<12hex>`) is claimed via `start_card`, Core 0 **immediately disconnects and closes the MQTT TCP socket**, leaving **`0` open sockets** during the `5–12 s` 60 FPS local synopsis scroll so maximum internal SRAM remains available for concurrent HTTP/WebUI traffic.
    - On the server, `start_card` atomically records item `N` in `./data/seen_history.json` (unless `mark_seen: false` was requested via `FrontendSync`), flips the retained `ready` topic to `{"ready": false}`, and immediately spawns **background preparation of unseen slot `N+1`**.
 4. **`PHASE 2 — PACED HTTP TCP DMDS STREAM (DEFAULT) OR PASSIVE UDP DMDF`**:
-   - **Models 1 & 2A (`MQTT+TCP` Default)**: Core 0 opens a raw `lwip_socket` (`HTTP/1.0`, `Connection: close`, `TCP_NODELAY`) to `:8890` requesting `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`. Sending `HTTP/1.0` guarantees raw unchunked binary framing even when `drop_late=1` omits `Content-Length`. Server-side monotonic pacing (`X-DMD-Paced: 1`) clocks each frame at `fps` while `lwip_select` enforces a **`3,500 ms` TCP inactivity watchdog** (`25 ms` slices so `deactivate()` exits in `< 250 ms`). When the TCP stream reaches `EOF` (or the client closes the socket), the server's `finally` block immediately purges item `N` from disk.
+   - **Models 1 & 2A (`MQTT+TCP` Default)**: Core 0 opens a raw `lwip_socket` (`HTTP/1.1`, `Connection: close`, `TCP_NODELAY`) to `:8890` requesting `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`. Omitting `drop_late=1` preserves `Content-Length` so Uvicorn streams **100% raw unchunked binary `DMDS`** (`0` HTTP chunk headers), while `ArcadeMatrix` also embeds a zero-heap `HttpChunkedDecoder` fallback. Server-side monotonic pacing (`X-DMD-Paced: 1`) clocks each frame at `fps` while `lwip_select` enforces a **`3,500 ms` TCP inactivity watchdog** (`25 ms` slices so `deactivate()` exits in `< 250 ms`). When the TCP stream reaches `EOF` (or the client closes the socket), the server's `finally` block immediately purges item `N` from disk.
    - **Model 2B (`UDP-PASSIVE :4210`, `supports_local_card: false`)**: `FfmpegUdpClockStreamer` clocks `DMDF` UDP slices (`<= 1408 B`) directly to `:4210`, guarded by a local **`2,500 ms` UDP inactivity watchdog** (`millis() - lastUdpPacketMs > 2500`) and a hard duration ceiling.
 5. **`DEACTIVATION, WEBUI_SYNC PREEMPTION & REBOOT RECOVERY`**:
    - **Clean Quiescent Deactivation (`< 250 ms`)**: Before freeing `m_frame565`, the engine sets `m_wantActive = false`; `lwip_select` / `SO_RCVTIMEO` wakes within `25–250 ms`, closes the TCP `DMDS` socket (triggering immediate server-side package cleanup), joins the Core 0 worker (`stopWorkerTaskBounded()` — zero dynamic allocations), and safely frees SRAM buffers (including during `WEBUI_SYNC` SPA loading on `ESP32_STD`).
@@ -249,10 +249,10 @@ stateDiagram-v2
 
 ### A. Models 1 & 2A — Production Zero-Heap Scoped MQTT + Raw LwIP TCP `DMDS` Streamer (`MQTT+TCP` Default)
 
-This C++ implementation demonstrates the exact zero-heap **`Scoped MQTT (:1883) + Raw LwIP HTTP/1.0 TCP DMDS (:8890)`** pattern used in production on [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) for **Model 1** (`config_source: "client"`) and **Model 2A** (`config_source: "server"`, `supports_local_card: true`):
+This C++ implementation demonstrates the exact zero-heap **`Scoped MQTT (:1883) + Raw LwIP HTTP/1.1 TCP DMDS (:8890)`** pattern used in production on [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) for **Model 1** (`config_source: "client"`) and **Model 2A** (`config_source: "server"`, `supports_local_card: true`):
 
 1. **Scoped Pre-Stream MQTT Claim (`0` Sockets Open During Card Scroll)**: Core 0 connects to MQTT `:1883`, publishes retained `config` (Model 1) or `hello` (`supports_local_card: true`, Model 2A), parses the retained `ready` card (`pkg_<domain>_<12hex>`), publishes `{"action":"start_card","item_id":"pkg_..."}`, and **immediately disconnects & closes the MQTT TCP socket**.
-2. **Zero-Heap Raw LwIP `HTTP/1.0` TCP `DMDS` Stream (`?purge=true&paced=1&drop_late=1`)**: Once the local 60 FPS Info Card finishes scrolling, Core 0 opens a raw `lwip_socket` (`TCP_NODELAY`, `250 ms` `SO_RCVTIMEO`) and reads server-clocked (`X-DMD-Paced: 1`) RGB565LE frames straight into `g_frame565` using tear-free **Even/Odd `g_frameSeq` + `g_consumedFrameSeq`** synchronization with Core 1 (`canvas_single`).
+2. **Zero-Heap Raw LwIP TCP `DMDS` Stream (`?purge=true&paced=1`)**: Once the local 60 FPS Info Card finishes scrolling, Core 0 opens a raw `lwip_socket` (`TCP_NODELAY`, `250 ms` `SO_RCVTIMEO`) and reads server-clocked (`X-DMD-Paced: 1`, unchunked `Content-Length`) RGB565LE frames straight into `g_frame565` using tear-free **Even/Odd `g_frameSeq` + `g_consumedFrameSeq`** synchronization with Core 1 (`canvas_single`).
 
 ```cpp
 #include <Arduino.h>
@@ -360,7 +360,7 @@ bool claimReadyCardScopedMqtt(const char* host, const char* dmdId, const char* d
 }
 
 // -----------------------------------------------------------------------------------------
-// STEP 2 (CORE 0): ZERO-HEAP RAW LWIP HTTP/1.0 TCP `DMDS` STREAMER (?paced=1&drop_late=1)
+// STEP 2 (CORE 0): ZERO-HEAP RAW LWIP HTTP/1.1 TCP `DMDS` STREAMER (?purge=true&paced=1)
 // -----------------------------------------------------------------------------------------
 static int recvExactBounded(int sock, uint8_t* dst, size_t n, uint32_t idleTimeoutMs) {
     size_t got = 0;
@@ -402,10 +402,10 @@ bool streamUnifiedRgb565Http(const char* host, uint16_t port, const char* domain
         return false;
     }
 
-    // Request HTTP/1.0 so Uvicorn streams raw unchunked binary even when drop_late=1 omits Content-Length
+    // Omit drop_late=1 so Content-Length is preserved and Uvicorn streams 100% raw unchunked binary DMDS
     const int reqLen = snprintf(
         reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
-        "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&paced=1&drop_late=1 HTTP/1.0\r\n"
+        "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&paced=1 HTTP/1.1\r\n"
         "Host: %s:%u\r\nConnection: close\r\n\r\n",
         domain, itemId, host, port);
     if (lwip_send(sock, g_ioScratch, static_cast<size_t>(reqLen), 0) != reqLen) {
@@ -506,7 +506,7 @@ bool streamUnifiedRgb565Http(const char* host, uint16_t port, const char* domain
                           ? recvExactBounded(sock, dst + copied, FRAME_BYTES - copied, 3500U)
                           : 1;
         g_frameSeq.fetch_add(1U, std::memory_order_release); // EVEN (coherent frame ready!)
-        if (r <= 0) break; // Clean EOF when drop_late=1 skipped frames on server
+        if (r <= 0) break; // Clean server EOF or socket timeout
 
         // With X-DMD-Paced: 1, server clocks frames monotonically -> zero client sleep needed!
         if (!serverPaced) {

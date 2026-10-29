@@ -132,7 +132,7 @@ En lugar de pares estáticos `[Primaria, Respaldo]` codificados de forma rígida
   - **Por qué `MQTT + TCP` (`DMDS`) es el transporte por defecto**:
     1. **Cero Pérdidas NAT UDP en VMs de Docker Desktop / Rancher Desktop**: El TCP entrante en `:8890` atraviesa de forma nativa los puentes de contenedores y el NAT de la VM anfitriona sin bloqueos de retorno UDP ni cortafuegos.
     2. **Cero Sobrecarga de Reensamblado MTU**: Los fotogramas RGB565LE contiguos llegan en orden sin máscaras de bits por paquete.
-    3. **Cero Heap en el Cliente y Cero Bloqueos `TCP_WND`**: Los clientes embebidos abren un `lwip_socket` puro (`HTTP/1.0`, `Connection: close`) leyendo directamente en `m_frame565`, mientras `_paced_dmds_generator()` en el servidor (`X-DMD-Paced: 1`) marca el ritmo monotónicamente a `fps` y `drop_late=1` (`X-DMD-Drop-Late: 1`) salta fotogramas atrasados mediante `seek` de reloj real para que `TCP_WND` de LwIP nunca se detenga en `TCP ZeroWindow`.
+    3. **Cero Heap en el Cliente y Cero Bloqueos `TCP_WND`**: Los clientes embebidos abren un `lwip_socket` puro (`HTTP/1.1`, `Connection: close`, omitiendo `drop_late=1` para preservar `Content-Length` y recibir `DMDS` sin `chunked`) leyendo directamente en `m_frame565`, mientras `_paced_dmds_generator()` en el servidor (`X-DMD-Paced: 1`) marca el ritmo monotónicamente a `fps` (con opción `drop_late=1` / `X-DMD-Drop-Late: 1` para clientes HTTP/1.1 con decodificación `chunked`) para que `TCP_WND` de LwIP nunca se detenga en `TCP ZeroWindow`.
     4. **Identificadores `item_id` Compactos sin Colisión**: Cada paquete preparado utiliza `pkg_<domain>_<12hex>` (`<= 24` caracteres), cabiendo en búferes fijos de pila sin asignación dinámica.
 - **`HTTP`**: Sondeo HTTP Consume-Once sin estado (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` + `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
 - **`UDP-PASSIVE` (Modelo 2B — `supports_local_card: false`)**: Receptor pasivo ultramínimo (~180 líneas) de búfer de fotogramas UDP `:4210` `DMDF` donde el servidor compone incluso las Fichas Info de Fase 1 dentro del flujo RGB565 (`render_card_in_stream=True`).
@@ -163,8 +163,8 @@ sequenceDiagram
     ORCH->>PREP: Pipelining N+1 en segundo plano: ¡prepara inmediatamente Standby N+1!
 
     alt Modo Principal MQTT+TCP (Modelos 1 y 2A — Por defecto)
-        Note over DMD: Termina la sinopsis -> Flujo TCP HTTP/1.0 DMDS puro en LwIP
-        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1&drop_late=1
+        Note over DMD: Termina la sinopsis -> Flujo TCP HTTP/1.1 DMDS puro en LwIP
+        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1
         HTTP-->>DMD: 200 OK (X-DMD-Paced: 1, Cabecera DMDS 16 bytes + Fotograma 0)
         loop Fotogramas con Marcapasos del Servidor (15-25 FPS)
             HTTP-->>DMD: Fotograma RGB565LE contiguo (width * height * 2 bytes) -> m_frame565

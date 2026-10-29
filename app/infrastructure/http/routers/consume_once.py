@@ -162,7 +162,7 @@ async def stream_consume_once_sequence(
     ),
     drop_late: bool = Query(
         default=False,
-        description="Skip stale frames via wall-clock seek on raw HTTP/1.0 streams instead of bursting late frames (omits Content-Length)",
+        description="Skip stale frames via wall-clock seek for HTTP/1.1 chunk-decoding clients (omits Content-Length and enables Transfer-Encoding: chunked; omit drop_late on raw unchunked lwip_socket readers)",
     ),
 ) -> Response:
     """

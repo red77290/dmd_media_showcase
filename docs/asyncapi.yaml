@@ -21,13 +21,14 @@ info:
     2. **Primary Data Plane (`MQTT+TCP` Default — Models 1 & 2A, `supports_local_card: true`)**:
        - **Scoped MQTT + Real-Time Paced HTTP TCP `DMDS` Streaming (`:8890`)** (`transport: "mqtt_tcp"`, default):
          the DMD connects to MQTT (`:1883`), publishes `config` or `hello`, claims the retained `ready` slot via
-         `{"action": "start_card", "item_id": "..."}`, optionally disconnects MQTT on single-engine ESP32 to free
-         LwIP socket buffers (`~4 KB`), and streams Phase 2 pixels over raw `HTTP/1.0` TCP (`lwip_socket`) via
-         `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (documented in `/openapi.json`).
-       - The server responds with `X-DMD-Paced: 1` and `X-DMD-Drop-Late: 1` (omitting `Content-Length`), emits the
-         **16-byte Little-Endian `<4sBBHHHHH` `DMDS` header**, paces every RGB565LE frame at `1 / fps` on a monotonic
-         wall-clock so ESP32 `TCP_WND` never stalls and zero client-side buffering heap is needed, skips intermediate
-         frames cleanly if Wi-Fi lags (`drop_late=1`), and purges the `.rgb565.stream` cache file on EOF (`purge=true`).
+         `{"action": "start_card", "item_id": "..."}`, disconnects MQTT on ESP32 to free
+         LwIP socket buffers (`~4 KB`), and streams Phase 2 pixels over raw `HTTP/1.1` TCP (`lwip_socket`) via
+         `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1` (documented in `/openapi.json`).
+       - Omitting `drop_late=1` preserves `Content-Length` so Uvicorn streams **100% raw unchunked binary `DMDS`** with
+         `X-DMD-Paced: 1`, emits the **16-byte Little-Endian `<4sBBHHHHH` `DMDS` header**, paces every RGB565LE frame at
+         `1 / fps` on a monotonic wall-clock (re-anchoring on jitter so ESP32 `TCP_WND` never stalls and zero client-side
+         buffering heap is needed; optional `drop_late=1` omits `Content-Length` / enables `Transfer-Encoding: chunked`
+         for full HTTP/1.1 chunk-decoding clients), and purges the `.rgb565.stream` cache file on EOF (`purge=true`).
        - Works identically across Docker Desktop / Rancher Desktop VM NAT and bare-metal Linux with zero UDP packet loss
          and zero MTU chunk reassembly overhead.
     3. **Passive Mode 2B (`UDP-PASSIVE :4210`) & Optional `MQTT+UDP` Data Plane (`udp://{client_ip}:{udp_port}`)**:
