@@ -2342,3 +2342,99 @@ async def test_compact_item_id_and_mqtt_tcp_stream_consume_once(tmp_path: Path, 
     finally:
         for task in list(orch._prep_tasks.values()):
             task.cancel()
+
+
+def test_dmdz1_lossless_codec_roundtrip_scroll_and_compression():
+    """
+    `dmdz1` must decode bit-exactly (keyframe, vertical scroll, SKIP/LONG SKIP, RUN, INDEX, DIFF, LIT)
+    and shrink 1 px/frame panoramas well below the ESP32 5.7 KB TCP window.
+    """
+    from app.infrastructure.rendering.dmdz_codec import (
+        DMDZ_MAGIC,
+        FRAME_KEY,
+        FRAME_SCROLL,
+        decode_dmdz_bytes,
+        encode_dmdz_bytes,
+    )
+
+    rng = np.random.default_rng(1234)
+    tall = rng.integers(0, 0xFFFF, size=(160, 128), dtype=np.uint16)
+    tall[40:80, :] = 0x07E0  # flat band (RUN / INDEX)
+    tall[80:120, :] = (np.arange(128, dtype=np.uint16) // 4) << 11  # gentle gradient (DIFF)
+    pano = [tall[k : k + 32] for k in range(0, 96)]  # 1 px/frame vertical panorama
+    static = [pano[-1].copy() for _ in range(5)]  # identical frames (LONG SKIP)
+    noisy = [rng.integers(0, 0xFFFF, size=(32, 128), dtype=np.uint16) for _ in range(3)]  # LIT
+    frames = np.stack(pano + static + noisy)
+
+    raw = struct.pack("<4sBBHHHHH", b"DMDS", 1, 25, 128, 32, frames.shape[0], 40, 0) + frames.astype("<u2").tobytes()
+    encoded = encode_dmdz_bytes(raw)
+    assert encoded[:4] == DMDZ_MAGIC
+    decoded = decode_dmdz_bytes(encoded)
+    assert decoded.shape == frames.shape
+    assert np.array_equal(decoded, frames)
+
+    off = 16
+    types = []
+    sizes = []
+    for _ in range(frames.shape[0]):
+        (length,) = struct.unpack_from("<H", encoded, off)
+        types.append(encoded[off + 2])
+        sizes.append(2 + length)
+        off += 2 + length
+    assert off == len(encoded)
+    assert types[0] == FRAME_KEY
+    assert types.count(FRAME_SCROLL) >= 90
+    # 1 px/frame panorama frames carry ~1 new row (256 B) instead of 8 KB: many fit in a 5.7 KB window
+    assert max(sizes[1:96]) < 600
+    # Whole stream (incl. 3 incompressible noise frames) must still be far smaller than raw
+    assert len(encoded) * 4 < len(raw)
+
+
+@pytest.mark.asyncio
+async def test_paced_stream_serves_dmdz1_when_requested_and_raw_otherwise(tmp_path: Path):
+    """`?codec=dmdz1&paced=1` serves the lossless sibling (`X-DMD-Codec: dmdz1`); legacy clients keep raw `DMDS`."""
+    from app.infrastructure.rendering.dmdz_codec import decode_dmdz_bytes
+
+    item_id = "dmdz_codec_item_42"
+    item_dir = tmp_path / item_id
+    item_dir.mkdir(parents=True, exist_ok=True)
+    stream_path = item_dir / f"{item_id}.rgb565.stream"
+    frames_rgb = [np.full((32, 128, 3), fill_value=v, dtype=np.uint8) for v in (10, 90, 90, 200)]
+    write_rgb565_stream(frames_rgb, str(stream_path), fps=25)
+    raw_bytes = stream_path.read_bytes()
+
+    def _make_pkg() -> PreparedShowcasePackage:
+        cand = MediaCandidate(
+            id="ss_42", domain="games", source_id="screenscraper", title="Pulseman", year="1994",
+            badge="MD", badge_color="#00E5FF", subtitle="MD", rating="8.1", synopsis="Game Freak.",
+        )
+        card = ShowcaseCard(
+            item_id=item_id, domain="games", title="Pulseman", year="1994", badge="MD",
+            badge_color="#00E5FF", subtitle="MD", rating="8.1", synopsis="Game Freak.", lang="en",
+            source_used="screenscraper", poster_width=32, poster_height=32, poster_rgb565_b64="",
+            has_video=True, stream_frames=4, stream_fps=25, stream_duration_s=0.16,
+        )
+        return PreparedShowcasePackage(
+            item_id=item_id, dmd_id="esp32_dmdz_dmd", domain="games", candidate=cand,
+            geometry=PanelGeometry(width=128, height=32), card=card, item_dir=item_dir,
+            unified_stream_path=stream_path, consumed=True,
+        )
+
+    consume_once_orchestrator.active_packages[item_id] = _make_pkg()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=false&paced=1&codec=dmdz1")
+        assert resp.status_code == 200
+        assert resp.headers.get("X-DMD-Codec") == "dmdz1"
+        assert resp.content[:4] == b"DMDZ"
+        assert int(resp.headers["Content-Length"]) == len(resp.content)
+        decoded = decode_dmdz_bytes(resp.content)
+        expected = np.frombuffer(raw_bytes[16:], dtype="<u2").reshape(decoded.shape)
+        assert np.array_equal(decoded, expected)
+
+        legacy = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true&paced=1")
+        assert legacy.status_code == 200
+        assert legacy.headers.get("X-DMD-Codec") is None
+        assert legacy.content == raw_bytes
+
+    assert item_id not in consume_once_orchestrator.active_packages
+    assert not item_dir.exists() or not stream_path.exists()

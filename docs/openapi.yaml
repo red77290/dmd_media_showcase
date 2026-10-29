@@ -3,7 +3,7 @@
   "info": {
     "title": "DMD Media Showcase Server API",
     "summary": "DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
-    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + monotonic UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks \u2014 full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + monotonic UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
     "version": "1.1.4"
   },
   "paths": {
@@ -1640,6 +1640,18 @@
               "title": "Drop Late"
             },
             "description": "Skip stale frames via wall-clock seek for HTTP/1.1 chunk-decoding clients (omits Content-Length and enables Transfer-Encoding: chunked; omit drop_late on raw unchunked lwip_socket readers)"
+          },
+          {
+            "name": "codec",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Optional lossless frame codec accepted by the client (`dmdz1`). Honoured only with `paced=1` and without `drop_late`; otherwise the raw `DMDS` stream is served.",
+              "default": "",
+              "title": "Codec"
+            },
+            "description": "Optional lossless frame codec accepted by the client (`dmdz1`). Honoured only with `paced=1` and without `drop_late`; otherwise the raw `DMDS` stream is served."
           }
         ],
         "responses": {
@@ -4978,7 +4990,7 @@
           "subtitle": {
             "type": "string",
             "title": "Subtitle",
-            "default": "Capcom \u2022 Arcade Fighting"
+            "default": "Capcom • Arcade Fighting"
           },
           "rating": {
             "type": "string",
@@ -5171,7 +5183,7 @@
           "subtitle": {
             "type": "string",
             "title": "Subtitle",
-            "default": "Capcom \u2022 Arcade Fighting"
+            "default": "Capcom • Arcade Fighting"
           },
           "rating": {
             "type": "string",

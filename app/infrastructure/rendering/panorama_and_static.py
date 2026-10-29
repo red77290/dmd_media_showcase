@@ -270,7 +270,7 @@ def build_static_assets_sync(
     processor = DmdMediaProcessor()
     color_boost_bool = not (
         color_boost is False
-        or str(color_boost).strip().lower() in ("false", "0", "no", "off", "none")
+        or str(color_boost).strip().lower() in ("false", "0", "no", "off", "none", "cinema")
     )
 
     poster_png_name = f"poster_{poster_w}x{poster_h}.png"
@@ -344,6 +344,7 @@ def build_static_assets_sync(
     snapshot_stream_names: List[str] = []
 
     pan_dur = max(1.5, min(15.0, float(panorama_duration_s)))
+    pan_fps = max(8, min(60, int(fps)))
 
     if jacket_panorama:
         j_bytes = poster_bytes or download_fn(jacket_url or poster_url, timeout=4.0)
@@ -354,7 +355,7 @@ def build_static_assets_sync(
                 stem="pan_jacket",
                 width=width,
                 height=height,
-                fps=max(15, fps),
+                fps=pan_fps,
                 duration_s=pan_dur,
                 color_boost=color_boost_bool,
             )
@@ -373,7 +374,7 @@ def build_static_assets_sync(
                 stem="pan_marquee",
                 width=width,
                 height=height,
-                fps=max(15, fps),
+                fps=pan_fps,
                 duration_s=pan_dur,
                 color_boost=color_boost_bool,
             )
@@ -405,7 +406,7 @@ def build_static_assets_sync(
                 stem=f"pan_snap_{idx}",
                 width=width,
                 height=height,
-                fps=max(15, fps),
+                fps=pan_fps,
                 duration_s=pan_dur,
                 color_boost=color_boost_bool,
             )

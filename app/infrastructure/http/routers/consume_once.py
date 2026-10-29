@@ -5,8 +5,10 @@ Stateless Consume-Once HTTP Polling & Streaming Routes (`app/infrastructure/http
 from __future__ import annotations
 
 import asyncio
+import logging
 import struct
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
@@ -14,9 +16,15 @@ from fastapi.responses import StreamingResponse
 
 from app.domain.entities import PanelGeometry
 from app.infrastructure.http.dependencies import get_orchestrator
+from app.infrastructure.rendering.dmdz_codec import DMDZ_CODEC_ID, DMDZ_MAGIC, ensure_dmdz_sibling
 from app.models import DomainType, SessionRegisterRequest
 
 router = APIRouter()
+logger = logging.getLogger("dmd_showcase.http.stream")
+
+# DMDZ frames are small enough for several to fit in an embedded client's ~5.7 KB TCP window:
+# send up to this far ahead of the real-time clock so the window doubles as a jitter buffer.
+DMDZ_SEND_LEAD_S = 0.30
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -164,6 +172,10 @@ async def stream_consume_once_sequence(
         default=False,
         description="Skip stale frames via wall-clock seek for HTTP/1.1 chunk-decoding clients (omits Content-Length and enables Transfer-Encoding: chunked; omit drop_late on raw unchunked lwip_socket readers)",
     ),
+    codec: str = Query(
+        default="",
+        description="Optional lossless frame codec accepted by the client (`dmdz1`). Honoured only with `paced=1` and without `drop_late`; otherwise the raw `DMDS` stream is served.",
+    ),
 ) -> Response:
     """
     Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
@@ -203,6 +215,10 @@ async def stream_consume_once_sequence(
 
     stream_path = pkg.unified_stream_path
     file_size = stream_path.stat().st_size
+    if paced and not drop_late and codec.strip().lower() == DMDZ_CODEC_ID and file_size > 16:
+        dmdz_path = await asyncio.to_thread(ensure_dmdz_sibling, stream_path)
+        if dmdz_path is not None:
+            return _paced_dmdz_response(co, pkg, domain, item_id, dmdz_path, purge)
     if paced and file_size > 16:
         with stream_path.open("rb") as probe_fh:
             hdr = probe_fh.read(16)
@@ -303,5 +319,101 @@ async def stream_consume_once_sequence(
             "Content-Length": str(file_size),
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "X-DMD-Consume-Once": "1",
+        },
+    )
+
+
+def _paced_dmdz_response(
+    co: Any,
+    pkg: Any,
+    domain: str,
+    item_id: str,
+    dmdz_path: Path,
+    purge: bool,
+) -> Response:
+    """
+    Serve the lossless `DMDZ` sibling of a unified stream with lead pacing.
+
+    Frames are sent up to `DMDZ_SEND_LEAD_S` ahead of the real-time clock: compressed frames are small
+    enough for several to sit in an embedded client's TCP window, which presents them on its own clock.
+    TCP backpressure (window full) re-anchors the server clock instead of triggering catch-up bursts.
+    """
+    file_size = dmdz_path.stat().st_size
+    with dmdz_path.open("rb") as probe_fh:
+        hdr = probe_fh.read(16)
+    _, _ver, hdr_fps, _w, _h, total_frames, _dur, _kf = struct.unpack("<4sBBHHHHH", hdr)
+    if hdr[:4] != DMDZ_MAGIC:
+        raise HTTPException(status_code=500, detail="Corrupted DMDZ stream sibling.")
+    eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
+    claim_key = (pkg.dmd_id, domain)
+
+    async def _generator() -> AsyncIterator[bytes]:
+        fh = dmdz_path.open("rb")
+        co.state.active_tcp_streams += 1
+        sent = 0
+        reanchors = 0
+        max_block_ms = 0.0
+        started = time.perf_counter()
+        try:
+            now_wall = time.time()
+            co.state.client_last_seen[claim_key] = now_wall
+            co.state.last_claimed_until[claim_key] = now_wall + 15.0
+            header = fh.read(16)
+            period = 1.0 / float(eff_fps)
+            t0 = time.perf_counter()
+            pending = header
+            for frame_idx in range(int(total_frames)):
+                size_raw = fh.read(2)
+                if len(size_raw) < 2:
+                    break
+                (length,) = struct.unpack("<H", size_raw)
+                payload = fh.read(length)
+                if len(payload) < length:
+                    break
+                if frame_idx > 0:
+                    target_t = t0 + (frame_idx * period) - DMDZ_SEND_LEAD_S
+                    delay = target_t - time.perf_counter()
+                    if delay > 0.001:
+                        await asyncio.sleep(delay)
+                    elif delay < -(period + DMDZ_SEND_LEAD_S):
+                        t0 = time.perf_counter() - (frame_idx * period) + DMDZ_SEND_LEAD_S
+                        reanchors += 1
+                if (frame_idx % 15) == 0:
+                    ts_now = time.time()
+                    co.state.client_last_seen[claim_key] = ts_now
+                    co.state.last_claimed_until[claim_key] = ts_now + 15.0
+                block_t = time.perf_counter()
+                yield pending + size_raw + payload
+                max_block_ms = max(max_block_ms, (time.perf_counter() - block_t) * 1000.0)
+                pending = b""
+                sent += 1
+        finally:
+            co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
+            fh.close()
+            co.state.last_claimed_until.pop(claim_key, None)
+            logger.info(
+                "[STREAM] dmdz1 '%s' -> %s: frames=%d/%d dur=%.1fs reanchors=%d max_send_block=%.0fms size=%dB",
+                item_id,
+                pkg.dmd_id,
+                sent,
+                int(total_frames),
+                time.perf_counter() - started,
+                reanchors,
+                max_block_ms,
+                file_size,
+            )
+            if purge:
+                await co.purge_consumed_package(item_id)
+
+    return StreamingResponse(
+        _generator(),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DMD-Consume-Once": "1",
+            "X-DMD-Paced": "1",
+            "X-DMD-Codec": DMDZ_CODEC_ID,
+            "X-Accel-Buffering": "no",
+            "Content-Length": str(file_size),
         },
     )

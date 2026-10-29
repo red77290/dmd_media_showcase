@@ -22,6 +22,7 @@ from dmd_gif_converter import read_rgb565_stream_header
 from app.config import settings
 from app.domain.entities import FilterCriteria, MediaCandidate, PanelGeometry
 from app.domain.ports.media_transcoder import IMediaTranscoderPort
+from app.infrastructure.rendering.dmdz_codec import ensure_dmdz_sibling
 from app.scheduler.asset_builder import (
     build_card_stream_sync,
     build_static_assets_sync,
@@ -46,7 +47,7 @@ def merge_rgb565_streams_with_chapters(
     payload_chunks: List[bytes] = []
     chapters: List[Dict[str, object]] = []
     total_frames = 0
-    detected_fps: Optional[int] = None
+    target_fps = max(1, min(60, int(fps))) if int(fps or 0) > 0 else 0
 
     for ch_id, ch_label, sp in labeled_streams:
         if not sp or not sp.exists():
@@ -57,25 +58,39 @@ def merge_rgb565_streams_with_chapters(
         hdr = read_rgb565_stream_header(raw[:16])
         if hdr["width"] != width or hdr["height"] != height:
             continue
-        if int(hdr.get("fps") or 0) > 0:
-            detected_fps = int(hdr["fps"])
+        hdr_fps = int(hdr.get("fps") or 0)
+        if target_fps <= 0:
+            target_fps = max(1, min(60, hdr_fps if hdr_fps > 0 else 15))
+        seg_fps = max(1, min(60, hdr_fps if hdr_fps > 0 else target_fps))
         body = raw[16:]
         n_frames = len(body) // frame_bytes
         if n_frames > 0:
-            eff_seg_fps = max(1, min(60, int(detected_fps or fps)))
+            if abs(seg_fps - target_fps) <= 1:
+                seg_chunk = body[: n_frames * frame_bytes]
+                out_frames = n_frames
+            else:
+                out_frames = max(1, int(round(n_frames * float(target_fps) / float(seg_fps))))
+                mv = memoryview(body)
+                resampled = bytearray(out_frames * frame_bytes)
+                for out_i in range(out_frames):
+                    src_i = min(n_frames - 1, (out_i * seg_fps) // target_fps)
+                    src_off = src_i * frame_bytes
+                    dst_off = out_i * frame_bytes
+                    resampled[dst_off : dst_off + frame_bytes] = mv[src_off : src_off + frame_bytes]
+                seg_chunk = bytes(resampled)
             chapters.append(
                 {
                     "id": ch_id,
                     "label": ch_label,
                     "start_frame": total_frames,
-                    "frames": n_frames,
-                    "duration_s": round(n_frames / float(eff_seg_fps), 2),
+                    "frames": out_frames,
+                    "duration_s": round(out_frames / float(target_fps), 2),
                 }
             )
-            payload_chunks.append(body[: n_frames * frame_bytes])
-            total_frames += n_frames
+            payload_chunks.append(seg_chunk)
+            total_frames += out_frames
 
-    eff_fps = max(1, min(60, int(detected_fps or fps)))
+    eff_fps = max(1, min(60, target_fps if target_fps > 0 else max(1, int(fps or 15))))
     frame_dur_ms = max(16, int(round(1000.0 / eff_fps)))
     header = struct.pack(
         "<4sBBHHHHH",
@@ -284,6 +299,10 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
                 parsed_hdr = read_rgb565_stream_header(raw_hdr)
                 if int(parsed_hdr.get("fps") or 0) > 0:
                     actual_fps = int(parsed_hdr["fps"])
+            # Pre-encode the lossless DMDZ sibling (~1 ms/frame) so constrained clients never wait for it.
+            dmdz_path = await loop.run_in_executor(None, ensure_dmdz_sibling, unified_stream_path)
+            if dmdz_path is None:
+                logger.warning("[CONVERTER] DMDZ encoding skipped for '%s'", unified_stream_path.name)
 
         files_map["poster_rgb565_b64"] = poster_b64
         files_map["card_stream_rgb565"] = card_stream_name

@@ -243,6 +243,29 @@ def test_merge_rgb565_streams_with_chapters_metadata(tmp_path: Path):
     assert chapters[0]["id"] == "card" and chapters[0]["start_frame"] == 0 and chapters[0]["frames"] == 10
     assert chapters[1]["id"] == "video" and chapters[1]["start_frame"] == 10 and chapters[1]["frames"] == 20
 
+    # Mixed-FPS regression guard: a 20 FPS 1 px/frame panorama followed by a 10 FPS segment
+    # keeps the unified header anchored at 20 FPS and resamples the 10 FPS segment to 2x frames
+    # instead of slowing the earlier 20 FPS panorama down to 10 FPS.
+    pan_seg = tmp_path / "pan20.rgb565.stream"
+    vid_seg = tmp_path / "vid10.rgb565.stream"
+    out_mixed = tmp_path / "merged_mixed.rgb565.stream"
+    pan_seg.write_bytes(struct.pack(DMDS_HEADER_FMT, DMDS_MAGIC, 1, 20, w, h, 20, 50, 0) + b"\x1f\x00" * (20 * w * h))
+    vid_seg.write_bytes(struct.pack(DMDS_HEADER_FMT, DMDS_MAGIC, 1, 10, w, h, 10, 100, 0) + b"\xe0\x07" * (10 * w * h))
+
+    m_total, m_dur, m_chapters = merge_rgb565_streams_with_chapters(
+        [("jacket", "2. Jacket", pan_seg), ("video", "5. Video", vid_seg)],
+        out_mixed,
+        w,
+        h,
+        20,
+    )
+    _, _, hdr_out_fps, _, _, _, _, _ = struct.unpack(DMDS_HEADER_FMT, out_mixed.read_bytes()[:16])
+    assert hdr_out_fps == 20
+    assert m_total == 40
+    assert m_dur == 2.0
+    assert m_chapters[0]["frames"] == 20
+    assert m_chapters[1]["frames"] == 20
+
 
 @pytest.mark.asyncio
 async def test_studio_endpoints_zero_retranscode_queue_promotion_and_profile_persistence(
