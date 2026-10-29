@@ -241,11 +241,12 @@ async def stream_consume_once_sequence(
                             if due_frame > frame_idx:
                                 frame_idx = due_frame
                                 fh.seek(16 + frame_idx * frame_bytes)
-                        elif not drop_late and sleep_s < -(1.25 / float(eff_fps)):
-                            # Re-anchor monotonic clock + short yield so HTTP/1.1 clients
-                            # expecting full Content-Length bytes never receive a 0ms TCP burst.
-                            t0 = now_perf - (frame_idx / float(eff_fps))
-                            await asyncio.sleep(0.004)
+                        elif not drop_late and sleep_s <= 0.001:
+                            if sleep_s < -0.35:
+                                # Re-anchor monotonic clock only after a genuine TCP window / client stall (>350ms)
+                                # so transient OS/GIL scheduling jitter catches back up to exact target FPS.
+                                t0 = now_perf - (frame_idx / float(eff_fps))
+                            await asyncio.sleep(0.0015)
 
                         chunk = fh.read(frame_bytes)
                         if not chunk:

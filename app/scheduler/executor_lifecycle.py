@@ -207,6 +207,17 @@ class BoundedWorkerExecutorMixin(Generic[TJob]):
     def active_workers(self) -> int:
         return self._active_workers
 
+    def shared_executor(self) -> Optional[Executor]:
+        """Return the active process/thread pool executor when bound to the running event loop."""
+        if not self._running or self._executor is None or self._loop is None or self._loop.is_closed():
+            return None
+        try:
+            if asyncio.get_running_loop() is not self._loop:
+                return None
+        except RuntimeError:
+            return None
+        return self._executor
+
     @property
     def queue_depth(self) -> int:
         return self._queue.qsize()

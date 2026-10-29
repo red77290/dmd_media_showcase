@@ -56,12 +56,15 @@ def _is_ssl_verification_error(exc: BaseException) -> bool:
     return "CERTIFICATE_VERIFY_FAILED" in str(exc)
 
 
+_MAIN_PROCESS_PID = os.getpid()
+
+
 def apply_worker_nice(nice_inc: int = 10, ffmpeg_threads: int = 1) -> None:
-    """Lower OS scheduling priority and cap OpenMP/OpenCV thread pools inside transcoding workers."""
+    """Lower OS scheduling priority and cap OpenMP/OpenCV thread pools inside child transcoding workers."""
     install_ipv4_preference()
     eff_threads = max(1, min(8, int(ffmpeg_threads)))
     os.environ["OMP_NUM_THREADS"] = str(eff_threads)
-    if nice_inc > 0 and hasattr(os, "nice"):
+    if nice_inc > 0 and hasattr(os, "nice") and os.getpid() != _MAIN_PROCESS_PID:
         try:
             current = os.nice(0)
             if current < nice_inc:

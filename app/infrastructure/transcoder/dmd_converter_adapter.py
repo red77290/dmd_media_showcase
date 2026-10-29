@@ -131,6 +131,9 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         out_dir.mkdir(parents=True, exist_ok=True)
         poster_w, poster_h = geometry.resolved_poster_dims()
         loop = asyncio.get_running_loop()
+        from app.scheduler.worker_pool import batch_manager
+
+        exec_pool = batch_manager.shared_executor()
 
         eff_fps = max(6, min(int(settings.video_max_fps_limit), int(criteria.video_fps)))
         eff_max_dur = max(
@@ -140,7 +143,7 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
 
         eff_pan_dur = float(criteria.panorama_duration_s or settings.panorama_duration_s or 4.0)
         files_map = await loop.run_in_executor(
-            None,
+            exec_pool,
             build_static_assets_sync,
             str(out_dir),
             candidate.title,
@@ -168,7 +171,7 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         video_gif_name = ""
         if criteria.include_video and (candidate.video_url or candidate.youtube_url):
             vid_res = await loop.run_in_executor(
-                None,
+                exec_pool,
                 build_video_assets_worker_task,
                 str(out_dir),
                 candidate.title,
@@ -203,7 +206,7 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         card_stream_name = ""
         if criteria.render_card_in_stream and criteria.include_card_intro:
             card_stream_name = await loop.run_in_executor(
-                None,
+                exec_pool,
                 build_card_stream_sync,
                 str(out_dir),
                 geometry.width,
