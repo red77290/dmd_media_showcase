@@ -154,6 +154,10 @@ async def stream_consume_once_sequence(
         default=False,
         description="Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND",
     ),
+    drop_late: bool = Query(
+        default=False,
+        description="Skip stale frames via wall-clock seek on raw HTTP/1.0 streams instead of bursting late frames (omits Content-Length)",
+    ),
 ) -> Response:
     """
     Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
@@ -192,6 +196,7 @@ async def stream_consume_once_sequence(
             )
             frame_bytes = max(2, int(width) * int(height) * 2)
             eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
+            total_frames_avail = max(1, (file_size - 16) // frame_bytes)
             claim_key = (pkg.dmd_id, domain)
 
             async def _paced_dmds_generator() -> AsyncIterator[bytes]:
@@ -203,16 +208,32 @@ async def stream_consume_once_sequence(
                     first_payload = fh.read(16 + frame_bytes)
                     if first_payload:
                         yield first_payload
-                    t0 = time.monotonic()
+                    t0 = time.perf_counter()
                     frame_idx = 1
-                    while True:
+                    while frame_idx < total_frames_avail:
+                        target_t = t0 + (frame_idx / float(eff_fps))
+                        now_perf = time.perf_counter()
+                        sleep_s = target_t - now_perf
+                        if sleep_s > 0.001:
+                            await asyncio.sleep(sleep_s)
+                            now_perf = time.perf_counter()
+                            sleep_s = target_t - now_perf
+                        if drop_late and sleep_s < -(1.25 / float(eff_fps)):
+                            due_frame = int((now_perf - t0) * float(eff_fps))
+                            if due_frame >= total_frames_avail:
+                                break
+                            if due_frame > frame_idx:
+                                frame_idx = due_frame
+                                fh.seek(16 + frame_idx * frame_bytes)
+                        elif not drop_late and sleep_s < -(1.25 / float(eff_fps)):
+                            # Re-anchor monotonic clock + short yield so HTTP/1.1 clients
+                            # expecting full Content-Length bytes never receive a 0ms TCP burst.
+                            t0 = now_perf - (frame_idx / float(eff_fps))
+                            await asyncio.sleep(0.004)
+
                         chunk = fh.read(frame_bytes)
                         if not chunk:
                             break
-                        target_t = t0 + (frame_idx / float(eff_fps))
-                        sleep_s = target_t - time.monotonic()
-                        if sleep_s > 0.001:
-                            await asyncio.sleep(sleep_s)
                         if (frame_idx % 15) == 0:
                             ts_now = time.time()
                             co.state.client_last_seen[claim_key] = ts_now
@@ -225,28 +246,42 @@ async def stream_consume_once_sequence(
                     if purge:
                         await co.purge_consumed_package(item_id)
 
+            paced_headers: Dict[str, str] = {
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "X-DMD-Consume-Once": "1",
+                "X-DMD-Paced": "1",
+                "X-Accel-Buffering": "no",
+            }
+            if drop_late:
+                paced_headers["X-DMD-Drop-Late"] = "1"
+            else:
+                paced_headers["Content-Length"] = str(file_size)
+
             return StreamingResponse(
                 _paced_dmds_generator(),
                 media_type="application/octet-stream",
-                headers={
-                    "Content-Length": str(file_size),
-                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                    "X-DMD-Consume-Once": "1",
-                    "X-DMD-Paced": "1",
-                    "X-Accel-Buffering": "no",
-                },
+                headers=paced_headers,
             )
 
-    raw_bytes = stream_path.read_bytes()
-    if purge:
-        background_tasks.add_task(co.purge_consumed_package, item_id)
-    return Response(
-        content=raw_bytes,
+    async def _chunked_dmds_generator() -> AsyncIterator[bytes]:
+        fh = stream_path.open("rb")
+        try:
+            while True:
+                block = fh.read(65536)
+                if not block:
+                    break
+                yield block
+        finally:
+            fh.close()
+            if purge:
+                await co.purge_consumed_package(item_id)
+
+    return StreamingResponse(
+        _chunked_dmds_generator(),
         media_type="application/octet-stream",
         headers={
-            "Content-Length": str(len(raw_bytes)),
+            "Content-Length": str(file_size),
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "X-DMD-Consume-Once": "1",
         },
-        background=background_tasks if purge else None,
     )

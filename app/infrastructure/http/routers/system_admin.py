@@ -103,7 +103,7 @@ async def get_asyncapi_spec() -> Response:
     """
     Serve the authoritative AsyncAPI 2.6.0 specification describing:
     - MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)
-    - Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE)
+    - Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE)
     """
     return Response(content=ASYNCAPI_YAML, media_type="application/yaml; charset=utf-8")
 

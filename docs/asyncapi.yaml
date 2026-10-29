@@ -21,8 +21,8 @@ info:
        - Triggered when a client-driven/hybrid DMD publishes `{"action": "start_stream", "item_id": "...", "udp_ip": "...", "udp_port": ...}`
          or automatically clocked by the server for 100% passive `supports_local_card: false` receivers (`:4210`).
        - `FfmpegUdpClockStreamer` strips the 16-byte `DMDS` file header (`<4sBBHHHHH`), clocks raw RGB565LE
-         frames through `ffmpeg -re` at the negotiated `video_fps`, and slices each frame into Wi-Fi MTU-safe
-         UDP datagrams (`<= 1034` bytes total: **10-byte Little-Endian `<4sHBBH` `DMDF` header** + `<= 1024` bytes RGB565LE).
+         frames via a dedicated monotonic thread at the negotiated `video_fps`, and slices each frame into Wi-Fi MTU-safe
+         UDP datagrams (`<= 1418` bytes total: **10-byte Little-Endian `<4sHBBH` `DMDF` header** + `<= 1408` bytes RGB565LE = `6` chunks per `128x32` frame).
        - Clients automatically fall back to HTTP `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false`
          (`DMDS` 16-byte header) if container-to-LAN UDP is blocked by host VM NAT.
     3. **`N+1` Background Pipelining, On-Demand Queue & Strict Consume-Once**:
@@ -576,10 +576,10 @@ components:
       name: DmdfUdpDatagram
       title: Binary DMDF UDP Frame Chunk Datagram
       contentType: application/octet-stream
-      summary: 10-byte Little-Endian `<4sHBBH` header + `<= 1024`-byte RGB565LE framebuffer slice (`<= 1034` bytes/UDP packet).
+      summary: 10-byte Little-Endian `<4sHBBH` header + `<= 1408`-byte RGB565LE framebuffer slice (`<= 1418` bytes/UDP packet).
       description: |
         Each video or panorama frame (`width * height * 2` bytes of Little-Endian RGB565 pixels, e.g. `8192` bytes
-        for `128x32` = `8` chunks of `1024` bytes) is split into MTU-safe UDP datagrams packed in Little-Endian
+        for `128x32` = `6` chunks of `<= 1408` bytes fitting ESP32 `UDP_RECVMBOX_SIZE=6` & `kRxBaWin=6`) is split into MTU-safe UDP datagrams packed in Little-Endian
         (`struct.pack("<4sHBBH", b"DMDF", frame_seq, chunk_idx, total_chunks, byte_offset) + payload`):
 
         | Byte Offset | C / Struct Type | Field | Constraints & Semantics |
@@ -588,8 +588,8 @@ components:
         | `4..5` | `uint16le` (`H`) | `frame_seq` | Wrapping monotonic frame counter (`0..65535`) |
         | `6` | `uint8` (`B`) | `chunk_idx` | Zero-based chunk index within `frame_seq` (`0 .. total_chunks - 1`) |
         | `7` | `uint8` (`B`) | `total_chunks` | Total chunks forming the complete frame (`1..64`) |
-        | `8..9` | `uint16le` (`H`) | `byte_offset` | Destination byte offset (`chunk_idx * 1024`) in RGB565LE framebuffer |
-        | `10..N` | `uint8[<=1024]` | `payload` | Raw Little-Endian RGB565 pixel bytes (`1..1024` bytes) |
+        | `8..9` | `uint16le` (`H`) | `byte_offset` | Destination byte offset (`chunk_idx * 1408`) in RGB565LE framebuffer |
+        | `10..N` | `uint8[<=1408]` | `payload` | Raw Little-Endian RGB565 pixel bytes (`1..1408` bytes) |
 
         **Reassembly & Watchdog Contract (ESP32 & Raspberry Pi)**:
         - Copy `payload` directly into `framebuffer_bytes[byte_offset .. byte_offset + len(payload)]` if bounds-valid
@@ -605,10 +605,10 @@ components:
         type: string
         format: binary
         minLength: 12
-        maxLength: 1034
+        maxLength: 1418
         x-binary-header-format: "<4sHBBH"
         x-binary-header-bytes: 10
-        x-max-payload-bytes: 1024
+        x-max-payload-bytes: 1408
         x-header-fields:
           magic:
             offset: 0
@@ -635,5 +635,5 @@ components:
             type: uint16le
           payload:
             offset: 10
-            maxSize: 1024
+            maxSize: 1408
             type: rgb565le

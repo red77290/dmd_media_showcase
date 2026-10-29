@@ -154,9 +154,9 @@ sequenceDiagram
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/events {"event":"start_stream", "item_id": N, "udp_ip": client_ip, "udp_port": port}
     MQTT->>ORCH: handle_mqtt_client_event("start_stream")
     ORCH->>MQTT: PUBLISH stream_started
-    ORCH->>FFMPEG: Lance ffmpeg -re rawvideo rgb565le pipe
+    ORCH->>FFMPEG: Démarre le thread temps réel monotone DMDF
     loop Chaque Trame (15-25 FPS)
-        FFMPEG-->>DMD: Paquets UDP DMDF (En-tête 10 octets + <=1024o RGB565LE) vers client_ip:udp_port
+        FFMPEG-->>DMD: Paquets UDP DMDF (En-tête 10 octets + <=1408o RGB565LE) vers client_ip:udp_port
     end
     FFMPEG->>ORCH: Fin du flux (EOF)
     ORCH->>MQTT: PUBLISH stream_eof {"event":"stream_eof", "item_id": N}
@@ -174,8 +174,8 @@ sequenceDiagram
 | `4..5` | `uint16le` | `frame_seq` | Numéro de séquence monotone de la trame (`0..65535`) |
 | `6` | `uint8` | `chunk_idx` | Index du fragment dans la trame courante (`0..total_chunks-1`) |
 | `7` | `uint8` | `total_chunks` | Nombre total de fragments composant la trame (`1..64`) |
-| `8..9` | `uint16le` | `byte_offset` | Offset en octets (`chunk_idx * 1024`) dans le framebuffer RGB565LE |
-| `10..N` | `uint8[]` | `payload` | Tranche de pixels bruts RGB565LE (`<= 1024` octets, `<= 1034` octets/paquet UDP) |
+| `8..9` | `uint16le` | `byte_offset` | Offset en octets (`chunk_idx * 1408`) dans le framebuffer RGB565LE |
+| `10..N` | `uint8[]` | `payload` | Tranche de pixels bruts RGB565LE (`<= 1408` octets, `<= 1418` octets/paquet UDP = `6` chunks en `128x32`) |
 
 ### En-tête Binaire HTTP `DMDS` du Flux Unifié (16 Octets, Little-Endian `<4sBBHHHHH`)
 

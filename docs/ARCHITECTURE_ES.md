@@ -152,9 +152,9 @@ sequenceDiagram
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/events {"event":"start_stream", "item_id": N, "udp_ip": client_ip, "udp_port": port}
     MQTT->>ORCH: handle_mqtt_client_event("start_stream")
     ORCH->>MQTT: PUBLISH stream_started
-    ORCH->>FFMPEG: Inicia pipe ffmpeg -re rawvideo rgb565le
+    ORCH->>FFMPEG: Inicia hilo monotónico en tiempo real DMDF
     loop Cada Fotograma (15-25 FPS)
-        FFMPEG-->>DMD: Fragmentos UDP DMDF (Cabecera 10B + <=1024B RGB565LE) hacia client_ip:udp_port
+        FFMPEG-->>DMD: Fragmentos UDP DMDF (Cabecera 10B + <=1408B RGB565LE) hacia client_ip:udp_port
     end
     FFMPEG->>ORCH: Fin de flujo (EOF)
     ORCH->>MQTT: PUBLISH stream_eof {"event":"stream_eof", "item_id": N}
@@ -172,8 +172,8 @@ sequenceDiagram
 | `4..5` | `uint16le` | `frame_seq` | Número de secuencia monotónico del fotograma (`0..65535`) |
 | `6` | `uint8` | `chunk_idx` | Índice del fragmento dentro del fotograma actual (`0..total_chunks-1`) |
 | `7` | `uint8` | `total_chunks` | Total de fragmentos del fotograma (`1..64`) |
-| `8..9` | `uint16le` | `byte_offset` | Desplazamiento en bytes (`chunk_idx * 1024`) dentro del búfer RGB565LE |
-| `10..N` | `uint8[]` | `payload` | Datos de píxeles RGB565LE (`<= 1024` bytes, `<= 1034` bytes/paquete UDP) |
+| `8..9` | `uint16le` | `byte_offset` | Desplazamiento en bytes (`chunk_idx * 1408`) dentro del búfer RGB565LE |
+| `10..N` | `uint8[]` | `payload` | Datos de píxeles RGB565LE (`<= 1408` bytes, `<= 1418` bytes/paquete UDP = `6` fragmentos en `128x32`) |
 
 ### Cabecera Binaria HTTP `DMDS` del Flujo Unificado (16 Bytes, Little-Endian `<4sBBHHHHH`)
 

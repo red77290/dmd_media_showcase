@@ -261,7 +261,7 @@ async def test_ffmpeg_udp_clock_streamer_dmdf_packets(tmp_path: Path):
     def _capture_dmdf_pkt(pkt: bytes, _ip: str, _port: int) -> None:
         magic, seq, _chunk_idx, total_chunks, byte_offset = struct.unpack(DMDF_HEADER_FORMAT, pkt[:10])
         assert magic == DMDF_MAGIC
-        assert total_chunks == (frame_bytes + 1023) // 1024
+        assert total_chunks == (frame_bytes + 1407) // 1408
         buf = reconstructed_frames.setdefault(seq, bytearray(frame_bytes))
         payload = pkt[10:]
         buf[byte_offset : byte_offset + len(payload)] = payload
@@ -1483,19 +1483,20 @@ def test_resolution_256x64_propagates_across_mqtt_rest_transcoder_and_udp_chunks
     assert g256.resolved_poster_dims() == (48, 64)
     assert g_tate.resolved_poster_dims() == (40, 40)
 
-    # Verify 256x64 DMDF UDP chunking math (32,768 bytes -> 32 chunks of 1,024 bytes)
+    # Verify 256x64 DMDF UDP chunking math (32,768 bytes -> 24 chunks: 23x1408B + 1x384B)
     frame_256x64 = bytes([0xAA, 0x55]) * (256 * 64)
     chunks = pack_dmdf_frame_chunks(frame_256x64, frame_seq=7)
-    assert len(chunks) == 32
+    assert len(chunks) == 24
     reassembled = bytearray(len(frame_256x64))
     for idx, pkt in enumerate(chunks):
         magic, seq, c_idx, tot_c, b_off = struct.unpack("<4sHBBH", pkt[:10])
         assert magic == b"DMDF"
         assert seq == 7
         assert c_idx == idx
-        assert tot_c == 32
+        assert tot_c == 24
         payload = pkt[10:]
-        assert len(payload) == 1024
+        expected_len = 1408 if idx < 23 else 384
+        assert len(payload) == expected_len
         reassembled[b_off : b_off + len(payload)] = payload
     assert bytes(reassembled) == frame_256x64
 
@@ -1790,7 +1791,7 @@ async def test_udp_nat_pinhole_hello_and_dmdf_return_routing(tmp_path: Path):
     assert started is True
     await asyncio.wait_for(done_ev.wait(), timeout=5.0)
     dmdf_pkts = [pkt for pkt, dst in sent_datagrams if pkt[:4] == DMDF_MAGIC and dst == ("172.18.0.1", 51422)]
-    assert len(dmdf_pkts) == 24  # 3 frames * 8 chunks (128x32 RGB565 = 8192 B = 8x1024 B)
+    assert len(dmdf_pkts) == 18  # 3 frames * 6 chunks (128x32 RGB565 = 8192 B = 5x1408 B + 1x1152 B)
     await streamer.stop_listener()
 
 
@@ -1893,3 +1894,89 @@ async def test_mdns_responder_skips_advertising_on_nat_isolated_docker_bridge(mo
     await responder.start(port=8890)
     assert responder.is_nat_isolated is True
     assert responder.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_paced_dmds_drop_late_skips_stale_frames_without_burst(tmp_path: Path):
+    """
+    Verify `?purge=true&paced=1&drop_late=1` omits `Content-Length`, sets `X-DMD-Drop-Late: 1`,
+    and jumps directly to `due_frame` via `seek()` when the event loop stalls behind wall-clock.
+    """
+    item_id = "drop_late_test_item_01"
+    item_dir = tmp_path / item_id
+    item_dir.mkdir(parents=True, exist_ok=True)
+    stream_path = item_dir / f"{item_id}.rgb565.stream"
+    frames = [np.full((32, 128, 3), fill_value=v, dtype=np.uint8) for v in (10, 40, 80, 120, 160, 200)]
+    write_rgb565_stream(frames, str(stream_path), fps=25)
+    full_size = stream_path.stat().st_size
+
+    cand = MediaCandidate(
+        id="ss_drop_01",
+        domain="games",
+        source_id="screenscraper",
+        title="OutRun",
+        year="1986",
+        badge="MAME",
+        badge_color="#FF6D00",
+        subtitle="Arcade",
+        rating="9.2",
+        synopsis="Sega Super Scaler arcade racer.",
+    )
+    card = ShowcaseCard(
+        item_id=item_id,
+        domain="games",
+        title="OutRun",
+        year="1986",
+        badge="MAME",
+        badge_color="#FF6D00",
+        subtitle="Arcade",
+        rating="9.2",
+        synopsis="Sega Super Scaler arcade racer.",
+        lang="en",
+        source_used="screenscraper",
+        poster_width=32,
+        poster_height=32,
+        poster_rgb565_b64="",
+        has_video=True,
+        stream_frames=6,
+        stream_fps=25,
+        stream_duration_s=0.24,
+    )
+    pkg = PreparedShowcasePackage(
+        item_id=item_id,
+        dmd_id="esp32_droplate_dmd",
+        domain="games",
+        candidate=cand,
+        geometry=PanelGeometry(width=128, height=32),
+        card=card,
+        item_dir=item_dir,
+        unified_stream_path=stream_path,
+        consumed=True,
+    )
+    consume_once_orchestrator.active_packages[item_id] = pkg
+
+    async def _simulate_server_cpu_stall() -> None:
+        await asyncio.sleep(0.01)
+        # Simulate a synchronous 130ms YOLO/CPU stall on the server loop while frame 1 is sleeping
+        import time as _time
+
+        _time.sleep(0.13)
+
+    stall_task = asyncio.create_task(_simulate_server_cpu_stall())
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(
+                f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1"
+            )
+            assert resp.status_code == 200
+            assert resp.headers.get("X-DMD-Drop-Late") == "1"
+            assert "content-length" not in {k.lower() for k in resp.headers.keys()}
+            received = resp.content
+    finally:
+        await stall_task
+
+    # Must start with valid 16-byte DMDS header + at least Frame 0, and skip intermediate stale frames
+    assert received[:4] == b"DMDS"
+    assert (len(received) - 16) % (128 * 32 * 2) == 0
+    assert 16 + (128 * 32 * 2) <= len(received) < full_size
+    assert item_id not in consume_once_orchestrator.active_packages

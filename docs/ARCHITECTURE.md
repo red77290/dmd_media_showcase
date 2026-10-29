@@ -154,9 +154,9 @@ sequenceDiagram
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/events {"event":"start_stream", "item_id": N, "udp_ip": client_ip, "udp_port": port}
     MQTT->>ORCH: handle_mqtt_client_event("start_stream")
     ORCH->>MQTT: PUBLISH stream_started
-    ORCH->>FFMPEG: Spawn ffmpeg -re rawvideo rgb565le pipe
+    ORCH->>FFMPEG: Start monotonic DMDF real-time transmitter thread
     loop Every Frame (15-25 FPS)
-        FFMPEG-->>DMD: UDP DMDF Chunks (10-Byte Header + <=1024B RGB565LE Payload) to client_ip:udp_port
+        FFMPEG-->>DMD: UDP DMDF Chunks (10-Byte Header + <=1408B RGB565LE Payload) to client_ip:udp_port
     end
     FFMPEG->>ORCH: EOF reached
     ORCH->>MQTT: PUBLISH stream_eof {"event":"stream_eof", "item_id": N}
@@ -174,8 +174,8 @@ sequenceDiagram
 | `4..5` | `uint16le` | `frame_seq` | Wrapping monotonic frame sequence number (`0..65535`) |
 | `6` | `uint8` | `chunk_idx` | Zero-based chunk index within the current frame (`0..total_chunks-1`) |
 | `7` | `uint8` | `total_chunks` | Total chunks required to assemble the complete frame (`1..64`) |
-| `8..9` | `uint16le` | `byte_offset` | Byte offset (`chunk_idx * 1024`) inside the target RGB565LE framebuffer |
-| `10..N` | `uint8[]` | `payload` | Raw RGB565LE pixel slice (`<= 1024` bytes, MTU-safe `<= 1034` bytes/UDP packet) |
+| `8..9` | `uint16le` | `byte_offset` | Byte offset (`chunk_idx * 1408`) inside the target RGB565LE framebuffer |
+| `10..N` | `uint8[]` | `payload` | Raw RGB565LE pixel slice (`<= 1408` bytes, MTU-safe `<= 1418` bytes/UDP packet = `6` chunks for `128x32`) |
 
 ### Binary HTTP `DMDS` Unified Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
 

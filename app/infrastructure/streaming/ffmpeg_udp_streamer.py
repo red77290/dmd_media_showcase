@@ -1,13 +1,13 @@
 """
-Real-time clock-paced UDP frame streamer (`ffmpeg -re` -> `DMDF` chunked RGB565LE datagrams).
+Real-time clock-paced UDP frame streamer (`perf_counter` monotonic thread -> `DMDF` chunked RGB565LE datagrams).
 
-Binary `DMDF` UDP datagram wire format (Little-Endian, 10-byte header + <= 1024-byte payload):
+Binary `DMDF` UDP datagram wire format (Little-Endian, 10-byte header + <= 1408-byte payload):
 - `0..4`  : `magic` = `b"DMDF"` (4 bytes)
 - `4..6`  : `frame_seq` = `uint16` wrapping frame sequence number
 - `6..7`  : `chunk_idx` = `uint8` chunk index within current frame (`0 .. total_chunks - 1`)
 - `7..8`  : `total_chunks` = `uint8` total chunks making up a full frame (`width * height * 2` bytes)
 - `8..10` : `byte_offset` = `uint16` byte offset in the target RGB565 framebuffer
-- `10..N` : raw RGB565LE pixel slice (`<= 1024` bytes, MTU-safe over Wi-Fi)
+- `10..N` : raw RGB565LE pixel slice (`<= 1408` bytes, `<= 1418` B UDP payload < Wi-Fi MTU, 6 chunks for 128x32)
 """
 
 from __future__ import annotations
@@ -17,12 +17,12 @@ import logging
 import os
 import socket
 import struct
+import threading
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.domain.ports.frame_streamer import IFrameStreamerPort
-from app.portable_env import get_ffmpeg_binary
 
 logger = logging.getLogger("dmd_showcase.streaming.udp")
 
@@ -30,7 +30,7 @@ DMDF_MAGIC = b"DMDF"
 DMDH_MAGIC = b"DMDH"
 DMDA_MAGIC = b"DMDA"
 DMDF_HEADER_FORMAT = "<4sHBBH"
-MAX_UDP_PAYLOAD_BYTES = 1024
+MAX_UDP_PAYLOAD_BYTES = 1408
 NAT_PINHOLE_TTL_S = 180.0
 
 
@@ -75,8 +75,9 @@ def pack_dmdf_frame_chunks(
 
 class FfmpegUdpClockStreamer(IFrameStreamerPort):
     """
-    Streams a prepared `.rgb565.stream` (`DMDS`) file using `ffmpeg -re` as the real-time
-    hardware clock source and transmits `DMDF` UDP packets to the DMD client.
+    Streams a prepared `.rgb565.stream` (`DMDS`) file from a dedicated monotonic real-time
+    thread (`time.perf_counter()`) and transmits `DMDF` UDP packets (`<= 1408B` payload = `6`
+    chunks per `128x32` frame, fitting ESP32 `UDP_RECVMBOX_SIZE=6` & `kRxBaWin=6`) to the DMD client.
     """
 
     def __init__(
@@ -85,6 +86,7 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
     ) -> None:
         self._active_tasks: Dict[str, asyncio.Task[None]] = {}
         self._active_procs: Dict[str, asyncio.subprocess.Process] = {}
+        self._stop_events: Dict[str, threading.Event] = {}
         self._active_meta: Dict[str, Dict[str, Any]] = {}
         self._packet_sink = packet_sink
         self._nat_pinholes: Dict[str, Tuple[str, int, float]] = {}
@@ -198,6 +200,9 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
 
     async def stop_stream(self, dmd_id: str) -> None:
         self._active_meta.pop(dmd_id, None)
+        stop_ev = self._stop_events.pop(dmd_id, None)
+        if stop_ev is not None:
+            stop_ev.set()
         proc = self._active_procs.pop(dmd_id, None)
         if proc is not None and proc.returncode is None:
             try:
@@ -244,6 +249,8 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
             return False
 
         effective_fps = max(6, min(30, int(fps)))
+        stop_ev = threading.Event()
+        self._stop_events[dmd_id] = stop_ev
         self._active_meta[dmd_id] = {
             "item_id": item_id,
             "width": width,
@@ -264,6 +271,7 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 fps=effective_fps,
                 udp_ip=udp_ip,
                 udp_port=int(udp_port),
+                stop_ev=stop_ev,
                 on_eof=on_eof,
             )
         )
@@ -280,187 +288,240 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
         fps: int,
         udp_ip: str,
         udp_port: int,
+        stop_ev: threading.Event,
         on_eof: Optional[Callable[[str, str, bool], Awaitable[None]]],
     ) -> None:
         frame_bytes = width * height * 2
         completed_ok = False
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(False)
-        use_connected_udp = self._packet_sink is None
-        if use_connected_udp:
+        loop = asyncio.get_running_loop()
+        done_fut: asyncio.Future[Tuple[bool, int]] = loop.create_future()
+
+        def _tx_worker() -> None:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                sock.connect((udp_ip, int(udp_port)))
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
             except OSError:
-                use_connected_udp = False
-        stream_fh = None
-
-        try:
-            file_size = stream_path.stat().st_size if stream_path.exists() else 0
-            if file_size < frame_bytes:
-                completed_ok = True
-                return
-
-            # Zero-copy DMDS header skip: use unbuffered FileIO (`buffering=0`) + kernel `os.lseek`
-            # so `create_subprocess_exec(stdin=stream_fh)` starts reading at exact byte 16 without
-            # Python BufferedReader prefetching or copying multi-megabyte raw565 buffers in RAM/tmpfs.
-            stream_fh = stream_path.open("rb", buffering=0)
-            magic = stream_fh.read(4)
-            header_offset = 16 if magic == b"DMDS" else 0
-            if file_size - header_offset < frame_bytes:
-                completed_ok = True
-                return
-            os.lseek(stream_fh.fileno(), header_offset, os.SEEK_SET)
-
-            ffmpeg_bin = get_ffmpeg_binary()
-            cmd = [
-                ffmpeg_bin,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-re",
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgb565le",
-                "-s",
-                f"{width}x{height}",
-                "-r",
-                str(fps),
-                "-i",
-                "pipe:0",
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgb565le",
-                "pipe:1",
-            ]
-            logger.info(
-                "[UDP STREAM] Launching ffmpeg -re for dmd_id='%s' item='%s' -> %s:%d (%dx%d @ %dfps)",
-                dmd_id,
-                item_id,
-                udp_ip,
-                udp_port,
-                width,
-                height,
-                fps,
-            )
-            t_launch = time.monotonic()
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=stream_fh,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            self._active_procs[dmd_id] = proc
-            assert proc.stdout is not None
-
-            frame_seq = 0
-            consecutive_icmp_refused = 0
-            icmp_aborted = False
-            logged_pinhole = False
-            while not icmp_aborted:
+                pass
+            sock.settimeout(0.02)
+            use_connected_udp = self._packet_sink is None
+            if use_connected_udp:
                 try:
-                    frame_buf = await proc.stdout.readexactly(frame_bytes)
-                except asyncio.IncompleteReadError:
-                    break
-                pinhole_addr: Optional[Tuple[str, int]] = None
-                if (
-                    self._packet_sink is None
-                    and self._listener_transport is not None
-                    and not self._listener_transport.is_closing()
-                ):
-                    pinhole_addr = self.resolve_nat_pinhole(dmd_id, udp_ip)
-                    if pinhole_addr is not None and not logged_pinhole:
-                        logged_pinhole = True
-                        logger.info(
-                            "[UDP STREAM] Routing DMDF chunks for dmd_id='%s' via NAT pinhole %s:%d (source :%d)",
-                            dmd_id,
-                            pinhole_addr[0],
-                            pinhole_addr[1],
-                            self._listener_port,
-                        )
-                packets = pack_dmdf_frame_chunks(frame_buf, frame_seq)
-                for pkt_idx, pkt in enumerate(packets):
-                    if self._packet_sink is not None:
-                        self._packet_sink(pkt, udp_ip, udp_port)
-                        continue
-                    # Micro-pace in 4-KB groups (every 4 chunks) so both 128x32 (8 chunks on
-                    # single-radio classic ESP32) and 256x64 (32 chunks) avoid Wi-Fi AP / LwIP
-                    # burst drops while taking < 0.7 ms per 128x32 frame.
-                    if pkt_idx > 0 and (pkt_idx % 4) == 0:
-                        await asyncio.sleep(0.0006)
-                    if pinhole_addr is not None and self._listener_transport is not None:
-                        try:
-                            self._listener_transport.sendto(pkt, pinhole_addr)
-                            consecutive_icmp_refused = 0
-                        except OSError:
-                            pass
-                        continue
-                    try:
-                        if use_connected_udp:
-                            sock.send(pkt)
-                        else:
-                            sock.sendto(pkt, (udp_ip, udp_port))
-                        consecutive_icmp_refused = 0
-                    except BlockingIOError:
-                        await asyncio.sleep(0.001)
+                    sock.connect((udp_ip, int(udp_port)))
+                except OSError:
+                    use_connected_udp = False
+
+            fd = -1
+            frames_sent = 0
+            ok_flag = False
+            try:
+                if not stream_path.exists():
+                    ok_flag = True
+                    return
+                file_size = stream_path.stat().st_size
+                if file_size < frame_bytes:
+                    ok_flag = True
+                    return
+
+                fd = os.open(str(stream_path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+                magic = os.read(fd, 4)
+                header_offset = 16 if magic == b"DMDS" else 0
+                payload_bytes = file_size - header_offset
+                if payload_bytes < frame_bytes:
+                    ok_flag = True
+                    return
+                total_frames = payload_bytes // frame_bytes
+
+                logger.info(
+                    "[UDP STREAM] Starting monotonic DMDF stream for dmd_id='%s' item='%s' -> %s:%d (%dx%d @ %dfps, %d frames)",
+                    dmd_id,
+                    item_id,
+                    udp_ip,
+                    udp_port,
+                    width,
+                    height,
+                    fps,
+                    total_frames,
+                )
+
+                t_launch = time.perf_counter()
+                frame_seq = 0
+                frame_idx = 0
+                consecutive_icmp_refused = 0
+                logged_pinhole = False
+
+                while not stop_ev.is_set() and frame_idx < total_frames:
+                    listener_transport = self._listener_transport
+                    listener_closing = (
+                        listener_transport.is_closing()
+                        if listener_transport is not None and hasattr(listener_transport, "is_closing")
+                        else False
+                    )
+                    listener_sock = (
+                        listener_transport.get_extra_info("socket")
+                        if listener_transport is not None and hasattr(listener_transport, "get_extra_info")
+                        else None
+                    )
+                    pinhole_addr: Optional[Tuple[str, int]] = None
+                    if (
+                        self._packet_sink is None
+                        and listener_transport is not None
+                        and not listener_closing
+                    ):
+                        pinhole_addr = self.resolve_nat_pinhole(dmd_id, udp_ip)
+                        if pinhole_addr is not None and not logged_pinhole:
+                            logged_pinhole = True
+                            logger.info(
+                                "[UDP STREAM] Routing DMDF chunks for dmd_id='%s' via NAT pinhole %s:%d (source :%d)",
+                                dmd_id,
+                                pinhole_addr[0],
+                                pinhole_addr[1],
+                                self._listener_port,
+                            )
+
+                    is_deterministic_capture = (self._packet_sink is not None) or (
+                        pinhole_addr is not None and not isinstance(listener_sock, socket.socket)
+                    )
+
+                    if frame_idx > 0:
+                        target_t = t_launch + (frame_idx / float(fps))
+                        now_t = time.perf_counter()
+                        wait_s = target_t - now_t
+                        if wait_s > 0.0004:
+                            if stop_ev.wait(wait_s):
+                                break
+                        elif not is_deterministic_capture and wait_s < -(1.5 / float(fps)):
+                            due_frame = int((now_t - t_launch) * float(fps))
+                            if due_frame >= total_frames:
+                                break
+                            if due_frame > frame_idx:
+                                frame_idx = due_frame
+
+                    os.lseek(fd, header_offset + frame_idx * frame_bytes, os.SEEK_SET)
+                    chunks_read = bytearray()
+                    while len(chunks_read) < frame_bytes:
+                        part = os.read(fd, frame_bytes - len(chunks_read))
+                        if not part:
+                            break
+                        chunks_read.extend(part)
+                    if len(chunks_read) < frame_bytes:
+                        break
+
+                    packets = pack_dmdf_frame_chunks(bytes(chunks_read), frame_seq)
+                    icmp_aborted = False
+                    for pkt_idx, pkt in enumerate(packets):
+                        if stop_ev.is_set():
+                            break
+                        if self._packet_sink is not None:
+                            self._packet_sink(pkt, udp_ip, udp_port)
+                            continue
+
+                        # Micro-pace every 2 chunks (0.45ms) so 128x32 (6 chunks <= ESP32 6-slot
+                        # UDP_RECVMBOX_SIZE & kRxBaWin) and 256x64 (24 chunks) never burst-drop on Wi-Fi.
+                        if not is_deterministic_capture and pkt_idx > 0 and (pkt_idx % 2) == 0:
+                            time.sleep(0.00045)
+
+                        if pinhole_addr is not None and listener_transport is not None:
+                            if isinstance(listener_sock, socket.socket):
+                                try:
+                                    listener_sock.sendto(pkt, pinhole_addr)
+                                    consecutive_icmp_refused = 0
+                                except OSError:
+                                    pass
+                            else:
+                                try:
+                                    loop.call_soon_threadsafe(listener_transport.sendto, pkt, pinhole_addr)
+                                    consecutive_icmp_refused = 0
+                                except RuntimeError:
+                                    break
+                            continue
+
                         try:
                             if use_connected_udp:
                                 sock.send(pkt)
                             else:
                                 sock.sendto(pkt, (udp_ip, udp_port))
                             consecutive_icmp_refused = 0
-                        except (BlockingIOError, ConnectionRefusedError):
+                        except (BlockingIOError, socket.timeout):
+                            time.sleep(0.0008)
+                            try:
+                                if use_connected_udp:
+                                    sock.send(pkt)
+                                else:
+                                    sock.sendto(pkt, (udp_ip, udp_port))
+                                consecutive_icmp_refused = 0
+                            except OSError:
+                                pass
+                        except ConnectionRefusedError:
+                            if (time.perf_counter() - t_launch) >= 0.5:
+                                consecutive_icmp_refused += 1
+                                if consecutive_icmp_refused >= 6:
+                                    logger.info(
+                                        "[UDP STREAM] Remote UDP port %s:%d closed (ICMP unreachable) for dmd_id='%s' -> stopping stream",
+                                        udp_ip,
+                                        udp_port,
+                                        dmd_id,
+                                    )
+                                    icmp_aborted = True
+                                    break
+                        except OSError:
                             pass
-                    except ConnectionRefusedError:
-                        # Connected UDP socket received ICMP Port Unreachable from the DMD:
-                        # ignore brief startup race (< 0.5s), otherwise abort zombie stream immediately.
-                        if (time.monotonic() - t_launch) >= 0.5:
-                            consecutive_icmp_refused += 1
-                            if consecutive_icmp_refused >= 8:
-                                logger.info(
-                                    "[UDP STREAM] Remote UDP port %s:%d closed (ICMP unreachable) for dmd_id='%s' -> stopping stream",
-                                    udp_ip,
-                                    udp_port,
-                                    dmd_id,
-                                )
-                                icmp_aborted = True
-                                break
-                frame_seq = (frame_seq + 1) & 0xFFFF
 
-            if icmp_aborted and proc.returncode is None:
+                    if icmp_aborted:
+                        break
+                    frame_seq = (frame_seq + 1) & 0xFFFF
+                    frames_sent += 1
+                    frame_idx += 1
+
+                ok_flag = not stop_ev.is_set()
+            except Exception as exc:
+                logger.warning("[UDP STREAM] Error streaming to %s:%d (%s)", udp_ip, udp_port, exc)
+            finally:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
                 try:
-                    proc.kill()
-                except Exception:
+                    sock.close()
+                except OSError:
                     pass
-            await proc.wait()
-            completed_ok = True
+                if not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(
+                            lambda: done_fut.set_result((ok_flag, frames_sent))
+                            if not done_fut.done()
+                            else None
+                        )
+                    except RuntimeError:
+                        pass
+
+        worker = threading.Thread(
+            target=_tx_worker,
+            name=f"dmdf-udp-{dmd_id[:16]}",
+            daemon=True,
+        )
+        worker.start()
+
+        try:
+            completed_ok, sent_count = await done_fut
             logger.info(
-                "[UDP STREAM] Completed ffmpeg -re stream for dmd_id='%s' item='%s' (%d frames sent)",
+                "[UDP STREAM] Completed DMDF stream for dmd_id='%s' item='%s' (%d frames sent)",
                 dmd_id,
                 item_id,
-                frame_seq,
+                sent_count,
             )
         except asyncio.CancelledError:
+            stop_ev.set()
             logger.info("[UDP STREAM] Cancelled active stream for dmd_id='%s'", dmd_id)
             raise
-        except Exception as exc:
-            logger.warning("[UDP STREAM] Error streaming to %s:%d (%s)", udp_ip, udp_port, exc)
         finally:
+            stop_ev.set()
+            worker.join(timeout=0.25)
+            if self._stop_events.get(dmd_id) is stop_ev:
+                self._stop_events.pop(dmd_id, None)
             self._active_meta.pop(dmd_id, None)
-            proc_cleanup = self._active_procs.pop(dmd_id, None)
-            if proc_cleanup is not None and proc_cleanup.returncode is None:
-                try:
-                    proc_cleanup.kill()
-                except Exception:
-                    pass
+            self._active_procs.pop(dmd_id, None)
             self._active_tasks.pop(dmd_id, None)
-            if stream_fh is not None:
-                try:
-                    stream_fh.close()
-                except Exception:
-                    pass
-            sock.close()
             if on_eof is not None:
                 try:
                     await on_eof(dmd_id, item_id, completed_ok)

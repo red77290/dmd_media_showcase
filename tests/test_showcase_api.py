@@ -843,7 +843,7 @@ async def test_zero_copy_ffmpeg_pipe_streamer_skips_dmds_header_without_temp_fil
         assert ok is True
         await asyncio.wait_for(eof_event.wait(), timeout=5.0)
         assert not stream_file.with_suffix(".raw565").exists()
-        assert len(captured_pkts) == 3 * 8  # 3 frames * 8 chunks (8192 B / 1024 B)
+        assert len(captured_pkts) == 3 * 6  # 3 frames * 6 chunks (8192 B / 1408 B = 5x1408 + 1x1152)
         assert captured_pkts[0][:4] == DMDF_MAGIC
     finally:
         await streamer.stop_stream("esp32_test")

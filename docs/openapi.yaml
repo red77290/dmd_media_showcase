@@ -3,7 +3,7 @@
   "info": {
     "title": "DMD Media Showcase Server API",
     "summary": "DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
-    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + `ffmpeg -re` UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE chunks — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + monotonic UDP `DMDF` streaming (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks \u2014 full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header).",
     "version": "1.1.4"
   },
   "paths": {
@@ -13,7 +13,7 @@
           "System & Admin"
         ],
         "summary": "Get AsyncAPI 2.6 Specification (MQTT 3.1.1 & UDP DMDF Streaming)",
-        "description": "Serve the authoritative AsyncAPI 2.6.0 specification describing:\n- MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)\n- Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1024B` RGB565LE)",
+        "description": "Serve the authoritative AsyncAPI 2.6.0 specification describing:\n- MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)\n- Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE)",
         "operationId": "get_asyncapi_spec_api_v1_asyncapi_yaml_get",
         "responses": {
           "200": {
@@ -1571,6 +1571,30 @@
               "title": "Purge"
             },
             "description": "Purge package from disk immediately after HTTP response (pass purge=false when preloading in mqtt_udp mode)"
+          },
+          {
+            "name": "paced",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND",
+              "default": false,
+              "title": "Paced"
+            },
+            "description": "Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND"
+          },
+          {
+            "name": "drop_late",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Skip stale frames via wall-clock seek on raw HTTP/1.0 streams instead of bursting late frames (omits Content-Length)",
+              "default": false,
+              "title": "Drop Late"
+            },
+            "description": "Skip stale frames via wall-clock seek on raw HTTP/1.0 streams instead of bursting late frames (omits Content-Length)"
           }
         ],
         "responses": {
@@ -4909,7 +4933,7 @@
           "subtitle": {
             "type": "string",
             "title": "Subtitle",
-            "default": "Capcom • Arcade Fighting"
+            "default": "Capcom \u2022 Arcade Fighting"
           },
           "rating": {
             "type": "string",
@@ -5102,7 +5126,7 @@
           "subtitle": {
             "type": "string",
             "title": "Subtitle",
-            "default": "Capcom • Arcade Fighting"
+            "default": "Capcom \u2022 Arcade Fighting"
           },
           "rating": {
             "type": "string",
