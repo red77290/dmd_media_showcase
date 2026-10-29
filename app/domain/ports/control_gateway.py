@@ -28,3 +28,7 @@ class IMqttControlGatewayPort(ABC):
         self, topic: str, data: Dict[str, Any], retain: bool = False
     ) -> None:
         """Publish a JSON control message (`ready`, `command`, `referential`, `status`)."""
+
+    async def purge_client_retained(self, dmd_id: str) -> int:
+        """Clear all retained MQTT topics and persisted registration state for `dmd_id`."""
+        return 0

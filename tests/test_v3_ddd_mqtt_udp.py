@@ -1980,3 +1980,204 @@ async def test_paced_dmds_drop_late_skips_stale_frames_without_burst(tmp_path: P
     assert (len(received) - 16) % (128 * 32 * 2) == 0
     assert 16 + (128 * 32 * 2) <= len(received) < full_size
     assert item_id not in consume_once_orchestrator.active_packages
+
+
+@pytest.mark.asyncio
+async def test_force_clean_dmd_client_purges_retained_mqtt_topics_store_slots_and_profile(
+    tmp_path: Path, monkeypatch
+):
+    """
+    Verify `DELETE /api/v1/clients/{dmd_id}` completely purges a stale/renamed DMD:
+    - Clears all retained MQTT topics on the broker (`config`, `{domain}/ready`, `stream_state`, etc.)
+    - Removes the persisted entry in `mqtt_retained_clients.json` so restarts never resurrect it
+    - Cancels prep tasks, deletes N/N+1 slots, active packages, disk cache, and `dmd_profiles.json` entry
+    - Removes the DMD immediately from `GET /api/v1/clients`.
+    """
+    from app.config import settings
+    from app.infrastructure.mqtt.embedded_broker import EmbeddedMqttBroker
+    from app.infrastructure.mqtt.showcase_mqtt_gateway import ShowcaseMqttGateway
+    from app.infrastructure.persistence.dmd_profile_store import DmdProfileStore
+    from app.infrastructure.persistence.json_seen_repository import JsonSeenHistoryRepository
+    from app.infrastructure.persistence.mqtt_retained_store import RetainedClientConfigStore
+
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache")
+    retained_store = RetainedClientConfigStore(file_path=tmp_path / "mqtt_retained_clients.json")
+    prof_store = DmdProfileStore(file_path=tmp_path / "dmd_profiles.json")
+    seen_repo = JsonSeenHistoryRepository(file_path=tmp_path / "seen.json")
+
+    broker = EmbeddedMqttBroker(host="127.0.0.1", port=0)
+    gw = ShowcaseMqttGateway(retained_store=retained_store)
+    gw.embedded_broker = broker
+    gw._running = True
+    gw._persist_retained_enabled = True
+    broker.subscribe_internal("dmd_showcase/clients/+/config", gw._on_raw_msg)
+    broker.subscribe_internal("dmd_showcase/clients/+/status", gw._on_raw_msg)
+    broker.subscribe_internal("dmd_showcase/clients/+/+/events", gw._on_raw_msg)
+
+    stopped_streams: list[str] = []
+
+    class _DummyStreamer:
+        async def stop_stream(self, dmd_id: str) -> None:
+            stopped_streams.append(dmd_id)
+
+        async def start_udp_clock_stream(self, **_kwargs) -> None:
+            pass
+
+    orch = ConsumeOnceOrchestrator(
+        seen_repo=seen_repo,
+        streamer=_DummyStreamer(),  # type: ignore[arg-type]
+        mqtt_gateway=gw,
+        profile_store=prof_store,
+    )
+    orch._schedule_preparation = lambda *_a, **_kw: None  # type: ignore[method-assign]
+
+    monkeypatch.setattr("app.main.consume_once_orchestrator", orch)
+    monkeypatch.setattr("app.main.dmd_profile_store", prof_store)
+    monkeypatch.setattr("app.main.showcase_mqtt_gateway", gw)
+
+    stale_id = "esp32_old_renamed_128x32"
+    cfg_topic = f"dmd_showcase/clients/{stale_id}/config"
+    await broker.publish(
+        cfg_topic,
+        json.dumps(
+            {
+                "dmd_id": stale_id,
+                "client_ip": "192.168.1.88",
+                "width": 128,
+                "height": 32,
+                "lang": "fr",
+                "domains": {"games": {"systems": ["arcade"]}},
+            }
+        ).encode("utf-8"),
+        retain=True,
+    )
+    await broker.publish(
+        f"dmd_showcase/clients/{stale_id}/stream_state",
+        b'{"event":"stream_eof"}',
+        retain=True,
+    )
+
+    cand = MediaCandidate(
+        id="mame_sf2",
+        domain="games",
+        source_id="screenscraper",
+        title="Street Fighter II",
+        year="1991",
+        badge="ARCADE",
+        badge_color="#FF6D00",
+        subtitle="Fighting",
+        rating="9.5",
+        synopsis="World Warrior.",
+    )
+    card = ShowcaseCard(
+        item_id="pkg_stale_1",
+        domain="games",
+        title="Street Fighter II",
+        year="1991",
+        badge="ARCADE",
+        badge_color="#FF6D00",
+        subtitle="Fighting",
+        rating="9.5",
+        synopsis="World Warrior.",
+        lang="fr",
+        source_used="screenscraper",
+        poster_width=32,
+        poster_height=32,
+        poster_rgb565_b64="",
+        has_video=True,
+        stream_frames=30,
+        stream_fps=25,
+        stream_duration_s=1.2,
+    )
+    stale_pkg_dir = settings.cache_dir / "consume_once" / stale_id / "games" / "pkg_stale_1"
+    stale_pkg_dir.mkdir(parents=True, exist_ok=True)
+    (stale_pkg_dir / "unified.rgb565.stream").write_bytes(b"DMDS" + b"\x00" * 12)
+    pkg = PreparedShowcasePackage(
+        item_id="pkg_stale_1",
+        dmd_id=stale_id,
+        domain="games",
+        candidate=cand,
+        geometry=PanelGeometry(128, 32),
+        card=card,
+        item_dir=stale_pkg_dir,
+    )
+    orch.ready_packages[(stale_id, "games")] = pkg
+    orch.active_packages["pkg_stale_1"] = pkg
+
+    assert stale_id in retained_store.list_entries()
+    assert any(k.startswith(f"dmd_showcase/clients/{stale_id}/") for k in broker.retained)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        before = await client.get("/api/v1/clients")
+        assert before.status_code == 200
+        assert any(c["dmd_id"] == stale_id for c in before.json()["clients"])
+
+        del_resp = await client.delete(f"/api/v1/clients/{stale_id}")
+        assert del_resp.status_code == 200
+        body = del_resp.json()
+        assert body["status"] == "purged"
+        assert body["dmd_id"] == stale_id
+        assert body["retained_topics_cleared"] >= 18
+        assert body["purged_slots"] >= 2
+
+        after = await client.get("/api/v1/clients")
+        assert after.status_code == 200
+        assert not any(c["dmd_id"] == stale_id for c in after.json()["clients"])
+
+    assert stale_id not in retained_store.list_entries()
+    assert not any(k.startswith(f"dmd_showcase/clients/{stale_id}/") for k in broker.retained)
+    assert (stale_id, "games") not in orch.client_configs
+    assert (stale_id, "games") not in orch.ready_packages
+    assert "pkg_stale_1" not in orch.active_packages
+    assert not (settings.cache_dir / "consume_once" / stale_id).exists()
+    assert stale_id in stopped_streams
+
+
+def test_admin_ui_pilotage_sixth_cross_button_and_i18n_parity():
+    """
+    Verify the Showcase Admin WebUI renders the 6th cross icon (`✕`) in the `Pilotage` column
+    to force-clean stale DMDs and retained MQTT topics, with strict EN/FR/ES i18n parity.
+    """
+    import re
+
+    repo_root = Path(__file__).resolve().parent.parent
+    overview_js = (
+        repo_root / "app" / "infrastructure" / "web" / "static" / "js" / "tabs" / "overview.js"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        repo_root / "app" / "infrastructure" / "web" / "static" / "js" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    actions_match = re.search(
+        r'<div class="client-actions">(.*?)</div>', overview_js, flags=re.DOTALL
+    )
+    assert actions_match is not None
+    buttons = re.findall(r"<button\b[^>]*>.*?</button>", actions_match.group(1), flags=re.DOTALL)
+    assert len(buttons) == 6
+    sixth_btn = buttons[5]
+    assert "danger mini-btn" in sixth_btn
+    assert "purgeDmdClient(" in sixth_btn
+    assert ">✕</button>" in sixth_btn
+    assert "t('btn_tip_purge_dmd')" in sixth_btn
+    assert "export async function purgeDmdClient(" in overview_js
+    assert "purgeDmdClient," in app_js
+
+    i18n_dir = repo_root / "app" / "infrastructure" / "web" / "static" / "js" / "i18n"
+    key_sets = {}
+    for lang in ("en", "fr", "es"):
+        raw = (i18n_dir / f"{lang}.js").read_text(encoding="utf-8")
+        keys = set(re.findall(r"^\s*([a-zA-Z0-9_]+)\s*:", raw, flags=re.MULTILINE))
+        key_sets[lang] = keys
+        for req_key in (
+            "btn_tip_profile",
+            "btn_tip_skip",
+            "btn_tip_pause",
+            "btn_tip_queue",
+            "btn_tip_studio",
+            "btn_tip_purge_dmd",
+            "confirm_purge_dmd",
+            "msg_dmd_purged",
+        ):
+            assert req_key in keys, f"Missing i18n key '{req_key}' in {lang}.js"
+
+    assert key_sets["en"] == key_sets["fr"] == key_sets["es"]

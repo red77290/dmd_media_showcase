@@ -220,6 +220,45 @@ class ShowcaseMqttGateway(IMqttControlGatewayPort):
         elif self.embedded_broker is not None:
             await self.embedded_broker.publish(topic, raw, retain=retain)
 
+    async def purge_client_retained(self, dmd_id: str) -> int:
+        """Clear all retained MQTT topics (`b''`, `retain=True`) and persisted registration for `dmd_id`."""
+        clean_id = str(dmd_id or "").strip()
+        if not clean_id:
+            return 0
+        self.retained_store.remove(clean_id)
+
+        prefix = f"dmd_showcase/clients/{clean_id}/"
+        topics = [
+            f"{prefix}{leaf}"
+            for leaf in ("config", "ready", "status", "hello", "command", "stream_state")
+        ]
+        for dom in ("games", "movies", "series", "anime"):
+            for leaf in ("config", "ready", "events"):
+                topics.append(f"{prefix}{dom}/{leaf}")
+
+        if self.embedded_broker is not None:
+            for existing_topic in list(self.embedded_broker.retained.keys()):
+                if existing_topic.startswith(prefix) and existing_topic not in topics:
+                    topics.append(existing_topic)
+            for sess in list(self.embedded_broker.clients.values()):
+                if sess.client_id == clean_id or sess.client_id.startswith(f"{clean_id}_"):
+                    sess.will_retain = False
+
+        cleared = 0
+        for topic in topics:
+            if self.external_client is not None:
+                await self.external_client.publish(topic, b"", retain=True)
+                cleared += 1
+            elif self.embedded_broker is not None:
+                await self.embedded_broker.publish(topic, b"", retain=True)
+                cleared += 1
+        logger.info(
+            "[MQTT OUT] Force-cleaned %d retained MQTT topic(s) and persisted config for dmd_id='%s'",
+            cleared,
+            clean_id,
+        )
+        return cleared
+
     async def _on_raw_msg(self, topic: str, payload: bytes, retain: bool) -> None:
         parts = topic.split("/")
         if len(parts) < 4 or parts[0] != "dmd_showcase" or parts[1] != "clients":

@@ -5,15 +5,18 @@ DMD Client Profiles, Passive Playlists & On-Demand Priority Queue Routes (`app/i
 from __future__ import annotations
 
 from typing import Any, Dict
+import shutil
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.infrastructure.http.dependencies import (
     build_connected_clients_snapshot,
     collect_http_sessions_with_ip,
+    get_batch_manager,
     get_on_demand_cache,
     get_orchestrator,
     get_profile_store,
+    get_session_client_meta,
 )
 from app.models import (
     ClientControlRequest,
@@ -136,6 +139,40 @@ async def delete_dmd_client_profile(dmd_id: str) -> Dict[str, Any]:
     if not deleted:
         raise HTTPException(status_code=404, detail=f"DMD profile '{dmd_id}' not found.")
     return {"status": "deleted", "dmd_id": dmd_id}
+
+
+@router.delete("/api/v1/clients/{dmd_id}", tags=["DMD Profiles & Passive Mode"])
+async def purge_dmd_client_and_retained_topics(dmd_id: str) -> Dict[str, Any]:
+    """
+    Force-clean a stale or renamed `dmd_id`: clears all retained MQTT topics on the broker,
+    removes persisted `mqtt_retained_clients.json` and `dmd_profiles.json` entries, cancels
+    active N/N+1 preparation jobs, stops UDP streams, and purges disk caches and HTTP sessions.
+    """
+    clean_id = str(dmd_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="dmd_id must not be empty.")
+
+    res = await get_orchestrator().purge_dmd_client(clean_id)
+    bm = get_batch_manager()
+    meta_map = get_session_client_meta()
+    http_cleared = 0
+    for sid, sess in list(bm.sessions.items()):
+        cid = str(sess.request.client_id or sess.session_id).strip()
+        if cid == clean_id or sid == clean_id:
+            bm.sessions.pop(sid, None)
+            http_cleared += 1
+            for slot in (sess.current_batch, sess.next_batch, sess.retired_batch):
+                if slot is not None:
+                    for item_dir in slot.item_dirs.values():
+                        shutil.rmtree(item_dir, ignore_errors=True)
+    for meta_key in [k for k in list(meta_map.keys()) if k[0] == clean_id]:
+        meta_map.pop(meta_key, None)
+
+    return {
+        "status": "purged",
+        **res,
+        "http_sessions_cleared": http_cleared,
+    }
 
 
 @router.get("/api/v1/clients/{dmd_id}/queue", tags=["On-Demand & Voice Assistant"])

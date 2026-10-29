@@ -827,6 +827,51 @@
         }
       }
     },
+    "/api/v1/clients/{dmd_id}": {
+      "delete": {
+        "tags": [
+          "DMD Profiles & Passive Mode"
+        ],
+        "summary": "Purge Dmd Client And Retained Topics",
+        "description": "Force-clean a stale or renamed `dmd_id`: clears all retained MQTT topics on the broker,\nremoves persisted `mqtt_retained_clients.json` and `dmd_profiles.json` entries, cancels\nactive N/N+1 preparation jobs, stops UDP streams, and purges disk caches and HTTP sessions.",
+        "operationId": "purge_dmd_client_and_retained_topics_api_v1_clients__dmd_id__delete",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Purge Dmd Client And Retained Topics Api V1 Clients  Dmd Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{dmd_id}/queue": {
       "get": {
         "tags": [

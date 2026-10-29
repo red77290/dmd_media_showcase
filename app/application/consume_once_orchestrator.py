@@ -437,6 +437,29 @@ class ConsumeOnceOrchestrator:
     async def delete_dmd_profile(self, dmd_id: str) -> bool:
         return await self.director.delete_dmd_profile(dmd_id)
 
+    async def purge_dmd_client(self, dmd_id: str) -> Dict[str, Any]:
+        """Force-clean all retained MQTT topics, N/N+1 slots, queues, disk cache, and profile for `dmd_id`."""
+        clean_id = str(dmd_id or "").strip()
+        if not clean_id:
+            return {
+                "dmd_id": "",
+                "purged_slots": 0,
+                "retained_topics_cleared": 0,
+                "profile_deleted": False,
+            }
+
+        await self.streamer.stop_stream(clean_id)
+        profile_deleted = self.profile_store.delete_profile(clean_id)
+        purged_slots = self.state.purge_dmd_state_and_cache(clean_id)
+        retained_cleared = await self.mqtt.purge_client_retained(clean_id)
+        await self.director.sync_server_managed_profiles()
+        return {
+            "dmd_id": clean_id,
+            "purged_slots": purged_slots,
+            "retained_topics_cleared": retained_cleared,
+            "profile_deleted": profile_deleted,
+        }
+
     async def control_client(self, dmd_id: str, action: str) -> Dict[str, Any]:
         return await self.director.control_client(dmd_id, action)
 

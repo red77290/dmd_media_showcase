@@ -21,6 +21,7 @@ import {
 import {
   controlDmd,
   jumpToQueueStudio,
+  purgeDmdClient,
   renderClients,
   renderHealth,
   renderRuntimeSummary,
@@ -182,6 +183,7 @@ const WINDOW_HANDLERS = {
   openTagPickerModal,
   populateConfigForm,
   previewCandidate,
+  purgeDmdClient,
   redrawCurrentStudioFrame,
   refreshAll,
   removeQueueItem,

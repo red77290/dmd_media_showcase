@@ -366,5 +366,13 @@ export const I18N_EN = {
     lbl_ondemand_cache_max_mb: "Persistent On-Demand Cache Quota (MiB — 0 = Unlimited)",
     btn_evict_ondemand_cache: "🗑 Evict On-Demand Cache",
     pill_ondemand_cache_stats: "{n} cached • {mb} MB",
-    msg_ondemand_cache_evicted: "✓ Evicted {n} cached On-Demand conversion(s) ({mb} MB freed)"
+    msg_ondemand_cache_evicted: "✓ Evicted {n} cached On-Demand conversion(s) ({mb} MB freed)",
+    btn_tip_profile: "Profile & Playlist",
+    btn_tip_skip: "Skip",
+    btn_tip_pause: "Pause / Resume",
+    btn_tip_queue: "On-Demand Queue",
+    btn_tip_studio: "Card Studio 2B & Sim",
+    btn_tip_purge_dmd: "Force-clean DMD & purge retained MQTT topics",
+    confirm_purge_dmd: "Force-clean '{d}' (retained MQTT topics, active slot preparations, cache, and profile)?",
+    msg_dmd_purged: "✓ Force-cleaned DMD '{d}' and purged its retained MQTT topics."
 };

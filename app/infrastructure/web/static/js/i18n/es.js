@@ -366,5 +366,13 @@ export const I18N_ES = {
     lbl_ondemand_cache_max_mb: "Cuota Máx. Caché Persistente On-Demand (MiB — 0 = Ilimitado)",
     btn_evict_ondemand_cache: "🗑 Vaciar Caché On-Demand",
     pill_ondemand_cache_stats: "{n} en caché • {mb} MB",
-    msg_ondemand_cache_evicted: "✓ {n} conversión(es) On-Demand eliminada(s) ({mb} MB liberados)"
+    msg_ondemand_cache_evicted: "✓ {n} conversión(es) On-Demand eliminada(s) ({mb} MB liberados)",
+    btn_tip_profile: "Perfil y Playlist",
+    btn_tip_skip: "Siguiente",
+    btn_tip_pause: "Pausar / Reanudar",
+    btn_tip_queue: "Cola On-Demand",
+    btn_tip_studio: "Card Studio 2B y Simulación",
+    btn_tip_purge_dmd: "Forzar limpieza del DMD y purgar sus topics MQTT Retain",
+    confirm_purge_dmd: "¿Forzar la limpieza completa de '{d}' (topics MQTT Retain, preparaciones activas, caché y perfil)?",
+    msg_dmd_purged: "✓ DMD '{d}' y sus topics MQTT Retain purgados."
 };

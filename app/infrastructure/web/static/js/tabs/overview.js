@@ -225,11 +225,12 @@ export function renderClients(clients) {
         <td>${standbyCell}</td>
         <td class="actions-cell">
           <div class="client-actions">
-            <button type="button" class="secondary mini-btn" title="Profile & Playlist" onclick="openProfileEditor('${safeId}')">⚙️</button>
-            <button type="button" class="secondary mini-btn" title="Skip" onclick="controlDmd('${safeId}', 'skip')">⏭</button>
-            <button type="button" class="secondary mini-btn" title="Pause / Resume" onclick="controlDmd('${safeId}', '${pauseAct}')">${pauseIcon}</button>
-            <button type="button" class="secondary mini-btn" title="On-Demand Queue" onclick="jumpToQueueStudio('${safeId}')">🎯</button>
-            <button type="button" class="secondary mini-btn" title="Card Studio 2B & Sim" onclick="openStudioForDmd('${safeId}')">🎨</button>
+            <button type="button" class="secondary mini-btn" title="${esc(t('btn_tip_profile'))}" onclick="openProfileEditor('${safeId}')">⚙️</button>
+            <button type="button" class="secondary mini-btn" title="${esc(t('btn_tip_skip'))}" onclick="controlDmd('${safeId}', 'skip')">⏭</button>
+            <button type="button" class="secondary mini-btn" title="${esc(t('btn_tip_pause'))}" onclick="controlDmd('${safeId}', '${pauseAct}')">${pauseIcon}</button>
+            <button type="button" class="secondary mini-btn" title="${esc(t('btn_tip_queue'))}" onclick="jumpToQueueStudio('${safeId}')">🎯</button>
+            <button type="button" class="secondary mini-btn" title="${esc(t('btn_tip_studio'))}" onclick="openStudioForDmd('${safeId}')">🎨</button>
+            <button type="button" class="danger mini-btn" title="${esc(t('btn_tip_purge_dmd'))}" onclick="purgeDmdClient('${safeId}')">✕</button>
           </div>
         </td>
       </tr>
@@ -407,5 +408,39 @@ export async function controlDmd(dmdId, action) {
     loadHealthAndConfig(false);
   } catch (e) {
     console.error(e);
+  }
+}
+
+export async function purgeDmdClient(dmdId) {
+  if (!dmdId) return;
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    if (!window.confirm(t('confirm_purge_dmd', {d: dmdId}))) {
+      return;
+    }
+  }
+  const msgEl = document.getElementById('clients-status-msg');
+  try {
+    const r = await apiFetch(`/api/v1/clients/${encodeURIComponent(dmdId)}`, {
+      method: 'DELETE'
+    });
+    if (!r.ok) {
+      throw new Error('HTTP ' + r.status);
+    }
+    if (uiState.editingProfileDmdId === dmdId) {
+      const card = document.getElementById('dmd-profile-editor-card');
+      if (card) card.style.display = 'none';
+      uiState.editingProfileDmdId = '';
+    }
+    if (msgEl) {
+      msgEl.style.color = 'var(--green)';
+      msgEl.textContent = t('msg_dmd_purged', {d: dmdId});
+    }
+    await loadHealthAndConfig(false);
+  } catch (err) {
+    if (msgEl) {
+      msgEl.style.color = 'var(--red)';
+      msgEl.textContent = '⚠️ ' + (err.message || String(err));
+    }
+    console.error(err);
   }
 }

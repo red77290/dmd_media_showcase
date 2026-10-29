@@ -13,11 +13,12 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
 import time
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Literal, Optional, Set, Tuple
 import uuid
 
-from app.application.concurrency import DynamicAsyncLimiter, WorkerMetricsTracker
+from app.application.concurrency import AsyncTaskSupervisor, DynamicAsyncLimiter, WorkerMetricsTracker
 from app.application.criteria_parser import assemble_prepared_package
 from app.config import settings
 from app.domain.entities import (
@@ -237,3 +238,85 @@ class ShowcaseRuntimeState:
             item_dir=item_dir,
             files_map=files_map,
         )
+
+    def purge_dmd_state_and_cache(self, dmd_id: str) -> int:
+        """Cancel background tasks and purge all slots, queues, director state, and disk cache for `dmd_id`."""
+        clean_id = str(dmd_id or "").strip()
+        if not clean_id:
+            return 0
+
+        self.server_managed_ids.discard(clean_id)
+        self.director_skip_gap.discard(clean_id)
+        abort_ev = self.director_play_abort_events.pop(clean_id, None)
+        if abort_ev is not None:
+            abort_ev.set()
+        wake_ev = self.director_wake_events.pop(clean_id, None)
+        if wake_ev is not None:
+            wake_ev.set()
+        AsyncTaskSupervisor.safe_cancel_task(self.director_tasks.pop(clean_id, None))
+        AsyncTaskSupervisor.safe_cancel_task(self.director_prefetch_tasks.pop(clean_id, None))
+        self.director_playlist_cursors.pop(clean_id, None)
+
+        for key in [k for k in list(self.prep_tasks.keys()) if k[0] == clean_id]:
+            AsyncTaskSupervisor.safe_cancel_task(self.prep_tasks.pop(key, None))
+
+        purged_count = 0
+
+        def _drop_pkg(pkg: Optional[PreparedShowcasePackage]) -> None:
+            nonlocal purged_count
+            if pkg is None:
+                return
+            self.package_mark_seen.pop(pkg.item_id, None)
+            self.priority_item_ids.discard(pkg.item_id)
+            self.active_packages.pop(pkg.item_id, None)
+            shutil.rmtree(pkg.item_dir, ignore_errors=True)
+            purged_count += 1
+
+        direct_q = self.priority_queues.pop(clean_id, None)
+        if direct_q:
+            for entry in list(direct_q):
+                AsyncTaskSupervisor.safe_cancel_task(entry.prep_task)
+                _drop_pkg(entry.package)
+
+        for other_q in list(self.priority_queues.values()):
+            for entry in list(other_q):
+                if entry.target_slot_dmd_id == clean_id:
+                    try:
+                        other_q.remove(entry)
+                    except ValueError:
+                        pass
+                    AsyncTaskSupervisor.safe_cancel_task(entry.prep_task)
+                    _drop_pkg(entry.package)
+
+        for key in [k for k in list(self.ready_packages.keys()) if k[0] == clean_id]:
+            _drop_pkg(self.ready_packages.pop(key, None))
+        for key in [k for k in list(self.standby_packages.keys()) if k[0] == clean_id]:
+            _drop_pkg(self.standby_packages.pop(key, None))
+        _drop_pkg(self.director_prefetched.pop(clean_id, None))
+
+        for item_id, pkg in list(self.active_packages.items()):
+            if pkg.dmd_id == clean_id:
+                _drop_pkg(self.active_packages.pop(item_id, None))
+
+        shutil.rmtree(settings.cache_dir / "consume_once" / clean_id, ignore_errors=True)
+
+        self.client_raw_configs.pop(clean_id, None)
+        self.client_udp_ips.pop(clean_id, None)
+        self.client_udp_ports.pop(clean_id, None)
+        self.client_online.pop(clean_id, None)
+
+        for key in [k for k in list(self.client_configs.keys()) if k[0] == clean_id]:
+            self.client_configs.pop(key, None)
+            purged_count += 1
+        for state_map in (
+            self.client_transports,
+            self.client_last_seen,
+            self.last_played_titles,
+            self.last_played_sources,
+            self.preparing_sources,
+            self.last_claimed_until,
+        ):
+            for key in [k for k in list(state_map.keys()) if k[0] == clean_id]:
+                state_map.pop(key, None)
+
+        return purged_count
