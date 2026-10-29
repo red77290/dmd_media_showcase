@@ -433,6 +433,13 @@ _UNOFFICIAL_TITLE_MARKERS: Tuple[str, ...] = (
     "unity remake",
     "randomizer",
     "decompilation",
+    "(pirate)",
+    "[pirate]",
+    "(bootleg)",
+    "[bootleg]",
+    "[p1]",
+    "[p2]",
+    "[p3]",
 )
 
 
@@ -440,6 +447,30 @@ _UNOFFICIAL_SYNOPSIS_MARKERS: Tuple[str, ...] = (
     " is a sub-game ",
     " is a minigame ",
     " is a mini-game ",
+    " pirate port ",
+    " bootleg port ",
+    " unlicensed port ",
+    " portage pirate ",
+    " version pirate ",
+    " cartouche pirate ",
+)
+
+
+_PIRATE_BOOTLEG_PUBLISHERS: Tuple[str, ...] = (
+    "j.y. company",
+    "jy company",
+    "hummer team",
+    "cony soft",
+    "rex soft",
+    "gouder",
+    "yoko soft",
+    "sintax",
+    "vast fame",
+    "kasheng",
+    "ntdec",
+    "super game",
+    "somari team",
+    "waixing",
 )
 
 
@@ -450,13 +481,15 @@ def is_unofficial_game_release(
 ) -> bool:
     """
     Return True when metadata indicates a non-retro PC engine tech demo (`Unreal Engine` /
-    `Unity Remake`), randomizer seed, bug-fix patch, or embedded sub-game/minigame entry
-    rather than a standalone playable retro release (legitimate console/Neo-Geo homebrews
-    and ports on real hardware remain allowed).
+    `Unity Remake`), randomizer seed, bug-fix patch, embedded sub-game/minigame entry, or
+    commercial counterfeit/pirate bootleg ROM (e.g. `J.Y. Company` / `Hummer Team` NES pirate
+    demakes), while legitimate console/Neo-Geo community homebrews remain allowed.
     """
-    _ = publisher
     t_low = (title or "").strip().lower()
     if any(marker in t_low for marker in _UNOFFICIAL_TITLE_MARKERS):
+        return True
+    p_low = (publisher or "").strip().lower()
+    if p_low and any(pub in p_low for pub in _PIRATE_BOOTLEG_PUBLISHERS):
         return True
     s_low = f" {(synopsis or '').strip().lower()} "
     return any(marker in s_low for marker in _UNOFFICIAL_SYNOPSIS_MARKERS)

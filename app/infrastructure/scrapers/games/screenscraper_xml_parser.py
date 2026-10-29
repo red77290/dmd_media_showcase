@@ -584,9 +584,10 @@ def parse_screenscraper_game_node(
             GAME_GENRES.get(primary_genre, ""),
         )
 
-    publisher = extract_node_text(jeu.get("editeur")) or extract_node_text(
-        jeu.get("developpeur")
-    )
+    editeur_txt = extract_node_text(jeu.get("editeur"))
+    developpeur_txt = extract_node_text(jeu.get("developpeur"))
+    publisher = editeur_txt or developpeur_txt
+    company_meta = f"{editeur_txt} {developpeur_txt}".strip()
     if localized_genre_label and publisher:
         subtitle = f"{localized_genre_label} • {publisher}"[:28]
     elif publisher:
@@ -626,7 +627,7 @@ def parse_screenscraper_game_node(
         synopsis_src_lang = "fr"
     else:
         synopsis = first_synopsis
-    if is_unofficial_game_release(title, synopsis=synopsis or "", publisher=publisher):
+    if is_unofficial_game_release(title, synopsis=synopsis or "", publisher=company_meta):
         return None
 
     note_raw = extract_node_text(jeu.get("note"))

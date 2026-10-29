@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import struct
 import time
@@ -188,19 +189,33 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
         on_eof: Optional[Callable[[str, str, bool], Awaitable[None]]],
     ) -> None:
         frame_bytes = width * height * 2
-        raw_path = stream_path.with_suffix(".raw565")
         completed_ok = False
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(False)
+        use_connected_udp = self._packet_sink is None
+        if use_connected_udp:
+            try:
+                sock.connect((udp_ip, int(udp_port)))
+            except OSError:
+                use_connected_udp = False
+        stream_fh = None
 
         try:
-            # Strip the 16-byte DMDS header so `ffmpeg -re` reads pure RGB565LE frames
-            data = stream_path.read_bytes()
-            raw_frames = data[16:] if data[:4] == b"DMDS" else data
-            if len(raw_frames) < frame_bytes:
+            file_size = stream_path.stat().st_size if stream_path.exists() else 0
+            if file_size < frame_bytes:
                 completed_ok = True
                 return
-            raw_path.write_bytes(raw_frames)
+
+            # Zero-copy DMDS header skip: use unbuffered FileIO (`buffering=0`) + kernel `os.lseek`
+            # so `create_subprocess_exec(stdin=stream_fh)` starts reading at exact byte 16 without
+            # Python BufferedReader prefetching or copying multi-megabyte raw565 buffers in RAM/tmpfs.
+            stream_fh = stream_path.open("rb", buffering=0)
+            magic = stream_fh.read(4)
+            header_offset = 16 if magic == b"DMDS" else 0
+            if file_size - header_offset < frame_bytes:
+                completed_ok = True
+                return
+            os.lseek(stream_fh.fileno(), header_offset, os.SEEK_SET)
 
             ffmpeg_bin = get_ffmpeg_binary()
             cmd = [
@@ -218,7 +233,7 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 "-r",
                 str(fps),
                 "-i",
-                str(raw_path),
+                "pipe:0",
                 "-f",
                 "rawvideo",
                 "-pix_fmt",
@@ -235,8 +250,10 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                 height,
                 fps,
             )
+            t_launch = time.monotonic()
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=stream_fh,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -244,7 +261,9 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
             assert proc.stdout is not None
 
             frame_seq = 0
-            while True:
+            consecutive_icmp_refused = 0
+            icmp_aborted = False
+            while not icmp_aborted:
                 try:
                     frame_buf = await proc.stdout.readexactly(frame_bytes)
                 except asyncio.IncompleteReadError:
@@ -254,18 +273,48 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
                     if self._packet_sink is not None:
                         self._packet_sink(pkt, udp_ip, udp_port)
                         continue
-                    # Micro-pace multi-chunk HD frames (e.g. 256x64 = 32 chunks = 33 KB/frame)
-                    # in 8-KB groups so Wi-Fi AP TX queues and ESP32 lwIP UDP mailboxes never
-                    # tail-drop chunks 16..31, while 128x32 (8 chunks) sends with zero delay.
-                    if pkt_idx > 0 and (pkt_idx % 8) == 0:
-                        await asyncio.sleep(0.0008)
+                    # Micro-pace in 4-KB groups (every 4 chunks) so both 128x32 (8 chunks on
+                    # single-radio classic ESP32) and 256x64 (32 chunks) avoid Wi-Fi AP / LwIP
+                    # burst drops while taking < 0.7 ms per 128x32 frame.
+                    if pkt_idx > 0 and (pkt_idx % 4) == 0:
+                        await asyncio.sleep(0.0006)
                     try:
-                        sock.sendto(pkt, (udp_ip, udp_port))
+                        if use_connected_udp:
+                            sock.send(pkt)
+                        else:
+                            sock.sendto(pkt, (udp_ip, udp_port))
+                        consecutive_icmp_refused = 0
                     except BlockingIOError:
                         await asyncio.sleep(0.001)
-                        sock.sendto(pkt, (udp_ip, udp_port))
+                        try:
+                            if use_connected_udp:
+                                sock.send(pkt)
+                            else:
+                                sock.sendto(pkt, (udp_ip, udp_port))
+                            consecutive_icmp_refused = 0
+                        except (BlockingIOError, ConnectionRefusedError):
+                            pass
+                    except ConnectionRefusedError:
+                        # Connected UDP socket received ICMP Port Unreachable from the DMD:
+                        # ignore brief startup race (< 0.5s), otherwise abort zombie stream immediately.
+                        if (time.monotonic() - t_launch) >= 0.5:
+                            consecutive_icmp_refused += 1
+                            if consecutive_icmp_refused >= 8:
+                                logger.info(
+                                    "[UDP STREAM] Remote UDP port %s:%d closed (ICMP unreachable) for dmd_id='%s' -> stopping stream",
+                                    udp_ip,
+                                    udp_port,
+                                    dmd_id,
+                                )
+                                icmp_aborted = True
+                                break
                 frame_seq = (frame_seq + 1) & 0xFFFF
 
+            if icmp_aborted and proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             await proc.wait()
             completed_ok = True
             logger.info(
@@ -281,10 +330,19 @@ class FfmpegUdpClockStreamer(IFrameStreamerPort):
             logger.warning("[UDP STREAM] Error streaming to %s:%d (%s)", udp_ip, udp_port, exc)
         finally:
             self._active_meta.pop(dmd_id, None)
-            self._active_procs.pop(dmd_id, None)
+            proc_cleanup = self._active_procs.pop(dmd_id, None)
+            if proc_cleanup is not None and proc_cleanup.returncode is None:
+                try:
+                    proc_cleanup.kill()
+                except Exception:
+                    pass
             self._active_tasks.pop(dmd_id, None)
+            if stream_fh is not None:
+                try:
+                    stream_fh.close()
+                except Exception:
+                    pass
             sock.close()
-            raw_path.unlink(missing_ok=True)
             if on_eof is not None:
                 try:
                     await on_eof(dmd_id, item_id, completed_ok)

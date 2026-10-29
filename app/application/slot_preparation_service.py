@@ -181,8 +181,17 @@ class SlotPreparationService:
             self.state.client_online[dmd_id] = True
         width = int(payload.get("width") or 128)
         height = int(payload.get("height") or 32)
+        raw_pw = payload.get("poster_width")
+        raw_ph = payload.get("poster_height")
+        pw_opt = int(raw_pw) if isinstance(raw_pw, (int, float)) and int(raw_pw) > 0 else None
+        ph_opt = int(raw_ph) if isinstance(raw_ph, (int, float)) and int(raw_ph) > 0 else None
         top_lang = str(payload.get("lang") or "fr")
-        geometry = PanelGeometry(width=width, height=height)
+        geometry = PanelGeometry(
+            width=width,
+            height=height,
+            poster_width=pw_opt,
+            poster_height=ph_opt,
+        )
 
         declared_ip = str(payload.get("client_ip") or payload.get("udp_ip") or "").strip()
         peer_ip = str(payload.get("_peer_ip") or "").strip()
@@ -257,11 +266,25 @@ class SlotPreparationService:
         geometry: PanelGeometry,
         criteria: FilterCriteria,
     ) -> None:
+        eff_pw, eff_ph = geometry.resolved_poster_dims()
+        geometry = PanelGeometry(
+            width=geometry.width,
+            height=geometry.height,
+            poster_width=eff_pw,
+            poster_height=eff_ph,
+        )
         key = (dmd_id, domain)
         old_pair = self.state.client_configs.get(key)
+        old_canon_pair = None
+        if old_pair is not None:
+            opw, oph = old_pair[0].resolved_poster_dims()
+            old_canon_pair = (
+                PanelGeometry(old_pair[0].width, old_pair[0].height, opw, oph),
+                old_pair[1],
+            )
         self.state.client_configs[key] = (geometry, criteria)
 
-        if old_pair is not None and old_pair != (geometry, criteria):
+        if old_canon_pair is not None and old_canon_pair != (geometry, criteria):
             logger.info(
                 "[ORCHESTRATOR] Retained config changed for dmd='%s' domain='%s' "
                 "(%dx%d, lang=%s, systems=%s, genres=%s, decades=%s, speed=%s) -> invalidating stale slot",
@@ -646,7 +669,7 @@ class SlotPreparationService:
                     f"dmd_showcase/clients/{dmd_id}/{domain}/events", eof_msg, retain=False
                 )
                 await self.mqtt.publish_json(
-                    f"dmd_showcase/clients/{dmd_id}/stream_state", eof_msg, retain=False
+                    f"dmd_showcase/clients/{dmd_id}/stream_state", eof_msg, retain=True
                 )
                 if item_id:
                     await self.purge_consumed_package(item_id)
@@ -680,7 +703,7 @@ class SlotPreparationService:
                 f"dmd_showcase/clients/{dmd_id}/{domain}/events", started_msg, retain=False
             )
             await self.mqtt.publish_json(
-                f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=False
+                f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=True
             )
 
             async def _on_stream_eof(
@@ -700,7 +723,7 @@ class SlotPreparationService:
                 await self.mqtt.publish_json(
                     f"dmd_showcase/clients/{client_dmd_id}/stream_state",
                     eof_msg,
-                    retain=False,
+                    retain=True,
                 )
                 await self.purge_consumed_package(finished_item_id)
 

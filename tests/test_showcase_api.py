@@ -645,3 +645,205 @@ def test_tate_marquee_and_screenshot_panoramas_scroll_left_to_right_without_dist
     assert j_last[:, :, 2].mean() > j_last[:, :, 0].mean() + 40.0
     assert j_first[:4, :, :].max(axis=2).mean() > 90.0
     assert j_first[-4:, :, :].max(axis=2).mean() > 90.0
+
+
+def test_mdns_aaaa_nsec_and_qu_unicast_reply():
+    """Verify RFC 6762 `AAAA` -> `NSEC` negative response, `[AAAA, A]` dual questions, and `QU` unicast replies."""
+    import socket
+    import struct
+    from app.infrastructure.mdns_responder import (
+        DNS_CLASS_IN,
+        DNS_QU_FLAG,
+        DNS_TYPE_A,
+        DNS_TYPE_AAAA,
+        DNS_TYPE_NSEC,
+        _MdnsUdpProtocol,
+        encode_dns_name,
+        parse_mdns_query,
+    )
+
+    wire = encode_dns_name("dmdmediashowcase.local.")
+
+    # 1. Pure AAAA query with QU bit set -> returns NSEC + Additional A record and prefer_unicast=True
+    aaaa_pkt = struct.pack("!HHHHHH", 0x4242, 0x0000, 1, 0, 0, 0) + wire + struct.pack(
+        "!HH", DNS_TYPE_AAAA, DNS_CLASS_IN | DNS_QU_FLAG
+    )
+    nsec_reply, prefer_unicast = parse_mdns_query(
+        aaaa_pkt, hostname="dmdmediashowcase.local", ipv4="192.168.1.22", port=8890
+    )
+    assert nsec_reply is not None
+    assert prefer_unicast is True
+    _tx, _fl, _qd, ancount, _ns, arcount = struct.unpack("!HHHHHH", nsec_reply[:12])
+    assert ancount == 1
+    assert arcount == 1
+    assert struct.pack("!H", DNS_TYPE_NSEC) in nsec_reply
+    assert nsec_reply.endswith(socket.inet_aton("192.168.1.22"))
+
+    # 2. Dual-question [AAAA, A] packet -> prioritizes authoritative A answer
+    dual_pkt = (
+        struct.pack("!HHHHHH", 0x4343, 0x0000, 2, 0, 0, 0)
+        + wire
+        + struct.pack("!HH", DNS_TYPE_AAAA, DNS_CLASS_IN)
+        + wire
+        + struct.pack("!HH", DNS_TYPE_A, DNS_CLASS_IN)
+    )
+    dual_reply, _ = parse_mdns_query(
+        dual_pkt, hostname="dmdmediashowcase", ipv4="192.168.1.22", port=8890
+    )
+    assert dual_reply is not None
+    _tx2, _fl2, _qd2, ancount2, _ns2, arcount2 = struct.unpack("!HHHHHH", dual_reply[:12])
+    assert ancount2 == 1
+    assert arcount2 == 0
+    assert dual_reply.endswith(socket.inet_aton("192.168.1.22"))
+
+    # 3. QU query from port 5353 must trigger unicast sendto(addr) in addition to multicast
+    sent = []
+
+    class _DummyTransport:
+        def sendto(self, payload, target):
+            sent.append(target)
+
+    proto = _MdnsUdpProtocol("dmdmediashowcase", "192.168.1.22", 8890)
+    proto.connection_made(_DummyTransport())  # type: ignore[arg-type]
+    qu_a_pkt = struct.pack("!HHHHHH", 0x5151, 0x0000, 1, 0, 0, 0) + wire + struct.pack(
+        "!HH", DNS_TYPE_A, DNS_CLASS_IN | DNS_QU_FLAG
+    )
+    proto.datagram_received(qu_a_pkt, ("192.168.1.31", 5353))
+    assert ("224.0.0.251", 5353) in sent
+    assert ("192.168.1.31", 5353) in sent
+
+
+def test_pirate_bootleg_publishers_filtered_while_community_homebrew_preserved():
+    """Verify NES pirate ports (e.g. KOF '96 by J.Y. Company) are filtered while genuine homebrews stay allowed."""
+    import xml.etree.ElementTree as ET
+    from app.domain.taxonomy.game_genres import is_unofficial_game_release
+    from app.infrastructure.scrapers.games.screenscraper_xml_parser import (
+        parse_screenscraper_game_node,
+    )
+
+    assert is_unofficial_game_release("The King of Fighters '96", publisher="J.Y. Company") is True
+    assert is_unofficial_game_release("Street Fighter IV", publisher="Hummer Team") is True
+    assert is_unofficial_game_release("Super Mario World (Pirate)") is True
+    assert is_unofficial_game_release("Contra [p1]") is True
+    assert is_unofficial_game_release("Shinobi Neo-Geo Homebrew Edition", publisher="Indie Dev") is False
+    assert is_unofficial_game_release("The King of Fighters '96", publisher="SNK") is False
+
+    pirate_xml = ET.fromstring(
+        """
+        <jeu id="999999">
+            <noms><nom region="wor">The King of Fighters '96</nom></noms>
+            <editeur>J.Y. Company</editeur>
+            <developpeur>Cony Soft</developpeur>
+            <synopsis><synopsis langue="fr">Portage non licencié Famicom.</synopsis></synopsis>
+            <medias><media type="ss" region="wor">https://example.com/snap.png</media></medias>
+        </jeu>
+        """
+    )
+    assert parse_screenscraper_game_node(pirate_xml, "nes", "fr") is None
+
+
+@pytest.mark.asyncio
+async def test_panel_geometry_canonicalization_prevents_false_slot_invalidation(tmp_path: Path, monkeypatch):
+    """Verify MQTT/HTTP geometry with omitted vs explicit default poster dims (`32x32` on `128x32`) never invalidates slots."""
+    from app.application.consume_once_orchestrator import ConsumeOnceOrchestrator
+    from app.domain.entities import FilterCriteria, MediaCandidate, PanelGeometry, PreparedShowcasePackage, ShowcaseCard
+
+    monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "canon_geom_data"))
+    orch = ConsumeOnceOrchestrator()
+    orch._schedule_preparation = lambda *_a, **_kw: None  # type: ignore[method-assign]
+    dmd_id = "esp32_edc5d7_games_128x32"
+
+    await orch.register_client_domain(
+        dmd_id,
+        "games",
+        PanelGeometry(width=128, height=32, poster_width=None, poster_height=None),
+        FilterCriteria(domain="games", lang="fr"),
+    )
+    canon_geom = orch.client_configs[(dmd_id, "games")][0]
+    dummy_pkg = PreparedShowcasePackage(
+        item_id="keep_me_1",
+        dmd_id=dmd_id,
+        domain="games",
+        geometry=canon_geom,
+        candidate=MediaCandidate(
+            id="neogeo_mslug",
+            domain="games",
+            title="Metal Slug",
+            year="1996",
+            badge="NEOGEO",
+            badge_color="#FF9800",
+            subtitle="Run and gun",
+            rating="9.5",
+            synopsis="Metal Slug...",
+        ),
+        card=ShowcaseCard(
+            item_id="keep_me_1",
+            domain="games",
+            title="Metal Slug",
+            year="1996",
+            badge="NEOGEO",
+            badge_color="#FF9800",
+            subtitle="Run and gun",
+            rating="9.5",
+            synopsis="Metal Slug...",
+            lang="fr",
+            source_used="igdb",
+            poster_width=32,
+            poster_height=32,
+            poster_rgb565_b64="AAH/",
+            stream_frames=120,
+            stream_fps=15,
+        ),
+        item_dir=tmp_path / "pkg_keep_me",
+    )
+    orch.ready_packages[(dmd_id, "games")] = dummy_pkg
+
+    # Re-registering with explicit 32x32 poster dims on 128x32 must compare equal and preserve `ready_packages`
+    await orch.register_client_domain(
+        dmd_id,
+        "games",
+        PanelGeometry(width=128, height=32, poster_width=32, poster_height=32),
+        FilterCriteria(domain="games", lang="fr"),
+    )
+    assert orch.ready_packages.get((dmd_id, "games")) is dummy_pkg
+
+
+@pytest.mark.asyncio
+async def test_zero_copy_ffmpeg_pipe_streamer_skips_dmds_header_without_temp_file(tmp_path: Path):
+    """Verify `FfmpegUdpClockStreamer` streams a `DMDS` file via `pipe:0` without creating any `.raw565` disk copy."""
+    from dmd_gif_converter import write_rgb565_stream
+    from app.infrastructure.streaming.ffmpeg_udp_streamer import (
+        DMDF_MAGIC,
+        FfmpegUdpClockStreamer,
+    )
+
+    frames = [np.full((32, 128, 3), fill_value=180, dtype=np.uint8) for _ in range(3)]
+    stream_file = tmp_path / "sample.rgb565.stream"
+    write_rgb565_stream(frames, stream_file, fps=15)
+
+    captured_pkts = []
+    eof_event = asyncio.Event()
+
+    async def _on_eof(_dmd: str, _item: str, _ok: bool) -> None:
+        eof_event.set()
+
+    streamer = FfmpegUdpClockStreamer(packet_sink=lambda pkt, _ip, _port: captured_pkts.append(pkt))
+    try:
+        ok = await streamer.start_udp_clock_stream(
+            dmd_id="esp32_test",
+            item_id="item_test",
+            stream_path=stream_file,
+            width=128,
+            height=32,
+            fps=15,
+            udp_ip="127.0.0.1",
+            udp_port=5568,
+            on_eof=_on_eof,
+        )
+        assert ok is True
+        await asyncio.wait_for(eof_event.wait(), timeout=5.0)
+        assert not stream_file.with_suffix(".raw565").exists()
+        assert len(captured_pkts) == 3 * 8  # 3 frames * 8 chunks (8192 B / 1024 B)
+        assert captured_pkts[0][:4] == DMDF_MAGIC
+    finally:
+        await streamer.stop_stream("esp32_test")
