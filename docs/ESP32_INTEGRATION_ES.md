@@ -28,10 +28,12 @@ Diseñado para firmwares avanzados donde el ESP32 gestiona su propia rotación l
 - **Autoridad de Configuración**: La WebUI del ESP32 consulta dinámicamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar sus listas desplegables localizadas, guarda los filtros localmente y publica su configuración retenida en `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
 - **Sesión MQTT Pura Cero-Heap + Streaming WebSocket `DMDZ` Confirmado por Créditos**: Core 0 reclama la ficha `ready` retenida mediante un socket MQTT LwIP puro cero-heap (`start_card`), **cierra inmediatamente el socket TCP MQTT con `SO_LINGER {1, 0}`** (`0` sockets abiertos y `0` PCB `TIME_WAIT` durante la Fase 1 de la Ficha) y reproduce la Fase 2 (`Panoramas + Capturas + Vídeo`) por `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`:8890`, con respaldo automático a `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`).
 - **Comportamiento en Rotación**: Cuando llega el turno de un motor Showcase y el slot MQTT retenido (`dmd_showcase/clients/{dmd_id}/{domain}/ready`) indica `{"ready": false}`, el motor cede su turno en **`0 ms`** (`m_skipTurnImmediately = true`). El panel pasa al instante al siguiente motor local (`Clock`, `Weather`, etc.) sin pantallas negras ni bloqueos.
-- **Implementación de Referencia en Producción (`ArcadeMatrix`)**:
-  - Cabecera, `RawMqttSocket`, `DmdzWsDemuxer` y Contrato de Motor: [`src/engines/MediaShowcaseEngines.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.h)
-  - Worker MQTT Puro Cero-Heap, Streamer WebSocket `DMDZ` por Créditos y Respaldo HTTP: [`src/engines/MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp)
-  - Decodificador Sin Pérdida `DMDZ` v1 y Demultiplexor Binario RFC 6455: [`src/engines/DmdzStreamDecoder.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/DmdzStreamDecoder.h) / [`src/engines/DmdzStreamDecoder.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/DmdzStreamDecoder.cpp)
+- **Implementación de Referencia en Producción (`ArcadeMatrix` — Diseño Modular de Responsabilidad Única)**:
+  - Orquestador de Motores Showcase y Descriptores: [`src/engines/MediaShowcaseEngines.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.h) / [`src/engines/MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp)
+  - Fuente Píxel UTF-8 en Core 1, Pixel-Art de Espera y Diseños Adaptativos de Card: [`src/engines/showcase/ShowcaseCardRenderer.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/showcase/ShowcaseCardRenderer.h) / [`src/engines/showcase/ShowcaseCardRenderer.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/showcase/ShowcaseCardRenderer.cpp)
+  - Cliente de Stream Compartido Cero-Heap WebSocket `DMDZ` por Créditos + Respaldo HTTP con Marcapasos (compartido por `MediaShowcaseBase` y `FrontendSyncEngine`): [`src/core/net/DmdzStreamClient.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/DmdzStreamClient.h) / [`src/core/net/DmdzStreamClient.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/DmdzStreamClient.cpp)
+  - Socket MQTT 3.1.1 LwIP Puro Cero-Heap y Cierre `SO_LINGER {1, 0}`: [`src/core/net/RawMqttSocket.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/RawMqttSocket.h) / [`src/core/net/RawMqttSocket.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/RawMqttSocket.cpp)
+  - Decodificador Sin Pérdida `DMDZ` v1 y Demultiplexor Binario RFC 6455: [`src/core/drawing/DmdzStreamDecoder.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/drawing/DmdzStreamDecoder.h) / [`src/core/drawing/DmdzStreamDecoder.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/drawing/DmdzStreamDecoder.cpp)
 
 ---
 
@@ -143,84 +145,85 @@ En todos los firmwares ESP32 HUB75 (incluido [`ArcadeMatrix`](https://github.com
 
 ```mermaid
 sequenceDiagram
-    participant C1 as "ESP32 Core 1 (60 FPS HUB75)"
-    participant C0 as "ESP32 Core 0 (MQTT puro + WS DMDZ por creditos)"
-    participant SRV as "Servidor Showcase (:1883 MQTT / :8890 WS+HTTP)"
-    participant UDP as "FfmpegUdpClockStreamer (Modo 2B :4210)"
+    participant C1 as ESP32 Core 1 (60 FPS HUB75)
+    participant C0 as ESP32 Core 0 (MQTT puro + WS DMDZ por creditos)
+    participant SRV as Servidor Showcase (:1883 MQTT / :8890 WS+HTTP)
+    participant UDP as FfmpegUdpClockStreamer (Modo 2B :4210)
 
-    Note over C1,C0: "1. ARRANQUE Y DESCUBRIMIENTO mDNS / MQTT PURO CERO-HEAP"
-    C1->>C1: "Animacion pixel-art procedimental 60 FPS no bloqueante"
-    C0->>SRV: "Resolucion mDNS dmdmediashowcase.local + Raw LwIP MQTT CONNECT (con LWT)"
-    C0->>SRV: "PUBLISH clients/{id}/config O clients/{id}/hello (retain=True)"
+    Note over C1,C0: 1. ARRANQUE Y DESCUBRIMIENTO mDNS / MQTT PURO CERO-HEAP
+    C1->>C1: Animacion pixel-art procedimental 60 FPS no bloqueante
+    C0->>SRV: Resolucion mDNS dmdmediashowcase.local + Raw LwIP MQTT CONNECT (con LWT)
+    C0->>SRV: PUBLISH clients/{id}/config O clients/{id}/hello (retain=True)
 
-    Note over C1,SRV: "2. PREPARACION / ESPERA DE CONTENIDO (ready: false)"
-    SRV-->>C0: "Retained ready: false (preparando pkg_<domain>_<12hex> en segundo plano)"
-    alt "DMD Multimotor (ArcadeMatrix, rotationSlots > 1)"
-        C0->>C1: "m_skipTurnImmediately = true (salto en 0 ms hacia Reloj/Clima)"
-    else "Receptor Dedicado / Pasivo (Modelos 2A y 2B)"
-        C1->>C1: "Mantiene animacion fluida a 60 FPS (cero pantalla negra)"
+    Note over C1,SRV: 2. PREPARACION / ESPERA DE CONTENIDO (ready=false)
+    SRV-->>C0: Retained ready=false (preparando pkg_{domain}_{12hex} en segundo plano)
+    alt DMD Multimotor (ArcadeMatrix, rotationSlots > 1)
+        C0->>C1: m_skipTurnImmediately = true (salto en 0 ms hacia Reloj/Clima)
+    else Receptor Dedicado / Pasivo (Modelos 2A y 2B)
+        C1->>C1: Mantiene animacion fluida a 60 FPS (cero pantalla negra)
     end
 
-    Note over C1,SRV: "3. FASE 1 — CLAIM MQTT PURO Y FICHA LOCAL 60 FPS"
-    SRV-->>C0: "Entrega ready: true + Ficha N (pkg_<domain>_<12hex>)"
-    C0->>SRV: "PUBLISH {domain}/events {action: start_card, item_id: N} -> MQTT DISCONNECT + SO_LINGER {1,0}"
-    Note over C0: "¡0 sockets abiertos y 0 PCB TIME_WAIT durante el desplazamiento de la Ficha!"
-    SRV->>SRV: "Bloquea N en seen_history.json + inicia preparacion Standby N+1"
-    C1->>C1: "Desplazamiento de sinopsis localizada 60 FPS y minicaratula (5-12 s)"
+    Note over C1,SRV: 3. FASE 1 — CLAIM MQTT PURO Y FICHA LOCAL 60 FPS
+    SRV-->>C0: Entrega ready=true + Ficha N (pkg_{domain}_{12hex})
+    C0->>SRV: PUBLISH {domain}/events {action: start_card, item_id: N} luego MQTT DISCONNECT + SO_LINGER {1,0}
+    Note over C0: ¡0 sockets abiertos y 0 PCB TIME_WAIT durante el desplazamiento de la Ficha!
+    SRV->>SRV: Bloquea N en seen_history.json + inicia preparacion Standby N+1
+    C1->>C1: Desplazamiento de sinopsis localizada 60 FPS y minicaratula (5-12 s)
 
-    Note over C1,UDP: "4. FASE 2 — STREAM WS DMDZ POR CREDITOS (DEFECTO), RESPALDO HTTP O UDP PASIVO DMDF"
-    alt "Modo Principal MQTT+TCP (Modelos 1 y 2A — WS DMDZ por creditos + Respaldo HTTP)"
-        C0->>C0: "Reserva LIFO Fase 2 de frame565 (8 KB en ESP32_STD; PSRAM persistente en S3)"
-        C0->>SRV: "GET /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={id}&credits=2 (Upgrade: websocket)"
-        SRV-->>C0: "101 Switching Protocols + Cabecera DMDZ v1 16B (ventana inicial 2 creditos)"
-        loop "Subpaquetes DMDZ Sin Perdida (<= 1024 B, <= 2048 B max en vuelo)"
-            SRV-->>C0: "Subpaquete binario WS (<= 1024 B) -> DmdzStreamDecoder en sitio"
-            C0->>SRV: "ACK credito 1 byte 'A' (0x41) enmascarado"
-            C0->>C1: "Transferencia frameSeq Par/Impar + renderBlitSeq + cadencia cliente monotona"
+    Note over C1,UDP: 4. FASE 2 — STREAM WS DMDZ POR CREDITOS (DEFECTO), RESPALDO HTTP O UDP PASIVO DMDF
+    alt Modo Principal MQTT+TCP (Modelos 1 y 2A — WS DMDZ por creditos + Respaldo HTTP)
+        C0->>C0: Reserva LIFO Fase 2 de frame565 (8 KB en ESP32_STD, PSRAM persistente en S3)
+        C0->>SRV: GET /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={id}&credits=2 (Upgrade websocket)
+        SRV-->>C0: 101 Switching Protocols + Cabecera DMDZ v1 16B (ventana inicial 2 creditos)
+        loop Subpaquetes DMDZ Sin Perdida (<= 1024 B, <= 2048 B max en vuelo)
+            SRV-->>C0: Subpaquete binario WS (<= 1024 B) -> DmdzStreamDecoder en sitio
+            C0->>SRV: ACK credito 1 byte 'A' (0x41) enmascarado
+            C0->>C1: Transferencia frameSeq Par/Impar + renderBlitSeq + cadencia cliente monotona
         end
-        Note over C0,SRV: "Respaldo auto si Upgrade WS bloqueado: GET .rgb565.stream?purge=true&paced=1&codec=dmdz1"
-        SRV->>SRV: "Cierre WS / EOF -> purge_consumed_package(N) inmediata en disco"
-    else "Modelo 2B Pasivo (UDP-PASSIVE :4210, supports_local_card: false)"
-        UDP-->>C0: "UDP DMDF (Cabecera 10B <4sHBBH + <=1408B RGB565LE) hacia :4210"
-        C0->>C1: "Intercambio Ping-Pong al completar chunkMask (watchdog 2500 ms)"
+        Note over C0,SRV: Respaldo auto si Upgrade WS bloqueado -> GET .rgb565.stream?purge=true&paced=1&codec=dmdz1
+        SRV->>SRV: Cierre WS / EOF -> purge_consumed_package(N) inmediata en disco
+    else Modelo 2B Pasivo (UDP-PASSIVE :4210, supports_local_card=false)
+        UDP-->>C0: UDP DMDF (Cabecera 10B + <= 1408 B RGB565LE) hacia :4210
+        C0->>C1: Intercambio Ping-Pong al completar chunkMask (watchdog 2500 ms)
     end
 
-    Note over C1,SRV: "5. DESACTIVACION / PREEMPCION (< 250 ms CIERRE QUIESCENTE)"
-    C0->>SRV: "SO_LINGER {1,0} + lwip_close(sock) -> 0 TIME_WAIT y purga inmediata en disco de N"
-    C0->>C1: "Espera renderBlitSeq PAR -> liberacion LIFO de frame565 en ESP32_STD"
+    Note over C1,SRV: 5. DESACTIVACION / PREEMPCION (CIERRE QUIESCENTE < 250 ms)
+    C0->>SRV: SO_LINGER {1,0} + lwip_close(sock) -> 0 TIME_WAIT y purga inmediata en disco de N
+    C0->>C1: Espera renderBlitSeq PAR -> liberacion LIFO de frame565 en ESP32_STD
 ```
 
 ### Máquina de Estados Determinista en el ESP32
 
 ```mermaid
 stateDiagram-v2
+    state "1. ARRANQUE Y DESCUBRIMIENTO (Wi-Fi + mDNS + MQTT LwIP Puro / Hello HTTP)" as BootDiscovery
+    state "2. PREPARACION / ESPERA (ready == false)" as WarmingWait
+    state "Ceder Turno en 0 ms (Rotacion Multimotor)" as SkipZeroMs
+    state "3. FASE 1 - FICHA INFO (60 FPS Local, 0 Sockets Abiertos, 0 TIME_WAIT)" as Phase1Card
+    state "4. FASE 2 - WS DMDZ POR CREDITOS (8890) / RESPALDO HTTP O UDP DMDF (4210)" as Phase2Stream
+    state "5. DESACTIVACION QUIESCENTE (SO_LINGER {1,0}, renderBlitSeq, LIFO free)" as QuiescentStop
+
     [*] --> BootDiscovery
-    BootDiscovery: "1. ARRANQUE Y DESCUBRIMIENTO (Wi-Fi + mDNS + MQTT LwIP Puro / Hello HTTP)"
-    WarmingWait: "2. PREPARACION / ESPERA (ready == false)"
-    SkipZeroMs: "Ceder Turno en 0 ms (Rotacion Multimotor)"
-    Phase1Card: "3. FASE 1: FICHA INFO (60 FPS Local, 0 Sockets Abiertos, 0 TIME_WAIT)"
-    Phase2Stream: "4. FASE 2: WS DMDZ POR CREDITOS (:8890) / RESPALDO HTTP O UDP DMDF (:4210)"
-    QuiescentStop: "5. DESACTIVACION QUIESCENTE (SO_LINGER {1,0} -> renderBlitSeq -> LIFO free)"
 
-    BootDiscovery --> WarmingWait: "Conectado (slot preparandose)"
-    BootDiscovery --> Phase1Card: "Retained ready == true -> start_card -> SO_LINGER close MQTT (Modelo 1 / 2A)"
-    BootDiscovery --> Phase2Stream: "Llega primer frame UDP DMDF (Modelo 2B)"
+    BootDiscovery --> WarmingWait : Conectado (slot preparandose)
+    BootDiscovery --> Phase1Card : Retained ready == true, start_card, SO_LINGER close MQTT (Modelo 1 / 2A)
+    BootDiscovery --> Phase2Stream : Llega primer frame UDP DMDF (Modelo 2B)
 
-    WarmingWait --> SkipZeroMs: "m_skipTurnImmediately (ArcadeMatrix >1 motor)"
-    WarmingWait --> Phase1Card: "ready == true / command: play_card"
-    WarmingWait --> Phase2Stream: "Inicio stream UDP DMDF (Modelo 2B)"
+    WarmingWait --> SkipZeroMs : m_skipTurnImmediately (ArcadeMatrix > 1 motor)
+    WarmingWait --> Phase1Card : ready == true / comando play_card
+    WarmingWait --> Phase2Stream : Inicio stream UDP DMDF (Modelo 2B)
 
-    Phase1Card --> Phase2Stream: "Fin de sinopsis -> WS /ws/{id}.dmdz?purge=true&credits=2"
-    Phase1Card --> Phase1Card: "command: pause / resume"
-    Phase1Card --> WarmingWait: "command: skip"
+    Phase1Card --> Phase2Stream : Fin de sinopsis, abre WS /ws/{id}.dmdz?purge=true&credits=2
+    Phase1Card --> Phase1Card : comando pause / resume
+    Phase1Card --> WarmingWait : comando skip
 
-    Phase2Stream --> WarmingWait: "WS CLOSE / totalFrames alcanzado -> LIFO free frame565 (Modelos 1 y 2A)"
-    Phase2Stream --> WarmingWait: "Inactividad socket > 3500 ms O silencio UDP > 2500 ms"
-    Phase2Stream --> WarmingWait: "Tiempo > maxStreamCeilingMs (Techo de seguridad)"
-    Phase2Stream --> Phase1Card: "Elemento N+1 ya listo"
+    Phase2Stream --> WarmingWait : WS CLOSE / totalFrames alcanzado, LIFO free frame565 (Modelos 1 y 2A)
+    Phase2Stream --> WarmingWait : Inactividad socket > 3500 ms O silencio UDP > 2500 ms
+    Phase2Stream --> WarmingWait : Tiempo > maxStreamCeilingMs (Techo de seguridad)
+    Phase2Stream --> Phase1Card : Elemento N+1 ya listo
 
-    Phase1Card --> QuiescentStop: "deactivate() / Preempcion WEBUI_SYNC"
-    Phase2Stream --> QuiescentStop: "deactivate() / Preempcion WEBUI_SYNC"
+    Phase1Card --> QuiescentStop : deactivate() / Preempcion WEBUI_SYNC
+    Phase2Stream --> QuiescentStop : deactivate() / Preempcion WEBUI_SYNC
     SkipZeroMs --> [*]
     QuiescentStop --> [*]
 ```
@@ -1465,8 +1468,9 @@ En máquinas recreativas o HTPC con **Batocera**, **RetroBat**, **LaunchBox / Bi
 1. **Al Seleccionar o Iniciar un Juego (`POST /queue/async`, `mode: "play_now"`, `mark_seen: false`)**:
    - `FrontendSync` (tanto en `ArcadeMatrix` ESP32 como en `ArcadeMatrix_RPi`) invoca `POST /api/v1/clients/{dmd_id}/queue/async` con `mode: "play_now"` y **`mark_seen: false`**, recibiendo `202 Accepted` en `< 3 ms` mientras `DomainSourceChainService` resuelve alias de ROM arcade (ej. `sf2x` en `cps2`) y transcodifica en segundo plano.
    - **Por qué `mark_seen: false` es clave**: Jugar 20 veces a su clásico favorito de Neo-Geo, CPS-2 o Mega Drive **jamás contamina `./data/seen_history.json`**, preservando intacto el descubrimiento Consume-Once durante el modo attract.
-2. **Al Salir del Juego (`action: "skip"`)**:
-   - Al volver al menú o al modo reposo, `FrontendSync` envía `{"action": "skip"}` a `/api/v1/clients/{dmd_id}/control` para retomar al instante el siguiente elemento `N+1` precalentado.
+2. **Transporte del Stream en Juego (`DmdzStreamClient`, `purge=false`) y Salida del Juego**:
+   - En `ArcadeMatrix` ESP32, `FrontendSyncEngine` comparte exactamente las mismas primitivas cero-heap `net::DmdzStreamClient` y `net::RawMqttSocket` que los motores Showcase autónomos: cuando `/queue` indica `ready`, reproduce `WS /api/v1/games/ws/{item_id}.dmdz?purge=false&client_id={sync_id}` (`credits=2` en `ESP32_STD`, `&credits=8` en `ESP32-S3` PSRAM, con respaldo automático HTTP `?purge=false&paced=1&codec=dmdz1`), manteniendo `purge=false` para los ciclos `once` / `loop` / `alternating` antes de liberar la cola mediante `DELETE /api/v1/clients/{sync_id}/queue/{queue_id}` sin `TIME_WAIT` (`SO_LINGER {1, 0}`).
+   - En receptores pasivos (`Modelo 2B`), al volver al menú o al modo reposo, `FrontendSync` envía `{"action": "skip"}` a `/api/v1/clients/{dmd_id}/control` para retomar al instante el siguiente elemento `N+1` precalentado.
 
 ```bash
 # Ejemplo: Script EmulationStation en Batocera (/userdata/system/configs/emulationstation/scripts/game-start/dmd_sync.sh)
