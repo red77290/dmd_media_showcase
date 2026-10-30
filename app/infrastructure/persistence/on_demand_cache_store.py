@@ -120,7 +120,7 @@ class FileOnDemandCacheStore(IOnDemandCachePort):
                         continue
                     if src_file.is_file():
                         target_file = dest_dir / src_file.name
-                        shutil.copyfile(src_file, target_file)
+                        shutil.copy2(src_file, target_file)
                         copied_bytes += target_file.stat().st_size
 
                 files_map: Dict[str, Any] = dict(raw_files_map)
@@ -172,7 +172,7 @@ class FileOnDemandCacheStore(IOnDemandCachePort):
                 for src_file in source_dir.iterdir():
                     if src_file.is_file() and not src_file.name.startswith("."):
                         dst = tmp_dir / src_file.name
-                        shutil.copyfile(src_file, dst)
+                        shutil.copy2(src_file, dst)
                         total_bytes += dst.stat().st_size
 
                 if total_bytes <= 0:

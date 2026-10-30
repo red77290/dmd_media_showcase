@@ -2445,3 +2445,60 @@ async def test_paced_stream_serves_dmdz1_when_requested_and_raw_otherwise(tmp_pa
 
     assert item_id not in consume_once_orchestrator.active_packages
     assert not item_dir.exists() or not stream_path.exists()
+
+
+def test_ws_credited_dmdz_stream_subpacket_and_lossless_roundtrip(tmp_path: Path):
+    """Verify ZeDMD-style credit-acked `/ws/{item_id}.dmdz` caps every WS frame at <= 1024 B and decodes losslessly."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.infrastructure.rendering.dmdz_codec import decode_dmdz_bytes
+
+    rng = np.random.default_rng(77)
+    item_id = "ws_dmdz_item_99"
+    item_dir = tmp_path / item_id
+    item_dir.mkdir(parents=True, exist_ok=True)
+    stream_path = item_dir / f"{item_id}.rgb565.stream"
+    # Mix multi-KB high-entropy video keyframe (> 4 KB) + smooth scroll/delta frames
+    frames_rgb = [
+        rng.integers(0, 256, size=(32, 128, 3), dtype=np.uint8),
+        np.full((32, 128, 3), fill_value=45, dtype=np.uint8),
+        rng.integers(0, 256, size=(32, 128, 3), dtype=np.uint8),
+    ]
+    write_rgb565_stream(frames_rgb, str(stream_path), fps=60)
+    raw_bytes = stream_path.read_bytes()
+
+    cand = MediaCandidate(
+        id="ss_99", domain="games", source_id="screenscraper", title="Metal Slug", year="1996",
+        badge="NEOGEO", badge_color="#FFD700", subtitle="Neo-Geo", rating="9.2", synopsis="Run and gun.",
+    )
+    card = ShowcaseCard(
+        item_id=item_id, domain="games", title="Metal Slug", year="1996", badge="NEOGEO",
+        badge_color="#FFD700", subtitle="Neo-Geo", rating="9.2", synopsis="Run and gun.", lang="en",
+        source_used="screenscraper", poster_width=32, poster_height=32, poster_rgb565_b64="",
+        has_video=True, stream_frames=3, stream_fps=60, stream_duration_s=0.05,
+    )
+    consume_once_orchestrator.active_packages[item_id] = PreparedShowcasePackage(
+        item_id=item_id, dmd_id="esp32_ws_dmd", domain="games", candidate=cand,
+        geometry=PanelGeometry(width=128, height=32), card=card, item_dir=item_dir,
+        unified_stream_path=stream_path, consumed=True,
+    )
+
+    chunks = []
+    with TestClient(app) as tc:
+        with tc.websocket_connect(f"/api/v1/games/ws/{item_id}.dmdz?purge=true&client_id=esp32_ws_dmd") as ws:
+            while True:
+                try:
+                    msg = ws.receive_bytes()
+                except WebSocketDisconnect:
+                    break
+                assert 0 < len(msg) <= 1024
+                chunks.append(msg)
+                ws.send_bytes(b"A")
+
+    assert len(chunks) >= 8  # 16 B header + multi-chunk >4 KB frames
+    assembled = b"".join(chunks)
+    decoded = decode_dmdz_bytes(assembled)
+    expected = np.frombuffer(raw_bytes[16:], dtype="<u2").reshape(decoded.shape)
+    assert np.array_equal(decoded, expected)
+    assert item_id not in consume_once_orchestrator.active_packages

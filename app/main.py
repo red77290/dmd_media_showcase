@@ -224,6 +224,7 @@ def run() -> None:
         log_level=settings.log_level.lower(),
         proxy_headers=settings.trust_proxy_headers,
         forwarded_allow_ips="*",
+        ws_per_message_deflate=False,
         **ssl_kwargs,
     )
 

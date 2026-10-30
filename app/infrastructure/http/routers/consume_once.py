@@ -5,13 +5,14 @@ Stateless Consume-Once HTTP Polling & Streaming Routes (`app/infrastructure/http
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import struct
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.domain.entities import PanelGeometry
@@ -27,6 +28,9 @@ logger = logging.getLogger("dmd_showcase.http.stream")
 # so NAT proxies never burst multiple multi-KB frames into a constrained ESP32 Wi-Fi RX queue.
 DMDZ_SEND_LEAD_S = 0.06
 DMDZ_LARGE_FRAME_BYTES = 1536
+DMDZ_SUBPACKET_BYTES = 1024
+DMDZ_WS_INITIAL_CREDITS = 2
+DMDZ_WS_ACK_TIMEOUT_S = 4.0
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -392,7 +396,13 @@ def _paced_dmdz_response(
                     co.state.client_last_seen[claim_key] = ts_now
                     co.state.last_claimed_until[claim_key] = ts_now + 15.0
                 block_t = time.perf_counter()
-                yield wire_chunk
+                if len(wire_chunk) <= DMDZ_SUBPACKET_BYTES:
+                    yield wire_chunk
+                else:
+                    for off in range(0, len(wire_chunk), DMDZ_SUBPACKET_BYTES):
+                        if off > 0:
+                            await asyncio.sleep(0.002)
+                        yield wire_chunk[off : off + DMDZ_SUBPACKET_BYTES]
                 max_block_ms = max(max_block_ms, (time.perf_counter() - block_t) * 1000.0)
                 prev_wire_bytes = len(wire_chunk)
                 pending = b""
@@ -427,3 +437,184 @@ def _paced_dmdz_response(
             "Content-Length": str(file_size),
         },
     )
+
+
+@router.websocket("/api/v1/{domain}/ws/{item_id}.dmdz")
+async def stream_consume_once_dmdz_ws(
+    websocket: WebSocket,
+    domain: DomainType,
+    item_id: str,
+    purge: bool = Query(default=True),
+    client_id: Optional[str] = Query(default=None),
+) -> None:
+    """
+    ZeDMD-style credit-acknowledged lossless `DMDZ` WebSocket stream for constrained ESP32 clients.
+
+    Why credit-acked WebSocket beats blind HTTP TCP push over NAT/Docker proxies + Wi-Fi:
+    - `101 Switching Protocols` disables HTTP response buffering across proxies (`gvproxy`, Nginx).
+    - Every binary message is capped at `<= 1,024` bytes (single Wi-Fi MTU packet) and gated by a
+      2-message sliding credit window (`<= 2,048` bytes max in flight). The ESP32 returns a 1-byte
+      ACK after each message, keeping 100% of RX traffic inside pre-allocated static Wi-Fi RX
+      buffers (`0` dynamic heap allocations and `0` LwIP `ooseq` reassembly deadlocks).
+    """
+    co = get_orchestrator()
+    pkg = co.active_packages.get(item_id)
+    if pkg is None:
+        for (slot_dmd, slot_dom), rpkg in list(co.ready_packages.items()):
+            if rpkg.item_id == item_id:
+                pkg = await co.claim_next_package(slot_dmd, slot_dom, item_id=item_id)
+                break
+    if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
+        await websocket.close(code=1008)
+        return
+
+    dmdz_path = await asyncio.to_thread(ensure_dmdz_sibling, pkg.unified_stream_path)
+    if dmdz_path is None or not dmdz_path.exists():
+        await websocket.close(code=1011)
+        return
+
+    with dmdz_path.open("rb") as probe_fh:
+        hdr = probe_fh.read(16)
+    if len(hdr) < 16 or hdr[:4] != DMDZ_MAGIC:
+        await websocket.close(code=1011)
+        return
+
+    _, _ver, hdr_fps, _w, _h, total_frames, _dur, _kf = struct.unpack("<4sBBHHHHH", hdr)
+    eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
+    file_size = dmdz_path.stat().st_size
+    effective_dmd = (client_id or "").strip() or pkg.dmd_id
+    claim_key = (pkg.dmd_id, domain)
+    if claim_key in co.state.client_configs and co.state.client_transports.get(claim_key) != "HTTP":
+        co.state.client_transports[claim_key] = "MQTT+TCP"
+
+    await websocket.accept()
+
+    credits = DMDZ_WS_INITIAL_CREDITS
+    peer_closed = False
+    credit_evt = asyncio.Event()
+    credit_evt.set()
+
+    async def _ack_reader() -> None:
+        nonlocal credits, peer_closed
+        try:
+            while True:
+                msg = await websocket.receive()
+                mtype = msg.get("type")
+                if mtype == "websocket.disconnect":
+                    peer_closed = True
+                    credit_evt.set()
+                    return
+                raw_b = msg.get("bytes")
+                raw_t = msg.get("text")
+                inc = len(raw_b) if raw_b else (len(raw_t) if raw_t else 0)
+                if inc > 0:
+                    credits += inc
+                    credit_evt.set()
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            peer_closed = True
+            credit_evt.set()
+
+    async def _send_credited(chunk: bytes) -> bool:
+        nonlocal credits
+        while credits <= 0 and not peer_closed:
+            credit_evt.clear()
+            if credits > 0 or peer_closed:
+                break
+            try:
+                await asyncio.wait_for(credit_evt.wait(), timeout=DMDZ_WS_ACK_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                return False
+        if peer_closed:
+            return False
+        credits -= 1
+        await websocket.send_bytes(chunk)
+        return True
+
+    ack_task = asyncio.create_task(_ack_reader())
+    fh = dmdz_path.open("rb")
+    co.state.active_tcp_streams += 1
+    sent_frames = 0
+    reanchors = 0
+    started = time.perf_counter()
+    end_reason = "eof"
+    try:
+        now_wall = time.time()
+        co.state.client_last_seen[claim_key] = now_wall
+        co.state.last_claimed_until[claim_key] = now_wall + 15.0
+        header = fh.read(16)
+        if not await _send_credited(header):
+            end_reason = "hdr_abort"
+            return
+
+        period = 1.0 / float(eff_fps)
+        t0 = time.perf_counter()
+        for frame_idx in range(int(total_frames)):
+            size_raw = fh.read(2)
+            if len(size_raw) < 2:
+                break
+            (length,) = struct.unpack("<H", size_raw)
+            payload = fh.read(length)
+            if len(payload) < length:
+                break
+            if frame_idx > 0:
+                target_t = t0 + (frame_idx * period)
+                delay = target_t - time.perf_counter()
+                if delay > 0.001:
+                    await asyncio.sleep(delay)
+                elif delay < -period:
+                    t0 = time.perf_counter() - (frame_idx * period)
+                    reanchors += 1
+            if (frame_idx % 15) == 0:
+                ts_now = time.time()
+                co.state.client_last_seen[claim_key] = ts_now
+                co.state.last_claimed_until[claim_key] = ts_now + 15.0
+
+            wire_frame = size_raw + payload
+            ok_frame = True
+            for off in range(0, len(wire_frame), DMDZ_SUBPACKET_BYTES):
+                if not await _send_credited(wire_frame[off : off + DMDZ_SUBPACKET_BYTES]):
+                    ok_frame = False
+                    break
+            if not ok_frame:
+                end_reason = "peer_closed" if peer_closed else "ack_timeout"
+                break
+            sent_frames += 1
+
+        # Wait briefly for final in-flight ACKs so TCP never closes before ESP32 drains the tail
+        drain_deadline = time.perf_counter() + 0.8
+        while (
+            sent_frames == int(total_frames)
+            and credits < DMDZ_WS_INITIAL_CREDITS
+            and not peer_closed
+            and time.perf_counter() < drain_deadline
+        ):
+            credit_evt.clear()
+            if credits >= DMDZ_WS_INITIAL_CREDITS or peer_closed:
+                break
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(credit_evt.wait(), timeout=0.1)
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        end_reason = "peer_closed"
+    finally:
+        ack_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await ack_task
+        with contextlib.suppress(Exception):
+            if not peer_closed:
+                await websocket.close()
+        co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
+        fh.close()
+        co.state.last_claimed_until.pop(claim_key, None)
+        logger.info(
+            "[STREAM] ws-dmdz1 '%s' -> %s (%s): frames=%d/%d dur=%.1fs reanchors=%d size=%dB",
+            item_id,
+            effective_dmd,
+            end_reason,
+            sent_frames,
+            int(total_frames),
+            time.perf_counter() - started,
+            reanchors,
+            file_size,
+        )
+        if purge:
+            await co.purge_consumed_package(item_id)
