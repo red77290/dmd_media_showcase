@@ -28,7 +28,7 @@ logger = logging.getLogger("dmd_showcase.http.stream")
 # TCP window acts as a jitter buffer; larger video frames (> 1.5 KB) pace strictly 1-per-period
 # so NAT proxies never burst multiple multi-KB frames into a constrained ESP32 Wi-Fi RX queue.
 DMDZ_SEND_LEAD_S = 0.06
-DMDZ_WS_SEND_LEAD_S = 0.25
+DMDZ_WS_SEND_LEAD_S = 0.05
 DMDZ_LARGE_FRAME_BYTES = 1536
 DMDZ_SUBPACKET_BYTES = 1024
 DMDZ_WS_INITIAL_CREDITS = 2
@@ -470,7 +470,7 @@ async def stream_consume_once_dmdz_ws(
     item_id: str,
     purge: bool = Query(default=True),
     client_id: Optional[str] = Query(default=None),
-    credits_window: int = Query(default=DMDZ_WS_INITIAL_CREDITS, alias="credits", ge=1, le=16),
+    credits_window: int = Query(default=DMDZ_WS_INITIAL_CREDITS, alias="credits"),
 ) -> None:
     """
     ZeDMD-style credit-acknowledged lossless `DMDZ` WebSocket stream for constrained ESP32 clients.
@@ -519,6 +519,7 @@ async def stream_consume_once_dmdz_ws(
         if raw_sock is not None:
             raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
+    credits_window = max(1, min(16, int(credits_window)))
     credits = credits_window
     peer_closed = False
     credit_evt = asyncio.Event()

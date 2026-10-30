@@ -29,6 +29,10 @@ _ROM_EXT_RE = re.compile(
 )
 _SAFE_TOKEN_RE = re.compile(r"[^a-z0-9]+")
 
+# Bumped whenever the binary RGB565 / DMDZ rendering pipeline changes materially so legacy
+# 256-color GIF-quantized or oversaturated cached packages are cleanly invalidated on disk.
+STREAM_PIPELINE_VERSION = "true565_dmdz_v2"
+
 
 @dataclass(frozen=True)
 class OnDemandRequestCacheKey:
@@ -72,6 +76,7 @@ def compute_criteria_render_signature(
         "vid_mode": str(criteria.video_mode),
         "cboost": str(criteria.color_boost),
         "vtype": str(criteria.video_type),
+        "pipe_ver": STREAM_PIPELINE_VERSION,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:12]

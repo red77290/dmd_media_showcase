@@ -21,6 +21,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.domain.on_demand_cache_key import STREAM_PIPELINE_VERSION
 from app.domain.ports.on_demand_cache import CachedOnDemandPackage, IOnDemandCachePort
 from app.infrastructure.persistence.server_config_store import (
     ServerConfigStore,
@@ -104,6 +105,16 @@ class FileOnDemandCacheStore(IOnDemandCachePort):
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 if not isinstance(meta, dict):
+                    return None
+                pipe_ver = str(meta.get("stream_pipeline_version") or "")
+                if pipe_ver != STREAM_PIPELINE_VERSION:
+                    logger.info(
+                        "[ONDEMAND CACHE] Invalidating stale cached package '%s' (pipeline=%r != %r)",
+                        safe_key,
+                        pipe_ver or "legacy_v1_256c",
+                        STREAM_PIPELINE_VERSION,
+                    )
+                    self._remove_entry_dir(entry_dir)
                     return None
                 sig = str(meta.get("render_signature") or "")
                 if expected_signature and sig and sig != expected_signature:
@@ -197,6 +208,7 @@ class FileOnDemandCacheStore(IOnDemandCachePort):
                     "height": int(meta.get("height") or 32),
                     "duration_s": float(meta.get("duration_s") or 0.0),
                     "render_signature": str(meta.get("render_signature") or ""),
+                    "stream_pipeline_version": STREAM_PIPELINE_VERSION,
                     "size_bytes": total_bytes,
                     "created_at": now,
                     "last_accessed_at": now,
