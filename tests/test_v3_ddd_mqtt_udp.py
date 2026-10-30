@@ -2361,7 +2361,10 @@ def test_dmdz1_lossless_codec_roundtrip_scroll_and_compression():
     tall = rng.integers(0, 0xFFFF, size=(160, 128), dtype=np.uint16)
     tall[40:80, :] = 0x07E0  # flat band (RUN / INDEX)
     tall[80:120, :] = (np.arange(128, dtype=np.uint16) // 4) << 11  # gentle gradient (DIFF)
-    pano = [tall[k : k + 32] for k in range(0, 96)]  # 1 px/frame vertical panorama
+    pano = [tall[k : k + 32].copy() for k in range(0, 96)]  # 1 px/frame vertical panorama
+    # Mutate a small HUD/sprite region on frames 10..20: best-overlap scroll must still engage losslessly
+    for idx in range(10, 20):
+        pano[idx][2:6, 4:16] = np.uint16(0xFFE0 ^ idx)
     static = [pano[-1].copy() for _ in range(5)]  # identical frames (LONG SKIP)
     noisy = [rng.integers(0, 0xFFFF, size=(32, 128), dtype=np.uint16) for _ in range(3)]  # LIT
     frames = np.stack(pano + static + noisy)
@@ -2383,7 +2386,11 @@ def test_dmdz1_lossless_codec_roundtrip_scroll_and_compression():
         off += 2 + length
     assert off == len(encoded)
     assert types[0] == FRAME_KEY
-    assert types.count(FRAME_SCROLL) >= 90
+    # Genuine scrolling frames (including frames 10..20 with mutated HUD sprite) use FRAME_SCROLL,
+    # while identical frames (uniform bands + static tail) avoid redundant client memmove via FRAME_DELTA.
+    assert types.count(FRAME_SCROLL) >= 75
+    assert all(t == FRAME_SCROLL for t in types[11:20])
+    assert all(t == 0 for t in types[96:101])
     # 1 px/frame panorama frames carry ~1 new row (256 B) instead of 8 KB: many fit in a 5.7 KB window
     assert max(sizes[1:96]) < 600
     # Whole stream (incl. 3 incompressible noise frames) must still be far smaller than raw

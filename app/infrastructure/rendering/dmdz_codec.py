@@ -73,15 +73,34 @@ def scrolled_reference(prev: np.ndarray, dy: int) -> np.ndarray:
 
 
 def _detect_scroll(cur: np.ndarray, prev: np.ndarray) -> Optional[int]:
-    h = cur.shape[0]
+    h, w = int(cur.shape[0]), int(cur.shape[1])
+    if h < 4 or w <= 0:
+        return None
+    zero_matches = int(np.count_nonzero(cur == prev))
+    if zero_matches == h * w:
+        return None
+    # Fast exact-shift check + 100% lossless best-overlap fallback for pans with HUD/compression noise.
+    best_dy: Optional[int] = None
+    best_matches = zero_matches + max(16, w // 4)
     for mag in range(1, min(MAX_SCROLL_ROWS, h - 1) + 1):
+        if np.array_equal(cur[: h - mag], prev[mag:]):
+            return mag
+        if np.array_equal(cur[mag:], prev[: h - mag]):
+            return -mag
         for dy in (mag, -mag):
             if dy > 0:
-                if np.array_equal(cur[: h - dy], prev[dy:]):
-                    return dy
-            elif np.array_equal(cur[-dy:], prev[: h + dy]):
-                return dy
-    return None
+                m = int(np.count_nonzero(cur[: h - dy] == prev[dy:])) + int(
+                    np.count_nonzero(cur[h - dy :] == prev[h - dy :])
+                )
+            else:
+                s = -dy
+                m = int(np.count_nonzero(cur[s:] == prev[: h - s])) + int(
+                    np.count_nonzero(cur[:s] == prev[:s])
+                )
+            if m > best_matches:
+                best_matches = m
+                best_dy = dy
+    return best_dy
 
 
 def encode_frame_ops(cur: Sequence[int], ref: Optional[Sequence[int]]) -> bytearray:

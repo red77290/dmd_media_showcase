@@ -22,9 +22,11 @@ from app.models import DomainType, SessionRegisterRequest
 router = APIRouter()
 logger = logging.getLogger("dmd_showcase.http.stream")
 
-# DMDZ frames are small enough for several to fit in an embedded client's ~5.7 KB TCP window:
-# send up to this far ahead of the real-time clock so the window doubles as a jitter buffer.
-DMDZ_SEND_LEAD_S = 0.30
+# Compact DMDZ frames (< 1.5 KB) may lead the real-time clock slightly so the client's ~5.7 KB
+# TCP window acts as a jitter buffer; larger video frames (> 1.5 KB) pace strictly 1-per-period
+# so NAT proxies never burst multiple multi-KB frames into a constrained ESP32 Wi-Fi RX queue.
+DMDZ_SEND_LEAD_S = 0.06
+DMDZ_LARGE_FRAME_BYTES = 1536
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -362,6 +364,7 @@ def _paced_dmdz_response(
             period = 1.0 / float(eff_fps)
             t0 = time.perf_counter()
             pending = header
+            prev_wire_bytes = 0
             for frame_idx in range(int(total_frames)):
                 size_raw = fh.read(2)
                 if len(size_raw) < 2:
@@ -370,21 +373,28 @@ def _paced_dmdz_response(
                 payload = fh.read(length)
                 if len(payload) < length:
                     break
+                wire_chunk = pending + size_raw + payload
                 if frame_idx > 0:
-                    target_t = t0 + (frame_idx * period) - DMDZ_SEND_LEAD_S
+                    eff_lead = (
+                        0.0
+                        if (prev_wire_bytes >= DMDZ_LARGE_FRAME_BYTES or len(wire_chunk) >= DMDZ_LARGE_FRAME_BYTES)
+                        else min(DMDZ_SEND_LEAD_S, period)
+                    )
+                    target_t = t0 + (frame_idx * period) - eff_lead
                     delay = target_t - time.perf_counter()
                     if delay > 0.001:
                         await asyncio.sleep(delay)
-                    elif delay < -(period + DMDZ_SEND_LEAD_S):
-                        t0 = time.perf_counter() - (frame_idx * period) + DMDZ_SEND_LEAD_S
+                    elif delay < -(period + eff_lead):
+                        t0 = time.perf_counter() - (frame_idx * period) + eff_lead
                         reanchors += 1
                 if (frame_idx % 15) == 0:
                     ts_now = time.time()
                     co.state.client_last_seen[claim_key] = ts_now
                     co.state.last_claimed_until[claim_key] = ts_now + 15.0
                 block_t = time.perf_counter()
-                yield pending + size_raw + payload
+                yield wire_chunk
                 max_block_ms = max(max_block_ms, (time.perf_counter() - block_t) * 1000.0)
+                prev_wire_bytes = len(wire_chunk)
                 pending = b""
                 sent += 1
         finally:
