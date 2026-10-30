@@ -13,7 +13,7 @@ The server enforces a strict **Hexagonal (Ports & Adapters) and Domain-Driven De
 
 - **Domain Layer (`app/domain/`)**: 100% pure Python (zero FastAPI, HTTPX, Pillow, OpenCV, or Infrastructure imports). Houses immutable Entities & Value Objects (`entities.py`, `board_identity.py`, `style_specs.py`, `on_demand_cache_key.py`), generic reusable Domain Aggregates (`app/domain/aggregates/`), the modular multilingual Taxonomy subpackage (`app/domain/taxonomy/` with `66` canonical retro/arcade systems across `55+` platforms), and Hexagonal Port interfaces (`app/domain/ports/`).
 - **Application Layer (`app/application/`)**: Depends strictly on `app/domain/` and Port interfaces. Decomposed into single-responsibility Application Services — including the configurable Chain-of-Responsibility + Strategy router (`DomainSourceChainService`) and Cross-Source Composite Enricher (`CandidateAggregator`) — coordinated by a lightweight `ConsumeOnceOrchestrator` facade (`<= 550` lines) and wired lazily at runtime through the Composition Root (`app/container.py`).
-- **Infrastructure, Security & Scheduler Layers (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Concrete Inbound Adapters (`6` cohesive FastAPI routers under `app/infrastructure/http/routers/`, externalized ES-module WebUI under `app/infrastructure/web/static/`, and `ShowcaseMqttGateway`), Outbound Adapters (`11` domain scraper adapters & per-source referential strategies, modular HUB75 card/panorama/video rendering pipeline, JSON repositories, `DmdConverterAdapter`, and `FfmpegUdpClockStreamer`), and Security Services (`vault.py` 3-tier native C `_prod_vault` loader and `log_redactor.py` `SecretRedactingLogFilter`).
+- **Infrastructure, Security & Scheduler Layers (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Concrete Inbound Adapters (`6` cohesive FastAPI routers under `app/infrastructure/http/routers/` — including credit-acknowledged WebSocket `DMDZ` & HTTP `DMDS` streaming in `consume_once.py` — externalized ES-module WebUI under `app/infrastructure/web/static/`, and `ShowcaseMqttGateway`), Outbound Adapters (`11` domain scraper adapters & per-source referential strategies, modular HUB75 card/panorama/video/`DMDZ` rendering pipeline including `dmdz_codec.py`, JSON & mtime-preserving `on_demand_cache_store.py` repositories, `DmdConverterAdapter`, and `FfmpegUdpClockStreamer`), and Security Services (`vault.py` 3-tier native C `_prod_vault` loader and `log_redactor.py` `SecretRedactingLogFilter`).
 
 ```mermaid
 flowchart TD
@@ -31,12 +31,12 @@ flowchart TD
     subgraph APP["Application Services (app/application/)"]
         ORCH["ConsumeOnceOrchestrator (Facade)"]
         REG_SVC["ClientRegistryService\n(MQTT+TCP / HTTP / UDP-PASSIVE / MQTT+UDP\n& Live Source Telemetry)"]
-        PREP_SVC["SlotPreparationService\n(Compact pkg_<domain>_<12hex> IDs)"]
+        PREP_SVC["SlotPreparationService\n(Compact pkg_{domain}_{12hex} IDs)"]
         QUEUE_SVC["OnDemandQueueService"]
         DIR_SVC["PassivePlaylistDirectorService"]
         STUDIO_SVC["StudioPreviewService"]
         CHAIN["DomainSourceChainService\n(Composable Multi-Source Chain)"]
-        AGG_SVC["CandidateAggregator\n(<=3.0s Cross-Source Enricher)"]
+        AGG_SVC["CandidateAggregator\n(<= 3.0s Cross-Source Enricher)"]
     end
 
     subgraph DOMAIN["Domain Core (app/domain/)"]
@@ -48,15 +48,15 @@ flowchart TD
 
     subgraph INFRA_OUT["Outbound Adapters & Security (app/infrastructure/ & app/security/)"]
         SCRAPERS["11 Scraper Adapters + Referentials\ngames(4): igdb, screenscraper, arcadeitalia, libretro_wikidata\nmovies(2), series(3), anime(2)"]
-        RENDER["Modular Rendering Engine (rendering/)\ncard_geometry, card_layout_engine,\npanorama_and_static (YOKO/TATE), video_pipeline"]
-        PERSIST["Persistence & 3-Tier Security\nserver_config (source_policies), dmd_profiles,\nseen_history, _prod_vault, SecretRedactingLogFilter"]
+        RENDER["Modular Rendering Engine (rendering/)\ncard_geometry, card_layout_engine, dmdz_codec,\npanorama_and_static (YOKO/TATE), video_pipeline"]
+        PERSIST["Persistence & 3-Tier Security\nserver_config (source_policies), dmd_profiles, on_demand_cache_store,\nseen_history, _prod_vault, SecretRedactingLogFilter"]
         UDP["FfmpegUdpClockStreamer\n(Mode 2B Passive :4210 & Optional MQTT+UDP DMDF)"]
     end
 
     BROWSER -->|"GET / & /static/*"| STATIC
     BROWSER -->|"REST /api/v1/*"| ROUTERS
     ENG <-->|"MQTT Retain + start_card"| MQTT
-    ROUTERS ==>|"HTTP TCP DMDS :8890 (?paced=1&drop_late=1)"| ENG
+    ROUTERS ==>|"WS Credit-Acked DMDZ / HTTP DMDS :8890"| ENG
     ROUTERS --> ORCH
     MQTT --> ORCH
     ORCH --> REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC
@@ -127,18 +127,16 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
 
 ---
 
-## 4. Real-Time `MQTT + TCP` (`DMDS`) Primary Pipeline, `N+1` Pipelining & Passive UDP `DMDF`
+## 4. Real-Time `MQTT + TCP` (Credit-Acked WebSocket `DMDZ` & HTTP `DMDS`) Primary Pipeline, `N+1` Pipelining & Passive UDP `DMDF`
 
 `ShowcaseRuntimeState.client_transports` tracks four deterministic client transport profiles surfaced live in `ClientRegistryService` and the Admin UI:
-- **`MQTT+TCP` (Default & Recommended — Model 1 `ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi` & Model 2A Hybrid `supports_local_card: true`)**: Pairs the **MQTT (`:1883`) Control Plane** (`config`, `ready`, `start_card` with `retain=True` + `LWT`) with **Real-Time Paced HTTP TCP `DMDS` Streaming (`:8890`)** (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
-  - **Why `MQTT + TCP` (`DMDS`) is Default**:
-    1. **Zero Docker Desktop / Rancher Desktop VM UDP NAT Loss**: Inbound TCP `:8890` traverses every container bridge and host VM NAT natively without UDP return-pinhole timeouts or firewall drops.
-    2. **Zero MTU Chunk Reassembly Overhead**: Contiguous RGB565LE frames arrive in stream order without per-packet bitmask reassembly.
-    3. **Zero Client-Side Heap & Zero `TCP_WND` Stalls**: Embedded clients open a raw `lwip_socket` (`HTTP/1.1`, `Connection: close`, omitting `drop_late=1` so `Content-Length` is preserved and Uvicorn emits unchunked `DMDS`) reading straight into `m_frame565`, while the server's `_paced_dmds_generator()` (`X-DMD-Paced: 1`) clocks frames monotonically at `fps` (and optional `drop_late=1` / `X-DMD-Drop-Late: 1` seeks past stale frames for HTTP/1.1 chunk-decoding clients) so LwIP `TCP_WND` never stalls with `TCP ZeroWindow`.
-    4. **Compact Collision-Free `item_id`s**: Every prepared package uses `pkg_<domain>_<12hex>` (`<= 24` chars), fitting fixed embedded stack buffers with zero heap allocation.
-- **`HTTP`**: Stateless HTTP Consume-Once polling (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` + `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
-- **`UDP-PASSIVE` (Model 2B — `supports_local_card: false`)**: Ultra-minimal ~180-line passive UDP `:4210` `DMDF` framebuffer receiver where the server composites even Phase 1 Info Cards directly into the RGB565 stream (`render_card_in_stream=True`).
-- **`MQTT+UDP` (Optional Legacy `mqtt_udp`)**: Explicit `start_stream` event triggering `FfmpegUdpClockStreamer` `DMDF` datagrams to `{udp_ip}:{udp_port}`.
+- **`MQTT+TCP` (Default & Recommended — Model 1 `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi` & Model 2A Hybrid `supports_local_card: true`)**: Pairs the **MQTT (`:1883`) Control Plane** (`config`, `ready`, `start_card` with `retain=True` + `LWT`, compact collision-free `pkg_<domain>_<12hex>` `item_id`s `<= 24` chars) with an additive multi-tier TCP (`:8890`) data plane tailored to each client class (and eliminating Docker Desktop / Rancher Desktop VM UDP NAT return-pinhole drops):
+  1. **Constrained MCU Primary (`ESP32_STD` 0 PSRAM & `ESP32-S3` PSRAM) — Credit-Acked Lossless `DMDZ` v1 WebSocket**: Connects first to `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`ws_per_message_deflate=False` in `main.py`, `<= 1,024 B` RFC 6455 binary sub-packets, `2`-credit sliding window = `<= 2,048 B` max in flight, 1-byte `'A'` client ACK per WS message). `dmdz_codec.py` shrinks trailer videos `2.4–6x` and panoramas `23–64x` with zero visual loss, `101 Switching Protocols` disables HTTP response buffering across reverse/VM proxies (`gvproxy`, Nginx), and capping in-flight bytes at `<= 2,048 B` keeps 100% of RX traffic inside pre-allocated static Wi-Fi buffers (`0` dynamic heap allocations, `0` LwIP `pcb->ooseq` out-of-order reassembly exhaustion, and clean `SO_LINGER {1, 0}` socket teardown).
+  2. **Paced HTTP TCP Fallback (`?purge=true&paced=1&codec=dmdz1` or raw `DMDS`)**: `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream` (`X-DMD-Paced: 1`, `X-DMD-Codec: dmdz1`, `<= 1,024 B` sub-packet slices, monotonic clock re-anchoring without catch-up bursts — plus optional `drop_late=1` / `X-DMD-Drop-Late: 1` wall-clock frame seek for chunk-decoding clients) used automatically when a reverse proxy blocks WebSocket `101 Switching Protocols`.
+  3. **High-RAM Linux Preload (`ArcadeMatrix_RPi`)**: Unpaced raw `DMDS` HTTP download (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true`) preloaded directly into RAM (`0` codec or pacing overhead).
+- **`HTTP`**: Stateless HTTP Consume-Once polling (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`) streaming over the same additive `:8890` data plane (credit-acked `WS /api/v1/{domain}/ws/{item_id}.dmdz`, paced HTTP `DMDZ`/`DMDS` fallback, or unpaced `DMDS` preload).
+- **`UDP-PASSIVE` (Model 2B — `supports_local_card: false`)**: Ultra-minimal ~180-line passive UDP `:4210` `DMDF` `<4sHBBH` framebuffer receiver where the server composites even Phase 1 Info Cards directly into the RGB565 stream (`render_card_in_stream=True`).
+- **`MQTT+UDP` (Optional Legacy `mqtt_udp`)**: Explicit `start_stream` event triggering `FfmpegUdpClockStreamer` `DMDF` `<4sHBBH` UDP chunks to `{udp_ip}:{udp_port}`.
 
 > **Crash & Container-Restart Resilience (`RetainedClientConfigStore`):** Every Mode 1 retained `dmd_showcase/clients/{dmd_id}/config` payload published to the Embedded MQTT Broker (`:1883`) is atomically persisted to `./data/mqtt_retained_clients.json`. On server or Docker restart, `ShowcaseMqttGateway` reloads all persisted DMD rotation slots into `EmbeddedMqttBroker.retained` and triggers `N / N+1` background pre-warming immediately while keeping `online=False` until live client traffic arrives.
 
@@ -153,7 +151,7 @@ sequenceDiagram
 
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/config (retain=True, client_ip, domains)
     MQTT->>ORCH: handle_mqtt_client_config() -> client_transports = "MQTT+TCP"
-    ORCH->>PREP: ensure_slot_prepared() (prepares Unseen Item N: pkg_<domain>_<12hex>)
+    ORCH->>PREP: ensure_slot_prepared() (prepares Unseen Item N: pkg_{domain}_{12hex})
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, card, source_used)
     MQTT->>DMD: Deliver Retained Ready Card (Item N)
 
@@ -165,26 +163,51 @@ sequenceDiagram
     ORCH->>PREP: Background N+1 Pipelining: immediately prepare Standby Item N+1!
 
     alt Primary MQTT+TCP Mode (Models 1 & 2A — Default)
-        Note over DMD: Info Card finishes scrolling -> Raw LwIP HTTP/1.1 TCP DMDS stream
-        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1
-        HTTP-->>DMD: 200 OK (X-DMD-Paced: 1, 16-Byte DMDS Header + Frame 0)
-        loop Monotonic Server-Clocked Frames (15-25 FPS)
-            HTTP-->>DMD: Contiguous RGB565LE Frame (width * height * 2 bytes) -> m_frame565
+        Note over DMD: Info Card finishes -> Credit-Acked WS DMDZ (ESP32) or HTTP .rgb565.stream (Fallback / RPi Preload)
+        DMD->>HTTP: WS /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={dmd_id}&credits=2 (or GET .rgb565.stream)
+        HTTP-->>DMD: 101 Switching Protocols + 16B DMDZ Header (2-credit window, <= 2048 B in flight)
+        loop Lossless DMDZ Frames (<= 1024 B Sub-Packets @ 15-25 FPS)
+            HTTP-->>DMD: Binary WS Sub-Packet (<= 1024 B) -> in-place DmdzStreamDecoder -> m_frame565
+            DMD-->>HTTP: 1-Byte Credit ACK ('A')
         end
-        HTTP->>PREP: Response EOF -> purge_consumed_package(N) (immediate disk cleanup)
+        Note over DMD,HTTP: Tail ACK drain + ESP32 SO_LINGER {1, 0} close
+        HTTP->>PREP: Stream EOF -> purge_consumed_package(N) (immediate disk cleanup)
     else Passive Mode 2B (UDP-PASSIVE :4210) or Optional Legacy MQTT+UDP (start_stream)
         ORCH->>FFMPEG: Start monotonic DMDF real-time transmitter thread
         loop Every Frame (15-25 FPS)
-            FFMPEG-->>DMD: UDP DMDF Chunks (10-Byte Header + <=1408B RGB565LE) to udp_ip:udp_port
+            FFMPEG-->>DMD: UDP DMDF Chunks (10-Byte Header + <= 1408 B RGB565LE) to udp_ip:udp_port
         end
         FFMPEG->>ORCH: EOF -> stream_eof + purge_consumed_package(N)
     end
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, Item N+1)
 ```
 
-### Binary HTTP TCP `DMDS` Unified Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH` — Primary Transport)
+### Binary `DMDZ` v1 Lossless Stream Header & Frame Ops (16 Bytes, Little-Endian `<4sBBHHHHH` — Primary Constrained-MCU Codec)
 
-Served by `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` with response headers `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, and `X-DMD-Drop-Late: 1`:
+Encoded on demand into `.dmdz.stream` siblings by `app/infrastructure/rendering/dmdz_codec.py` and served over **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`** (`ws_per_message_deflate=False`, `<= 1,024 B` sub-packets, `2`-credit window) as well as the paced HTTP fallback **`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`** (`X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, `X-DMD-Codec: dmdz1`):
+
+| Offset | Type | Field | Description |
+| :--- | :--- | :--- | :--- |
+| `0..3` | `char[4]` | `magic` | `"DMDZ"` (`0x44 0x4D 0x44 0x5A`) |
+| `4` | `uint8` | `version` | Lossless codec version (`1`, codec ID `"dmdz1"`) |
+| `5` | `uint8` | `fps` | Target playback frame rate (`8..60`) |
+| `6..7` | `uint16le` | `width` | Panel width in pixels (e.g. `128`) |
+| `8..9` | `uint16le` | `height` | Panel height in pixels (e.g. `32`) |
+| `10..11` | `uint16le` | `total_frames` | Total encoded frames (`1..65535`) |
+| `12..13` | `uint16le` | `frame_dur_ms` | Nominal per-frame duration in ms (`round(1000 / fps)`) |
+| `14..15` | `uint16le` | `keyframe_interval` | Periodic keyframe interval (`0` = only frame `0` is a keyframe) |
+| `16..EOF` | `uint8[]` | `frames` | Per frame: `<H` `payload_len` + `type` (`0=delta`, `1=scroll(dy)` signed `int8` in-place `memmove`, `2=keyframe`) + raster opcodes covering `width * height` RGB565LE pixels |
+
+Per-frame decoder state resets to `last = 0` and `cache[64] = 0` (`hash(p) = (r * 3 + g * 5 + b * 7) & 63` on R5/G6/B5):
+- **`SKIP` (`00nnnnnn`, `1..64` px) & `LONG_SKIP` (`0xF0` + `<H` `count`)**: Leave `count` pixels unchanged from the reference frame (`prev` or vertically scrolled `prev`), then set `last = frame[pos - 1]` and `cache[hash(last)] = last`.
+- **`RUN` (`01nnnnnn`, `1..64` px)**: Repeat `last` `n + 1` times.
+- **`INDEX[64]` (`10iiiiii`)**: Emit `last = cache[i]`.
+- **`DIFF` (`110xxxxx`, `x = (dr + 1) * 9 + (dg + 1) * 3 + (db + 1)` with `dr, dg, db` in `{-1, 0, +1}`)**: Apply per-channel RGB565 delta to `last`, emit, and store in `cache[hash(p)]`.
+- **`LIT` (`1110nnnn` + `n + 1` `<H` raw RGB565LE pixels, `1..16` px)**: Emit raw Little-Endian RGB565 pixels, updating `last` and `cache[hash(p)]` on each pixel.
+
+### Binary HTTP TCP `DMDS` Raw Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH` — RPi Preload & Raw HTTP Fallback)
+
+Served unpaced (`?purge=true`) for `ArcadeMatrix_RPi` RAM preloading or paced (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, plus optional `&drop_late=1`) with response headers `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, and `X-DMD-Drop-Late: 1`:
 
 | Offset | Type | Field | Description |
 | :--- | :--- | :--- | :--- |
@@ -196,11 +219,11 @@ Served by `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=
 | `10..11` | `uint16le` | `total_frames` | Total concatenated RGB565LE frames (`1..65535`) |
 | `12..13` | `uint16le` | `frame_dur_ms` | Nominal per-frame duration in ms (`round(1000 / fps)`) |
 | `14..15` | `uint16le` | `reserved` | Reserved (`0`) |
-| `16..EOF` | `uint8[]` | `frames` | Server-paced `width * height * 2`-byte RGB565LE frames (`total_frames` nominal; wall-clock skipped when `drop_late=1`) |
+| `16..EOF` | `uint8[]` | `frames` | Raw `width * height * 2`-byte RGB565LE frames (`total_frames` nominal; wall-clock skipped when `paced=1&drop_late=1`) |
 
 ### Binary UDP `DMDF` Packet Header (10 Bytes, Little-Endian `<4sHBBH` — Mode 2B Passive `:4210` & Optional `MQTT+UDP`)
 
-> Full machine-readable specification (MQTT 3.1.1 topics + UDP `DMDF` datagrams): [`docs/asyncapi.yaml`](asyncapi.yaml) (served directly from disk via `app/asyncapi_spec.py` at `GET /asyncapi.yaml` and `GET /api/v1/asyncapi.yaml`).
+> Full machine-readable specification (MQTT 3.1.1 topics + credit-acked WebSocket `DMDZ` + UDP `DMDF` datagrams): [`docs/asyncapi.yaml`](asyncapi.yaml) (served directly from disk via `app/asyncapi_spec.py` at `GET /asyncapi.yaml` and `GET /api/v1/asyncapi.yaml`).
 
 | Offset | Type | Field | Description |
 | :--- | :--- | :--- | :--- |

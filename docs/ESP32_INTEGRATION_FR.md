@@ -7,14 +7,15 @@
 
 ---
 
-**DMD Media Showcase Server** prend en charge trois topologies complémentaires d'intégration pour les matrices LED HUB75 **ESP32 et ESP32-S3**. Le **Modèle 1** (DMD Multi-Moteurs piloté par le client, ex. `ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi`) et le **Modèle 2A** (Récepteur Hybride piloté par le serveur, `supports_local_card: true`) associent le **plan de contrôle MQTT `:1883`** (`config`/`hello`, `ready`, `start_card`) au **Streaming HTTP TCP `DMDS` Cadencé Temps Réel (`:8890`, `MQTT+TCP` par défaut)**, tandis que le **Modèle 2B** (`supports_local_card: false`) offre un récepteur optionnel ultra-minimal (~180 lignes C++) **100 % Passif UDP `:4210` `DMDF`** (`UDP-PASSIVE`).
+**DMD Media Showcase Server** prend en charge trois topologies complémentaires d'intégration pour les matrices LED HUB75 **ESP32 et ESP32-S3**. Le **Modèle 1** (DMD Multi-Moteurs piloté par le client, ex. `ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi`) et le **Modèle 2A** (Récepteur Hybride piloté par le serveur, `supports_local_card: true`) associent le **plan de contrôle MQTT `:1883`** (`config`/`hello`, `ready`, `start_card`) au **Streaming WebSocket `DMDZ` v1 Sans Perte Acquitté par Crédits inspiré de ZeDMD (`WS /api/v1/{domain}/ws/{item_id}.dmdz` sur `:8890`, `MQTT+TCP` par défaut)** avec **repli automatique HTTP TCP `DMDZ`/`DMDS` cadencé** (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`), tandis que le **Modèle 2B** (`supports_local_card: false`) offre un récepteur optionnel ultra-minimal (~180 lignes C++) **100 % Passif UDP `:4210` `DMDF`** (`UDP-PASSIVE`).
 
 > [!IMPORTANT]
-> **Pourquoi `MQTT + TCP` (`DMDS` `:8890`) est le Transport par Défaut & Recommandé pour les Modèles 1 & 2A**
-> 1. **Zéro Perte NAT UDP VM Docker Desktop / Rancher Desktop** : La connexion entrante HTTP TCP `:8890` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`) traverse nativement tous les ponts conteneurs et NAT des VMs hôtes sans expiration de trou NAT UDP retour ni blocage pare-feu.
-> 2. **Zéro Surcharge de Réassemblage MTU** : Les trames RGB565LE contiguës arrivent dans l'ordre du flux (en-tête Little-Endian `<4sBBHHHHH` `DMDS` de `16 octets` + `width * height * 2` octets/trame) sans réassemblage par masque binaire.
-> 3. **Zéro Heap Client & Zéro Blocage `TCP_WND`** : Les clients embarqués ouvrent un `lwip_socket` brut (`HTTP/1.1`, `Connection: close`, sans `drop_late=1` afin de conserver `Content-Length` et d'obtenir un flux **binaire `DMDS` 100 % brut non-chunké** depuis Uvicorn) lisant directement dans `m_frame565`. Le cadencement monotone côté serveur (`X-DMD-Paced: 1`) délivre les trames à la cadence cible avec ré-ancrage d'horloge anti-rafale pour que l'ESP32 ne dorme jamais avec des octets non lus (`0` `TCP ZeroWindow`), tandis qu'`ArcadeMatrix` embarque aussi un `HttpChunkedDecoder` zéro-heap en filet de sécurité (`drop_late=1` omet `Content-Length` / active `Transfer-Encoding: chunked` pour les clients HTTP/1.1 complets comme `httpx` Python).
-> 4. **Identifiants `item_id` Compacts sans Collision (`<= 24` caractères)** : Chaque package préparé utilise le format `pkg_<domain>_<12hex>` (ex. `pkg_games_a1b2c3d4e5f6`), tenant dans un buffer fixe sur pile `ESP32_STD` sans allocation dynamique.
+> **Pourquoi `MQTT + TCP` avec WebSocket `DMDZ` v1 Acquitté par Crédits (`:8890`) est le Transport par Défaut & Recommandé pour les Modèles 1 & 2A**
+> 1. **Zéro Perte NAT UDP VM Docker Desktop / Rancher Desktop & Zéro Buffering Proxy** : La connexion entrante TCP `:8890` traverse nativement tous les ponts conteneurs et NAT des VMs hôtes sans expiration de trou NAT UDP retour, tandis que le basculement `101 Switching Protocols` (`WS /api/v1/{domain}/ws/{item_id}.dmdz`, `ws_per_message_deflate=False`) désactive tout buffering intermédiaire HTTP de bout en bout.
+> 2. **Plafond Strict d'Octets en Vol (`<= 2 048 o` sur `ESP32_STD`, Zéro Épuisement LwIP `pcb->ooseq`)** : Inspiré du handshake déterministe de trames ZeDMD, le serveur découpe chaque trame `DMDZ` v1 sans perte (`<H` longueur utile + opcodes) en **sous-paquets binaires WebSocket `<= 1 024 o`** et applique une **fenêtre glissante de crédits** (`?credits=2` par défaut = **`<= 2 048 o` max en vol**, ajustable `1..16`, ex. `?credits=8` sur `ESP32-S3` PSRAM). Le serveur attend l'acquittement client de 1 octet `'A'` (`0x41`) après chaque sous-paquet consommé — rendant mathématiquement impossible la saturation de la `TCP_WND` (`5 760 o`) et de la SRAM interne en segments hors-séquence (`pcb->ooseq`) lors des balises Wi-Fi.
+> 3. **Codec Sans Perte Bit-Exact `DMDZ` v1 + Coexistence Multi-Plateformes Transparente** : `DMDZ` v1 (`SKIP`, `LONG SKIP`, `RUN`, `INDEX[64]`, `DIFF`, `LIT`, `SCROLL_DY`) atteint une compression sans perte de **`2,4–6x` sur vidéo** et **`23–64x` sur panoramas défilants** avec `~152 octets` d'état sur pile et `0 o` heap. Si un équipement intermédiaire bloque `Upgrade: websocket`, le client bascule automatiquement vers `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` (`X-DMD-Paced: 1`), tandis qu'`ArcadeMatrix_RPi` conserve le préchargement HTTP `DMDS` brut non-cadencé (`?purge=true`, `0` impact) et le Modèle 2B conserve l'UDP `:4210` `DMDF`.
+> 4. **Sockets LwIP Brutes Zéro-`TIME_WAIT` (`SO_LINGER {1, 0}`) & Allocation LIFO `frame565` Bornée à la Phase 2 sur `ESP32_STD`** : Tant le claim MQTT `:1883` (`RawMqttSocket`, zéro heap `PubSubClient`/`WiFiClientRxBuffer`) que le flux `:8890` se ferment avec `SO_LINGER {1, 0}`, recyclant immédiatement les PCB TCP LwIP sans accumuler de sockets `TIME_WAIT` de 120 s au fil des rotations. Sur `ESP32_STD` (0 PSRAM), le buffer `frame565` de `8 Ko` n'est alloué que durant la Phase 2 (LIFO) puis libéré juste après la fermeture socket sous barrière Dekker `seq_cst` `renderBlitSeq`, garantissant `0 o` de fragmentation DRAM et le maintien permanent de la **profondeur HUB75 8 bits**.
+> 5. **Identifiants `item_id` Compacts sans Collision (`<= 24` caractères)** : Chaque package préparé utilise le format `pkg_<domain>_<12hex>` (ex. `pkg_games_a1b2c3d4e5f6`), tenant dans un buffer fixe sur pile `ESP32_STD` sans allocation dynamique.
 
 ---
 
@@ -25,11 +26,12 @@
 Conçu pour les firmwares riches multi-écrans où l'ESP32 orchestre sa propre rotation locale (`Clock`, `Weather`, `Scoreboard`, `AudioSpectrum`, `RetroGames`, `Movies`, `Series`, `Anime`), sa pile de préemption (`DisplayArbiter`) et son propre WebUI embarqué.
 
 - **Autorité de Configuration** : Le WebUI de l'ESP32 interroge dynamiquement `GET /api/v1/{domain}/filters?lang={ui_lang}` pour peupler ses listes déroulantes localisées, sauvegarde les filtres en flash locale, et publie sa configuration retenue sur `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
-- **Session MQTT Bornée + Streaming TCP `DMDS` Cadencé** : Core 0 réclame la fiche `ready` retenue via MQTT (`start_card`), **ferme immédiatement la socket TCP MQTT** (`0` socket ouverte pendant le défilement de la Fiche en Phase 1), puis lit la Phase 2 (`Panoramas + Captures + Vidéo`) via un flux TCP `DMDS` brut LwIP (`:8890`, `?purge=true&paced=1`).
+- **Session MQTT Brute Zéro-Heap + Streaming WebSocket `DMDZ` Acquitté par Crédits** : Core 0 réclame la fiche `ready` retenue via une socket MQTT LwIP brute zéro-heap (`start_card`), **ferme immédiatement la socket TCP MQTT avec `SO_LINGER {1, 0}`** (`0` socket ouverte et `0` PCB `TIME_WAIT` pendant le défilement de la Fiche en Phase 1), puis lit la Phase 2 (`Panoramas + Captures + Vidéo`) sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`:8890`, avec repli automatique sur `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`).
 - **Comportement en Rotation** : Lorsque le tour d'un moteur Showcase arrive et que le slot MQTT retenu (`dmd_showcase/clients/{dmd_id}/{domain}/ready`) indique `{"ready": false}`, le moteur cède son tour en **`0 ms`** (`m_skipTurnImmediately = true`). Le panneau affiche instantanément le moteur local suivant (`Clock`, `Weather`, etc.) sans jamais provoquer d'écran noir ni de latence.
 - **Implémentation de Référence en Production (`ArcadeMatrix`)** :
-  - En-tête & Contrat Moteur : [`src/engines/MediaShowcaseEngines.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.h)
-  - Worker MQTT Borné, Parseur `ArduinoJson` Zéro-Copie & Streamer TCP `DMDS` Brut LwIP : [`src/engines/MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp)
+  - En-tête, `RawMqttSocket`, `DmdzWsDemuxer` & Contrat Moteur : [`src/engines/MediaShowcaseEngines.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.h)
+  - Worker MQTT Brut Zéro-Heap, Streamer WebSocket `DMDZ` à Crédits & Repli HTTP : [`src/engines/MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp)
+  - Décodeur Sans Perte `DMDZ` v1 & Démultiplexeur Binaire RFC 6455 : [`src/engines/DmdzStreamDecoder.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/DmdzStreamDecoder.h) / [`src/engines/DmdzStreamDecoder.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/DmdzStreamDecoder.cpp)
 
 ---
 
@@ -39,7 +41,7 @@ Conçu pour les afficheurs Showcase dédiés souhaitant conserver un rendu texte
 
 - **Annonce Matérielle Légère** : Au démarrage, l'ESP32 publie un court message retenu sur `dmd_showcase/clients/{dmd_id}/hello` (`retain=True`) déclarant uniquement sa géométrie et son adresse LAN (`width`, `height`, `config_source: "server"`, `supports_local_card: true` et langue par défaut `lang`).
 - **Profil Centralisé Persisté (`./data/dmd_profiles.json`)** : Toutes les playlists de domaines (`games`, `movies`, `series`, `anime`), catégories (`systems`, `genres`, `decades`), préréglages de cadrage/colorimétrie IA (`video_mode`, `color_boost`) et la langue de diffusion du contenu (`lang`) sont configurés dans le **Dashboard Web Showcase** (`http://dmdmediashowcase.local:8890/`) et sauvegardés dans `./data/dmd_profiles.json`.
-- **Rendu Hybride** : L'ESP32 affiche localement la **Phase 1 (Fiche Info)** à 60 FPS (mini-jaquette + badge coloré + défilement fluide du synopsis poussé via `ready` ou `dmd_showcase/clients/{dmd_id}/command` `play_card`, acquitté par `start_card`), puis ouvre `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1` sur `:8890` pour recevoir la **Phase 2 (Panoramas + Vidéo)** en HTTP TCP `DMDS` cadencé (avec support `mqtt_udp` `start_stream` optionnel).
+- **Rendu Hybride** : L'ESP32 affiche localement la **Phase 1 (Fiche Info)** à 60 FPS (mini-jaquette + badge coloré + défilement fluide du synopsis poussé via `ready` ou `dmd_showcase/clients/{dmd_id}/command` `play_card`, acquitté par `start_card`), puis bascule sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` sur `:8890` pour recevoir la **Phase 2 (Panoramas + Vidéo)** en WebSocket `DMDZ` v1 sans perte acquitté par crédits (avec repli automatique HTTP `?purge=true&paced=1&codec=dmdz1` et support `mqtt_udp` `start_stream` optionnel).
 
 ---
 
@@ -59,12 +61,12 @@ Conçu pour des montages matériels ultra-légers et sans maintenance (`ESP32_ST
 | :--- | :--- | :--- | :--- |
 | **Annonce & Transport** | `config_source: "client"` (`MQTT+TCP` par défaut) | `config_source: "server"`, `supports_local_card: true` (`MQTT+TCP` par défaut) | `config_source: "server"`, `supports_local_card: false` (`UDP-PASSIVE` `:4210`) |
 | **Stockage Playlists & Filtres** | Flash ESP32 (`config.json`) | Serveur (`./data/dmd_profiles.json`) | Serveur (`./data/dmd_profiles.json`) |
-| **Complexité Firmware / UI** | OS Multi-Moteurs complet + WebUI | ~320 lignes C++ (MQTT borné + TCP `DMDS` LwIP + Police) | **~120–180 lignes C++** (Zéro UI, Zéro Police, Zéro JSON) |
+| **Complexité Firmware / UI** | OS Multi-Moteurs complet + WebUI | ~350 lignes C++ (MQTT brut + WS `DMDZ` à crédits + Police) | **~120–180 lignes C++** (Zéro UI, Zéro Police, Zéro JSON) |
 | **Rendu Phase 1 (Fiche Info)** | Local 60 FPS sur Core 1 ESP32 | Local 60 FPS sur Core 1 ESP32 | **Rendu par le serveur dans le flux UDP RGB565** |
-| **Rendu Phase 2 (Panoramas + Vidéo)** | **HTTP TCP `DMDZ`/`DMDS` cadencé (`:8890`, `?purge=true&paced=1&codec=dmdz1`)** *(option `mqtt_udp`)* | **HTTP TCP `DMDZ`/`DMDS` cadencé (`:8890`, `?purge=true&paced=1&codec=dmdz1`)** *(option `mqtt_udp`)* | **UDP Passif `DMDF` (`:4210`)** |
-| **Empreinte SRAM (`128x32`)** | **`8 Ko` frame (`poster565` aliasé sur `ESP32_STD`)** | `8 Ko` frame + `2–6 Ko` jaquette | **`8 Ko` simple (`16 Ko` ping-pong) — `0 o` jaquette/JSON** |
+| **Rendu Phase 2 (Panoramas + Vidéo)** | **WebSocket `WS /ws/{id}.dmdz` à crédits (`:8890`, `<= 2 Ko` en vol) + repli HTTP `?paced=1&codec=dmdz1`** *(option `mqtt_udp`)* | **WebSocket `WS /ws/{id}.dmdz` à crédits (`:8890`, `<= 2 Ko` en vol) + repli HTTP `?paced=1&codec=dmdz1`** *(option `mqtt_udp`)* | **UDP Passif `DMDF` (`:4210`)** |
+| **Empreinte SRAM (`128x32`)** | **`2 Ko` jaquette (Phase 1) / `8 Ko` `frame565` LIFO borné Phase 2 (`ESP32_STD` ; PSRAM sur `S3`)** | `2–6 Ko` jaquette + `8 Ko` `frame565` LIFO Phase 2 | **`8 Ko` simple (`16 Ko` ping-pong) — `0 o` jaquette/JSON** |
 | **Qualification `ESP32_STD` (Sans PSRAM)** | Qualifié (`128x32` en **HUB75 8 bits**, `64x64`, `128x64`) | Qualifié (`128x32` à `128x64`) | **Qualifié (`128x32` jusqu'à `256x64` simple buffer)** |
-| **Charge CPU Core 0** | Faible (MQTT borné + Base64 + `lwip_recv` dans `frame565`) | Faible (MQTT borné + Base64 + `lwip_recv` dans `frame565`) | **Minimale (pur `memcpy` UDP non-bloquant)** |
+| **Charge CPU Core 0** | Faible (MQTT brut + Base64 + décodage WS `DMDZ` `<= 1024 o` + ACK `'A'`) | Faible (MQTT brut + Base64 + décodage WS `DMDZ` `<= 1024 o` + ACK `'A'`) | **Minimale (pur `memcpy` UDP non-bloquant)** |
 | **Réactivité `Skip` / `Pause` / `Play Now`** | File prioritaire (`N+1`) ou MQTT `.../command` | Via MQTT `.../command` (`play_card` / `skip`) | **Instantanée (`< 50 ms`) directement dans le streamer `DMDF`** |
 
 ---
@@ -77,23 +79,23 @@ Pour garantir un rafraîchissement irréprochable à **60 FPS** (`16,67 ms` par 
 
 - **Core 0 (`PRO_CPU` — Worker Réseau & Protocole)** :
   - Exécute la pile Wi-Fi / LwIP et la résolution mDNS (`dmdmediashowcase.local` sur `224.0.0.251:5353`).
-  - **Modèles 1 & 2A (`MQTT+TCP` par défaut)** : Exécute une courte **session MQTT `:1883` bornée** (`config` ou `hello` $\to$ `ready` retenu $\to$ `start_card` $\to$ fermeture immédiate de la socket TCP afin que `0` socket ne reste ouverte pendant le défilement de la Fiche), puis ouvre un `lwip_socket` brut zéro-heap (`HTTP/1.1`, `Connection: close`, `TCP_NODELAY`) vers `:8890` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`), lisant l'**en-tête Little-Endian `<4sBBHHHHH` `DMDZ` v1 sans perte de 16 octets** (`X-DMD-Codec: dmdz1`, compression `32–99x` sur panoramas et `2,5–6,5x` sur vidéo, avec repli `DMDS` brut transparent) et décodant sur place dans `frame565` (`~152 octets` sur pile, `0 o` heap) afin que plusieurs trames tiennent dans la `TCP_WND` de `5 760 octets` de l'ESP32 classique sans blocage RTT.
+  - **Modèles 1 & 2A (`MQTT+TCP` par défaut)** : Exécute une **session MQTT `:1883` LwIP brute zéro-heap** (`config` ou `hello` $\to$ `ready` retenu $\to$ `start_card` $\to$ fermeture immédiate `SO_LINGER {1, 0}` afin que `0` socket et `0` PCB `TIME_WAIT` ne subsistent pendant le défilement de la Fiche). En Phase 2, Core 0 alloue `frame565` en LIFO sur `ESP32_STD` (ou réutilise la PSRAM sur `ESP32-S3`), bascule un `lwip_socket` (`TCP_NODELAY`) sur **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`** (`101 Switching Protocols`, ou `credits=8` avec PSRAM), lit l'**en-tête Little-Endian `<4sBBHHHHH` `DMDZ` v1 de 16 octets**, décode sur place les **sous-paquets binaires `<= 1 024 o`** dans `frame565` (`~152 octets` sur pile, `0 o` heap) et renvoie une trame RFC 6455 masquée de 7 octets contenant `'A'` (`0x41`) par message consommé afin de limiter le flux en vol à `<= 2 048 octets` sur `ESP32_STD` (`0` épuisement `pcb->ooseq`). Si la mise à niveau WebSocket échoue, Core 0 bascule automatiquement sur `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`.
   - **Modèle 2B (`UDP-PASSIVE :4210`)** : Assure le heartbeat HTTP `POST /api/v1/clients/hello` et réassemble les datagrammes **UDP `DMDF`** non-bloquants (en-tête `<4sHBBH` de `10 octets` + tranche `<= 1408 octets` RGB565LE = `<= 1418 octets` par paquet UDP, zéro fragmentation IP sous le MTU Wi-Fi de `1500 octets`).
 - **Core 1 (`APP_CPU` — Boucle Temps Réel HUB75 à 60 FPS)** :
   - Pilote exclusivement `IDrawingSurface` / le DMA HUB75 à 60 FPS.
   - **Zéro Allocation Dynamique** : Aucun appel à `malloc`, `new`, `String` ni `std::vector::push_back` dans la boucle chaude de rendu.
   - **Zéro Mutex / Zéro Contention** : Aucun `std::mutex` ni sémaphore FreeRTOS partagé avec Core 0.
-  - **Isolation Stricte du DMA** : Le worker réseau n'écrit jamais directement dans le buffer DMA HUB75 en cours de balayage ; les pixels sont lus dans `frame565` puis copiés proprement via `IDrawingSurface` lors de la passe de rendu.
+  - **Isolation Stricte du DMA** : Le worker réseau n'écrit jamais directement dans le buffer DMA HUB75 en cours de balayage ; les pixels sont décodés dans `frame565` puis copiés proprement via `IDrawingSurface` lors de la passe de rendu.
 
-### Passage de Trames Lock-Free : `frameSeq` Pair/Impair + `consumedFrameSeq` vs Double-Buffer Ping-Pong
+### Passage de Trames Lock-Free : `frameSeq` Pair/Impair + Barrière Dekker `renderBlitSeq` vs Double-Buffer Ping-Pong
 
 Deux mécanismes sans verrou permettent de transférer les trames de Core 0 vers Core 1 :
 
-1. **Synchronisation Sans Déchirement `frameSeq` Pair/Impair + `consumedFrameSeq` (`frame565` Unique — Modèles 1 & 2A par défaut)** :
-   - Éprouvée en production dans [`MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) pour éliminer tout déchirement horizontal avec **un unique buffer `frame565`** (`8 Ko` en `128x32`) sur `ESP32_STD`.
-   - Core 0 attend la prochaine trame TCP cadencée côté serveur dans `lwip_select` (tranches de `25 ms`) **pendant que `frameSeq` reste `PAIR`**, de sorte que Core 1 n'est jamais ralenti durant les intervalles inter-trames (`40–66 ms`).
-   - Dès que la trame arrive dans LwIP `TCP_WND`, Core 0 attend au plus `18 ms` (`1` rafraîchissement HUB75) que Core 1 ait consommé la trame précédente (`consumedFrameSeq == frameSeq`), bascule `frameSeq` en **`IMPAIR`** (`fetch_add(1, memory_order_acq_rel)`), lit `FRAME_BYTES` directement via `lwip_recv` dans `frame565` (`~1,2 ms`), puis repasse `frameSeq` en **`PAIR`** (`fetch_add(1, memory_order_release)`).
-   - Core 1 vérifie `(fSeq & 1U) == 0U && fSeq != lastRenderedSeq`, copie `frame565`, puis publie `consumedFrameSeq.store(fSeq, memory_order_release)`. Grâce au cadencement serveur (`X-DMD-Paced: 1`), Core 0 n'effectue **aucun `vTaskDelay`** après lecture, gardant `TCP_WND` 100 % ouverte.
+1. **Synchronisation Sans Déchirement `frameSeq` Pair/Impair + `consumedFrameSeq` + Barrière Dekker `renderBlitSeq` (`frame565` Unique — Modèles 1 & 2A par défaut)** :
+   - Éprouvée en production dans [`MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) pour éliminer tout déchirement horizontal et tout accès mémoire concurrent avec **un unique buffer `frame565`** (`8 Ko` en `128x32`) alloué exclusivement pendant la Phase 2 sur `ESP32_STD`.
+   - Core 0 cadence la présentation de manière monotone (`periodMs = frameDurMs`) **pendant que `frameSeq` reste `PAIR`** et n'envoie les crédits `'A'` qu'au fur et à mesure de la lecture des sous-paquets WebSocket `<= 1 024 o`, de sorte que ni Core 1 ni `TCP_WND` ne sont jamais bloqués.
+   - Avant de décoder une nouvelle trame `DMDZ`, Core 0 attend au plus `18 ms` (`1` rafraîchissement HUB75) que Core 1 ait consommé la trame précédente (`consumedFrameSeq == frameSeq`), bascule `frameSeq` en **`IMPAIR`** (`fetch_add(1, memory_order_acq_rel)`), décode la trame `DMDZ` sans perte sur place dans `frame565`, puis repasse `frameSeq` en **`PAIR`** (`fetch_add(1, memory_order_release)`).
+   - Core 1 encadre son `memcpy` par un compteur `IMPAIR`/`PAIR` `renderBlitSeq` (`memory_order_seq_cst`). En fin de Phase 2 sur `ESP32_STD`, Core 0 écrit `frameSeq = 1` (`seq_cst`), attend `(renderBlitSeq & 1U) == 0U` (`~15 µs`), ferme la socket (`SO_LINGER {1, 0}`) et libère `frame565` en ordre LIFO strict (`0` fragmentation du heap).
 2. **Double-Buffer Ping-Pong `frame565[2]` (`std::atomic<uint8_t> frontIdx` — Modèle 2B UDP `DMDF`)** :
    - Core 0 écrit les tranches `DMDF` dans `frame565[backIdx]` en marquant chaque bit `(1ULL << chunk_idx)` dans un masque 64 bits `chunkMask`.
    - Dès que `chunkMask == ((1ULL << total_chunks) - 1ULL)`, Core 0 permute atomiquement `frontIdx.store(backIdx, std::memory_order_release)`. Core 1 lit toujours une trame 100 % complète.
@@ -102,12 +104,12 @@ Deux mécanismes sans verrou permettent de transférer les trames de Core 0 vers
 
 Un **`ESP32_STD` sans PSRAM** (WROOM-32 disposant d'environ `110–140 Ko` de heap interne libre après initialisation Wi-Fi + HUB75 DMA) exécute l'intégralité du pipeline avec une large marge de sécurité :
 
-| Géométrie Dalle | Pixels (`L x H`) | TCP `DMDS` / UDP `DMDF` (`<= 1408 o`) | Simple `frame565` (Modèles 1 & 2A) | Ping-Pong `frame565[2]` (Modèle 2B) | `poster565` Carte Locale (Modèle 1 / 2A) | Compatibilité `ESP32_STD` Sans PSRAM |
+| Géométrie Dalle | Pixels (`L x H`) | `WS DMDZ` (`<= 1024 o` x `2` crédits) / `UDP DMDF` | `frame565` Phase 2 (Modèles 1 & 2A) | Ping-Pong `frame565[2]` (Modèle 2B) | `poster565` Carte Locale (Modèle 1 / 2A) | Compatibilité `ESP32_STD` Sans PSRAM |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`128x32`** *(DMD WPC)* | `4 096 px` | `0` fragment TCP / `6` tranches UDP | **`8 192 o`** (`8 Ko`) | `16 384 o` (`16 Ko`) | `2 048 o` (`32x32`) | **Fluide en profondeur HUB75 8 bits sur `ESP32_STD`** |
-| **`64x64`** *(Carré)* | `4 096 px` | `0` fragment TCP / `6` tranches UDP | **`8 192 o`** (`8 Ko`) | `16 384 o` (`16 Ko`) | `2 048 o` (`32x32`) | **Fluide sur `ESP32_STD`** |
-| **`128x64` / `64x128` TATE** | `8 192 px` | `0` fragment TCP / `12` tranches UDP | **`16 384 o`** (`16 Ko`) | `32 768 o` (`32 Ko`) | `6 144 o` (`48x64`) / `3 200 o` (`40x40`) | **Tient en SRAM interne `ESP32_STD` (repli auto HUB75 4 bits si requis)** |
-| **`256x64`** *(Super-DMD)* | `16 384 px` | `0` fragment TCP / `24` tranches UDP | **`32 768 o`** (`32 Ko`) | `65 536 o` (`64 Ko`) | `6 144 o` (`48x64`) | **`32 Ko` Simple sur `ESP32_STD` ; `ESP32-S3` PSRAM recommandé** |
+| **`128x32`** *(DMD WPC)* | `4 096 px` | `<= 2 048 o` WS en vol / `6` tranches UDP | **`8 192 o`** (`8 Ko` LIFO) | `16 384 o` (`16 Ko`) | `2 048 o` (`32x32`) | **Fluide en profondeur HUB75 8 bits sur `ESP32_STD`** |
+| **`64x64`** *(Carré)* | `4 096 px` | `<= 2 048 o` WS en vol / `6` tranches UDP | **`8 192 o`** (`8 Ko` LIFO) | `16 384 o` (`16 Ko`) | `2 048 o` (`32x32`) | **Fluide sur `ESP32_STD`** |
+| **`128x64` / `64x128` TATE** | `8 192 px` | `<= 2 048 o` WS en vol / `12` tranches UDP | **`16 384 o`** (`16 Ko` LIFO) | `32 768 o` (`32 Ko`) | `6 144 o` (`48x64`) / `3 200 o` (`40x40`) | **Tient en SRAM interne `ESP32_STD` (repli auto HUB75 4 bits si requis)** |
+| **`256x64`** *(Super-DMD)* | `16 384 px` | `<= 2 048 o` WS (`8 Ko` sur `S3` `credits=8`) / `24` tranches UDP | **`32 768 o`** (`32 Ko`) | `65 536 o` (`64 Ko`) | `6 144 o` (`48x64`) | **`32 Ko` Simple sur `ESP32_STD` ; `ESP32-S3` PSRAM recommandé** |
 
 ### Pipeline d'Affichage HUB75 Préconisé : `Single DMA Buffer + Offscreen RGB565 Canvas` (`canvas_single`)
 
@@ -116,14 +118,14 @@ Sur l'ensemble des firmwares ESP32 HUB75 (dont [`ArcadeMatrix`](https://github.c
 1. **Économie de 50 % sur la SRAM Interne Compatible DMA (`mxconfig.double_buff = false`)** :
    - Sur `ESP32_STD` (sans PSRAM), les descripteurs DMA I2S et les bitplanes BCM doivent impérativement être alloués dans la DRAM interne contiguë (`MALLOC_CAP_DMA`) — exactement la ressource sollicitée par la pile Wi-Fi + LwIP TCP/UDP.
    - Désactiver le double-buffering DMA matériel (`mxconfig.double_buff = false`) divise par deux l'empreinte des bitplanes, tandis que le canevas linéaire RGB565 hors-écran (`GFXcanvas16`) ne consomme que `2 octets/pixel` (`8 Ko` en `128x32`, `16 Ko` en `128x64`, et logeable en PSRAM sur `ESP32-S3`).
-2. **Maintien de la Profondeur Couleur HUB75 8 Bits sur `ESP32_STD` (`esp32dev`) via Préemption `WEBUI_SYNC`** :
-   - Les firmwares multi-moteurs (`ArcadeMatrix`) conservent **la pleine profondeur couleur HUB75 BCM 8 bits** sur dalle `128x32` sur les cartes `ESP32_STD` (`esp32dev` sans PSRAM) pendant toute la lecture Showcase normale — ne descendant automatiquement à `4 bits` **que** lorsque la RAM interne libre mesurée l'impose (par exemple en `128x64` sans PSRAM).
+2. **Maintien de la Profondeur Couleur HUB75 8 Bits sur `ESP32_STD` (`esp32dev`) via Hystérésis & Préemption `WEBUI_SYNC`** :
+   - Les firmwares multi-moteurs (`ArcadeMatrix`) conservent **la pleine profondeur couleur HUB75 BCM 8 bits** sur dalle `128x32` sur les cartes `ESP32_STD` (`esp32dev` sans PSRAM) sur un nombre illimité de rotations : `PipelineSelectionPolicy` applique une hystérésis de maintien de `3,5 Ko` une fois le DMA 8 bits alloué, et l'allocation LIFO Phase 2 de `frame565` couplée à `SO_LINGER {1, 0}` garantit zéro érosion de la DRAM interne — ne descendant à `4 bits` **que** sur des dalles plus grandes (`128x64` sans PSRAM).
    - Lors du chargement initial de la SPA WebUI embarquée (`GET /`), `ArcadeMatrix` active temporairement une source d'affichage haute priorité zéro-heap **`WEBUI_SYNC`** ([`WebUiSyncEngine`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/WebUiSyncEngine.h)) sur `PreemptionStack`. L'éviction du moteur actif (`deactivate()`) libère immédiatement **`~48 Ko` de SRAM interne** (`m_frame565`, `m_poster565`, `m_ioScratch` et buffers TCP) pour servir la SPA compressée sans erreur mémoire, puis reprend automatiquement la diffusion Showcase 8 bits dès la synchronisation navigateur terminée.
 3. **Zéro Scintillement Noir & Zéro Effet Stroboscopique (Écrasement Bitplane Sur Place)** :
    - Dessiner directement dans un unique buffer DMA (`direct_single`) en appelant `clearScreen()` efface les bitplanes en cours de balayage actif, provoquant un clignotement noir permanent.
-   - Avec un **Canevas RGB565 Hors-Écran**, tous les effacements, tracés `Adafruit_GFX` (texte, HUD, score), animations d'attente et copies de trames `DMDS`/`DMDF` s'effectuent à 100 % en mémoire hors-écran. `blitCanvas565()` réécrit ensuite chaque mot de bitplane HUB75 **sur place** (`(dmaRow[ax] & ~0x003F) | rgb12`) en **`~300 µs`** (`128x32`) **sans jamais passer par un `clearScreen()` noir préalable**.
+   - Avec un **Canevas RGB565 Hors-Écran**, tous les effacements, tracés `Adafruit_GFX` (texte, HUD, score), animations d'attente et mises à jour de trames `DMDZ`/`DMDS`/`DMDF` s'effectuent à 100 % en mémoire hors-écran. `blitCanvas565()` réécrit ensuite chaque mot de bitplane HUB75 **sur place** (`(dmaRow[ax] & ~0x003F) | rgb12`) en **`~300 µs`** (`128x32`) **sans jamais passer par un `clearScreen()` noir préalable**.
 4. **Gating par Compteur d'État `Dirty` (`frameSeq != lastPresentedSeq`)** :
-   - Core 1 cadencé à `60 Hz` (`16,6 ms`) cohabite avec un flux vidéo TCP `DMDS` / UDP `DMDF` à `15–25 FPS` (`40–66 ms`).
+   - Core 1 cadencé à `60 Hz` (`16,6 ms`) cohabite avec un flux vidéo WS `DMDZ` / TCP `DMDS` / UDP `DMDF` à `15–25 FPS` (`40–66 ms`).
    - En ne déclenchant le burst vers `frame_buffer[0]` **que lorsqu'une nouvelle trame a réellement modifié le canevas**, Core 1 n'effectue **aucune écriture DMA redondante** entre deux trames vidéo, supprimant toute contention sur le bus SRAM pendant le balayage I2S.
 5. **Encodage Burst BCM Multiplexé + Gamma Perceptif CIE 1931 + Swap FIFO I2S ESP32 Classique** :
    - Encode simultanément la demi-ligne haute `(y)` et la demi-ligne basse `(y + H/2)` dans `R1G1B1R2G2B2` via des tables **gamma CIE 1931** calibrées à la profondeur active, applique la permutation 16 bits du FIFO I2S de l'ESP32 original (`MATRIX_TX_ADJUST(x)`) et vide les lignes de cache CPU (`Cache_WriteBack_Addr`) lorsque `SPIRAM_DMA_BUFFER` est actif sur `ESP32-S3`.
@@ -144,13 +146,13 @@ Sur l'ensemble des firmwares ESP32 HUB75 (dont [`ArcadeMatrix`](https://github.c
 ```mermaid
 sequenceDiagram
     participant C1 as "ESP32 Core 1 (60 FPS HUB75)"
-    participant C0 as "ESP32 Core 0 (MQTT borne + TCP LwIP)"
-    participant SRV as "Serveur Showcase (:1883 MQTT / :8890 HTTP)"
+    participant C0 as "ESP32 Core 0 (MQTT brut + WS DMDZ a credits)"
+    participant SRV as "Serveur Showcase (:1883 MQTT / :8890 WS+HTTP)"
     participant UDP as "FfmpegUdpClockStreamer (Mode 2B :4210)"
 
-    Note over C1,C0: "1. BOOT & DECOUVERTE mDNS / MQTT BORNE"
+    Note over C1,C0: "1. BOOT & DECOUVERTE mDNS / MQTT BRUT ZERO-HEAP"
     C1->>C1: "Animation pixel-art procedurale 60 FPS non-bloquante"
-    C0->>SRV: "Resolution mDNS dmdmediashowcase.local + MQTT CONNECT (avec LWT)"
+    C0->>SRV: "Resolution mDNS dmdmediashowcase.local + Raw LwIP MQTT CONNECT (avec LWT)"
     C0->>SRV: "PUBLISH clients/{id}/config OU clients/{id}/hello (retain=True)"
 
     Note over C1,SRV: "2. WARMING / ATTENTE DE CONTENU (ready: false)"
@@ -161,30 +163,33 @@ sequenceDiagram
         C1->>C1: "Maintien de l'animation d'attente fluide a 60 FPS (zero ecran noir)"
     end
 
-    Note over C1,SRV: "3. PHASE 1 — CLAIM MQTT BORNE & FICHE INFO LOCALE 60 FPS"
+    Note over C1,SRV: "3. PHASE 1 — CLAIM MQTT BRUT & FICHE INFO LOCALE 60 FPS"
     SRV-->>C0: "Delivre ready: true + Carte N (pkg_<domain>_<12hex>)"
-    C0->>SRV: "PUBLISH {domain}/events {action: start_card, item_id: N} -> MQTT DISCONNECT"
-    Note over C0: "0 socket TCP/UDP ouverte pendant le defilement de la Fiche !"
+    C0->>SRV: "PUBLISH {domain}/events {action: start_card, item_id: N} -> MQTT DISCONNECT + SO_LINGER {1,0}"
+    Note over C0: "0 socket ouverte & 0 PCB TIME_WAIT pendant le defilement de la Fiche !"
     SRV->>SRV: "Verrouille N dans seen_history.json + lance preparation Standby N+1"
     C1->>C1: "Defilement synopsis localise 60 FPS & mini-jaquette (5-12 s)"
 
-    Note over C1,UDP: "4. PHASE 2 — FLUX HTTP TCP DMDS CADENCE (DEFAUT) OU UDP PASSIF DMDF"
-    alt "Mode Principal MQTT+TCP (Modeles 1 & 2A — Par defaut)"
-        C0->>SRV: "LwIP HTTP/1.1 GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1"
-        SRV-->>C0: "200 OK (Content-Length + X-DMD-Paced: 1, En-tete DMDS 16o + Trame 0)"
-        loop "Trames Cadencees Cote Serveur 15-25 FPS (Zero Blocage TCP_WND)"
-            SRV-->>C0: "Trame RGB565LE contigue (W * H * 2 o) -> lwip_recv dans frame565"
-            C0->>C1: "Passage sans dechirement frameSeq Pair/Impair + consumedFrameSeq"
+    Note over C1,UDP: "4. PHASE 2 — FLUX WS DMDZ A CREDITS (DEFAUT), REPLI HTTP OU UDP PASSIF DMDF"
+    alt "Mode Principal MQTT+TCP (Modeles 1 & 2A — WS DMDZ a credits + Repli HTTP)"
+        C0->>C0: "Alloc LIFO Phase 2 de frame565 (8 Ko sur ESP32_STD ; PSRAM persistante sur S3)"
+        C0->>SRV: "GET /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={id}&credits=2 (Upgrade: websocket)"
+        SRV-->>C0: "101 Switching Protocols + En-tete DMDZ v1 16o (fenetre initiale 2 credits)"
+        loop "Sous-paquets DMDZ Sans Perte (<= 1024 o, <= 2048 o max en vol)"
+            SRV-->>C0: "Sous-paquet binaire WS (<= 1024 o) -> DmdzStreamDecoder sur place"
+            C0->>SRV: "ACK credit 1 octet 'A' (0x41) masque"
+            C0->>C1: "Passage frameSeq Pair/Impair + renderBlitSeq + cadencement client monotone"
         end
-        SRV->>SRV: "EOF HTTP -> purge_consumed_package(N) immediate sur disque"
+        Note over C0,SRV: "Repli auto si Upgrade WS bloque : GET .rgb565.stream?purge=true&paced=1&codec=dmdz1"
+        SRV->>SRV: "Fermeture WS / EOF -> purge_consumed_package(N) immediate sur disque"
     else "Modele 2B Passif (UDP-PASSIVE :4210, supports_local_card: false)"
         UDP-->>C0: "UDP DMDF (En-tete 10o <4sHBBH + <=1408o RGB565LE) vers :4210"
         C0->>C1: "Permutation Ping-Pong sur chunkMask complet (watchdog 2500 ms)"
     end
 
     Note over C1,SRV: "5. DESACTIVATION / PREEMPTION (< 250 ms EXTINCTION QUIESCENTE)"
-    C0->>SRV: "lwip_close(sock) -> TCP FIN declenche la purge disque immediate de N"
-    C0->>C1: "Extinction quiescente Core 0 -> liberation memoire securisee"
+    C0->>SRV: "SO_LINGER {1,0} + lwip_close(sock) -> 0 TIME_WAIT & purge disque immediate de N"
+    C0->>C1: "Attente renderBlitSeq PAIR -> liberation LIFO de frame565 sur ESP32_STD"
 ```
 
 ### Machine à États Déterministe du Récepteur ESP32
@@ -192,27 +197,27 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> BootDiscovery
-    BootDiscovery: "1. BOOT & DECOUVERTE (Wi-Fi + mDNS + MQTT Borne / Hello HTTP)"
+    BootDiscovery: "1. BOOT & DECOUVERTE (Wi-Fi + mDNS + MQTT LwIP Brut / Hello HTTP)"
     WarmingWait: "2. WARMING / ATTENTE (ready == false)"
     SkipZeroMs: "Saut du Tour en 0 ms (Rotation Multi-Moteurs)"
-    Phase1Card: "3. PHASE 1 : FICHE INFO (60 FPS Local, 0 Socket Ouverte)"
-    Phase2Stream: "4. PHASE 2 : TCP DMDS CADENCE (:8890) OU UDP PASSIF DMDF (:4210)"
-    QuiescentStop: "5. DESACTIVATION QUIESCENTE (lwip_close -> fin tache -> free RAM)"
+    Phase1Card: "3. PHASE 1 : FICHE INFO (60 FPS Local, 0 Socket Ouverte, 0 TIME_WAIT)"
+    Phase2Stream: "4. PHASE 2 : WS DMDZ A CREDITS (:8890) / REPLI HTTP OU UDP DMDF (:4210)"
+    QuiescentStop: "5. DESACTIVATION QUIESCENTE (SO_LINGER {1,0} -> renderBlitSeq -> LIFO free)"
 
     BootDiscovery --> WarmingWait: "Connecte (slot en preparation)"
-    BootDiscovery --> Phase1Card: "Retained ready == true -> start_card -> close MQTT (Modele 1 / 2A)"
+    BootDiscovery --> Phase1Card: "Retained ready == true -> start_card -> SO_LINGER close MQTT (Modele 1 / 2A)"
     BootDiscovery --> Phase2Stream: "Premiere trame UDP DMDF recue (Modele 2B)"
 
     WarmingWait --> SkipZeroMs: "m_skipTurnImmediately (ArcadeMatrix >1 moteur)"
     WarmingWait --> Phase1Card: "ready == true / command: play_card"
     WarmingWait --> Phase2Stream: "Demarrage flux UDP DMDF (Modele 2B)"
 
-    Phase1Card --> Phase2Stream: "Fin synopsis -> GET .rgb565.stream?purge=true&paced=1"
+    Phase1Card --> Phase2Stream: "Fin synopsis -> WS /ws/{id}.dmdz?purge=true&credits=2"
     Phase1Card --> Phase1Card: "command: pause / resume"
     Phase1Card --> WarmingWait: "command: skip"
 
-    Phase2Stream --> WarmingWait: "EOF TCP DMDS / totalFrames atteint (Modeles 1 & 2A)"
-    Phase2Stream --> WarmingWait: "TCP select > 3500 ms OU silence UDP > 2500 ms"
+    Phase2Stream --> WarmingWait: "WS CLOSE / totalFrames atteint -> LIFO free frame565 (Modeles 1 & 2A)"
+    Phase2Stream --> WarmingWait: "Inactivite socket > 3500 ms OU silence UDP > 2500 ms"
     Phase2Stream --> WarmingWait: "Duree > maxStreamCeilingMs (Plafond de securite)"
     Phase2Stream --> Phase1Card: "Oeuvre N+1 deja prete"
 
@@ -224,37 +229,37 @@ stateDiagram-v2
 
 ### Analyse Détaillée des 5 États & Garanties de Résilience
 
-1. **`BOOT & DÉCOUVERTE mDNS / MQTT BORNÉ`** :
+1. **`BOOT & DÉCOUVERTE mDNS / MQTT BRUT ZÉRO-HEAP`** :
    - Dès la mise sous tension, Core 1 affiche une animation procédurale pixel-art à 60 FPS sans attendre la connexion Wi-Fi.
-   - Core 0 résout `dmdmediashowcase.local` par mDNS (`224.0.0.251:5353`) et ouvre la session MQTT `:1883` avec un **Last Will and Testament (`LWT`)** `{"online": false}` sur `dmd_showcase/clients/{dmd_id}/status`.
+   - Core 0 résout `dmdmediashowcase.local` par mDNS (`224.0.0.251:5353`) et ouvre la session MQTT `:1883` sur un `lwip_socket` brut (`RawMqttSocket`, zéro allocation heap `PubSubClient` / `WiFiClientRxBuffer`) avec un **Last Will and Testament (`LWT`)** `{"online": false}` sur `dmd_showcase/clients/{dmd_id}/status`.
 2. **`WARMING / ATTENTE DE CONTENU` (`ready: false`)** :
    - **Récepteurs Dédiés / Passifs (Modèles 2A & 2B)** : Maintiennent leur animation 60 FPS fluide pendant que le serveur télécharge et transcode la première œuvre (`pkg_<domain>_<12hex>`).
    - **DMD Multi-Moteurs (`ArcadeMatrix` — Modèle 1)** : Si `m_rotationSlotCount > 1` et que le topic retenu publie `{"ready": false}`, `MediaShowcaseBase` positionne `m_skipTurnImmediately = true` (`isFinished() == true` en **`0 ms`**). L'afficheur enchaîne immédiatement sur l'horloge ou la météo sans **aucun écran noir** pendant que le serveur prépare l'œuvre en arrière-plan.
-3. **`PHASE 1 — CLAIM MQTT BORNÉ & PIPELINING N+1`** :
-   - Dès que l'œuvre `N` (`pkg_<domain>_<12hex>`) est réclamée via `start_card`, Core 0 **se déconnecte immédiatement et ferme la socket TCP MQTT**, laissant **`0` socket ouverte** pendant les `5–12 s` du défilement local à 60 FPS afin de préserver un maximum de SRAM interne.
+3. **`PHASE 1 — CLAIM MQTT BRUT, ZÉRO TIME_WAIT & PIPELINING N+1`** :
+   - Dès que l'œuvre `N` (`pkg_<domain>_<12hex>`) est réclamée via `start_card`, Core 0 **envoie immédiatement `DISCONNECT` et ferme la socket MQTT avec `SO_LINGER {1, 0}`**, laissant **`0` socket ouverte et `0` PCB `TIME_WAIT`** pendant les `5–12 s` du défilement local à 60 FPS (avant même que `m_frame565` ne soit alloué sur `ESP32_STD`).
    - Côté serveur, `start_card` verrouille l'œuvre `N` dans `./data/seen_history.json` (sauf si `mark_seen: false` via `FrontendSync`), bascule le topic retenu `ready` à `{"ready": false}` et déclenche **instantanément la préparation en tâche de fond du slot `N+1`**.
-4. **`PHASE 2 — FLUX HTTP TCP DMDS CADENCÉ (DÉFAUT) OU UDP PASSIF DMDF`** :
-   - **Modèles 1 & 2A (`MQTT+TCP` par défaut)** : Core 0 ouvre un `lwip_socket` brut (`HTTP/1.1`, `Connection: close`, `TCP_NODELAY`) sur `:8890` vers `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`. L'omission de `drop_late=1` préserve `Content-Length` afin qu'Uvicorn diffuse un **flux binaire `DMDS` 100 % brut non-chunké** (`0` en-tête de chunk HTTP), complété dans `ArcadeMatrix` par un `HttpChunkedDecoder` zéro-heap en filet de sécurité. Le serveur cadence chaque trame (`X-DMD-Paced: 1`) tandis que `lwip_select` applique un **watchdog d'inactivité TCP de `3 500 ms`** (tranches de `25 ms` permettant une sortie `deactivate()` en `< 250 ms`). En fin de flux (`EOF` ou fermeture socket), le bloc `finally` du serveur purge immédiatement le dossier disque de `N`.
+4. **`PHASE 2 — FLUX WEBSOCKET DMDZ ACQUITTÉ PAR CRÉDITS (DÉFAUT), REPLI HTTP OU UDP PASSIF DMDF`** :
+   - **Modèles 1 & 2A (`MQTT+TCP` par défaut)** : Core 0 alloue `m_frame565` en portée LIFO stricte sur `ESP32_STD` (ou réutilise la PSRAM persistante sur `ESP32-S3`) et bascule un `lwip_socket` (`TCP_NODELAY`, `SO_RCVTIMEO` de `250 ms`) sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`credits=8` avec PSRAM). Le serveur transmet l'en-tête `DMDZ` v1 de 16 octets suivi de **sous-paquets binaires `<= 1 024 o`** bornés par la fenêtre de crédits (`<= 2 048 o` max en vol sur `ESP32_STD`), attendant l'acquittement client de 1 octet `'A'` (`0x41`) au fur et à mesure du décodage sur place dans `m_frame565` et du cadencement monotone sur Core 0. Si la mise à niveau WebSocket est bloquée, Core 0 bascule automatiquement sur `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` (tandis qu'`ArcadeMatrix_RPi` conserve le préchargement `DMDS` brut non-cadencé via `?purge=true`). Un **watchdog d'inactivité socket de `3 500 ms`** protège chaque lecture, et à la fermeture du flux, le bloc `finally` du serveur purge immédiatement le dossier disque de `N`.
    - **Modèle 2B (`UDP-PASSIVE :4210`, `supports_local_card: false`)** : `FfmpegUdpClockStreamer` cadence les tranches UDP `DMDF` (`<= 1408 o`) vers `:4210`, protégées par un **watchdog local d'inactivité UDP de `2 500 ms`** (`millis() - lastUdpPacketMs > 2500`) et un plafond de durée maximale.
 5. **`DÉSACTIVATION, PRÉEMPTION WEBUI_SYNC & REPRISE APRÈS REBOOT`** :
-   - **Désactivation Propre & Quiescente (`< 250 ms`)** : Le moteur passe `m_wantActive = false` ; `lwip_select` / `SO_RCVTIMEO` sort en `25–250 ms`, ferme la socket TCP `DMDS` (déclenchant la purge disque immédiate côté serveur), attend la fin de la tâche Core 0 (`stopWorkerTaskBounded()` sans allocation dynamique), puis libère ses buffers SRAM (notamment lors d'une préemption `WEBUI_SYNC` sur `ESP32_STD`).
+   - **Désactivation Propre & Quiescente (`< 250 ms`)** : Le passage de `m_wantActive = false` réveille `SO_RCVTIMEO` en `<= 250 ms`, ferme la socket avec `SO_LINGER {1, 0}` (`0` PCB `TIME_WAIT`, déclenchant la purge disque immédiate côté serveur), attend que la barrière Dekker `m_renderBlitSeq` de Core 1 soit `PAIR`, libère `m_frame565` en LIFO sur `ESP32_STD`, puis joint la tâche Core 0 (`stopWorkerTaskBounded()` sans allocation dynamique), y compris lors d'une préemption `WEBUI_SYNC`.
    - **Reboot Brutal de l'ESP32** : Le `RST`/timeout TCP `:8890` ou le `LWT` MQTT (`{"online": false}`) libère immédiatement tout flux serveur actif tout en conservant le slot `N+1` préparé en tâche de fond.
 
 ---
 
 ## 4. Implémentations C++ ESP32 de Référence (`MQTT+TCP` par défaut & UDP Passif `DMDF`)
 
-### A. Modèles 1 & 2A — Session MQTT Bornée Zéro-Heap + Streamer TCP `DMDS` Brut LwIP (`MQTT+TCP` par défaut)
+### A. Modèles 1 & 2A — Session MQTT Brute Zéro-Heap + Streamer WebSocket `DMDZ` v1 à Crédits (`MQTT+TCP` par défaut)
 
-Cette implémentation C++ illustre le patron exact zéro-heap **`MQTT borné (:1883) + HTTP/1.1 TCP DMDS brut LwIP (:8890)`** déployé en production sur [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) pour le **Modèle 1** (`config_source: "client"`) et le **Modèle 2A** (`config_source: "server"`, `supports_local_card: true`) :
+Cette implémentation C++17 illustre le patron exact zéro-heap **`MQTT LwIP brut (:1883) + WebSocket DMDZ v1 sans perte acquitté par crédits (:8890) + Repli HTTP cadencé`** déployé en production sur [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) pour le **Modèle 1** (`config_source: "client"`) et le **Modèle 2A** (`config_source: "server"`, `supports_local_card: true`) :
 
-1. **Claim MQTT Borné Pré-Stream (`0` Socket Ouverte Pendant la Fiche)** : Core 0 ouvre MQTT `:1883`, publie `config` (Modèle 1) ou `hello` (`supports_local_card: true`, Modèle 2A), extrait la fiche `ready` retenue (`pkg_<domain>_<12hex>`), publie `{"action":"start_card","item_id":"pkg_..."}`, puis **se déconnecte et ferme immédiatement la socket TCP MQTT**.
-2. **Stream TCP `DMDS` Brut LwIP Zéro-Heap (`?purge=true&paced=1`)** : Une fois le défilement local 60 FPS terminé, Core 0 ouvre un `lwip_socket` (`TCP_NODELAY`, `SO_RCVTIMEO` de `250 ms`) et lit les trames RGB565LE cadencées côté serveur (`X-DMD-Paced: 1`, `Content-Length` non-chunké) directement dans `g_frame565` avec synchronisation sans déchirement **`g_frameSeq` Pair/Impair + `g_consumedFrameSeq`** vers Core 1 (`canvas_single`).
+1. **Claim MQTT LwIP Brut Zéro-Heap (`0` Socket & `0` `TIME_WAIT` Pendant la Fiche)** : Core 0 se connecte directement à `:1883` via `lwip_socket` (évitant les 4 Ko de heap de `PubSubClient` et `WiFiClientRxBuffer`), publie `config` (Modèle 1) ou `hello` (`supports_local_card: true`, Modèle 2A), extrait la fiche `ready` retenue (`pkg_<domain>_<12hex>`), publie `{"action":"start_card","item_id":"pkg_..."}`, puis ferme avec **`SO_LINGER {1, 0}`**.
+2. **`g_frame565` LIFO Phase 2 + WebSocket `WS /ws/{item_id}.dmdz` à Crédits (`?credits=2` / `8`) + Repli HTTP** : Une fois le défilement local 60 FPS terminé, `StepCFrameBufferGuard` alloue `g_frame565` (`8 Ko` SRAM interne sur `ESP32_STD` ou PSRAM persistante sur `ESP32-S3`), bascule sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (avec repli automatique vers `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`), décode les sous-paquets `DMDZ` v1 `<= 1 024 o` sur place en renvoyant l'acquittement masqué `'A'` de 7 octets, et synchronise sans déchirement avec Core 1 (`canvas_single`) via **`g_frameSeq` Pair/Impair + `g_consumedFrameSeq` + `g_renderBlitSeq`**.
 
 ```cpp
 #include <Arduino.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <esp_heap_caps.h>
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <atomic>
@@ -264,221 +269,503 @@ static constexpr uint16_t PANEL_W     = 128;
 static constexpr uint16_t PANEL_H     = 32;
 static constexpr size_t   FRAME_BYTES = static_cast<size_t>(PANEL_W) * PANEL_H * 2U; // 8,192 B
 
-// Pre-allocated buffers (zero heap churn during Card scroll or TCP DMDS streaming)
-static uint16_t* g_frame565       = nullptr; // Single 8 KB RGB565 frame buffer (Models 1 & 2A)
-static uint8_t   g_ioScratch[1472]{};        // Fixed HTTP header / MQTT scratch buffer
-static char      g_itemId[28]{};             // Compact "pkg_<domain>_<12hex>" (<= 24 chars)
+// Persistent scratch buffer (~1.46 KB); on ESP32_STD (0 PSRAM), g_frame565 (8 KB) is allocated
+// strictly during Phase 2 streaming (LIFO) so Phase 1 and engine rotations never fragment heap!
+static uint16_t* g_frame565       = nullptr;
+static bool      g_hasPsram       = false;
+static uint8_t   g_ioScratch[1472]{};
+static char      g_itemId[28]{}; // Compact "pkg_<domain>_<12hex>" (<= 24 chars)
 
-// Lock-free tear-free handoff between Core 0 (LwIP TCP reader) and Core 1 (60 Hz HUB75)
+// Lock-free synchronization between Core 0 (stream decoder) and Core 1 (60 Hz HUB75)
 static std::atomic<uint32_t> g_frameSeq{0};         // EVEN = coherent frame ready, ODD = Core 0 writing
-static std::atomic<uint32_t> g_consumedFrameSeq{0}; // Last EVEN frameSeq presented by Core 1
-static std::atomic<bool>     g_wantActive{true};    // Cleared on deactivate() / WEBUI_SYNC / skip
-static std::atomic<bool>     g_cardReady{false};
+static std::atomic<uint32_t> g_consumedFrameSeq{0}; // Last EVEN frameSeq blitted by Core 1
+static std::atomic<uint32_t> g_renderBlitSeq{0};    // Dekker seq_cst guard (ODD while Core 1 reads g_frame565)
+static std::atomic<bool>     g_wantActive{true};
+
+// Immediately reclaim LwIP TCP PCB without accumulating 120s TIME_WAIT sockets across rotations
+static void closeSocketZeroTimeWait(int& sock) {
+    if (sock >= 0) {
+        struct linger sl{1, 0};
+        lwip_setsockopt(sock, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+        lwip_close(sock);
+        sock = -1;
+    }
+}
+
+static bool sendAllBounded(int sock, const uint8_t* buf, size_t len) {
+    size_t sent = 0;
+    while (sent < len && g_wantActive.load(std::memory_order_relaxed)) {
+        const int w = lwip_send(sock, buf + sent, len - sent, 0);
+        if (w > 0) {
+            sent += static_cast<size_t>(w);
+        } else if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } else {
+            return false;
+        }
+    }
+    return sent == len;
+}
 
 // -----------------------------------------------------------------------------------------
-// STEP 1 (CORE 0): SCOPED MQTT SESSION -> CLAIM CARD -> CLOSE SOCKET IMMEDIATELY!
+// STEP 1 (CORE 0): ZERO-HEAP RAW LWIP MQTT CLAIM -> CLOSE SOCKET WITH 0 TIME_WAIT!
 // -----------------------------------------------------------------------------------------
-bool claimReadyCardScopedMqtt(const char* host, const char* dmdId, const char* domain, bool isModel2A) {
-    WiFiClient tcpMqtt;
-    PubSubClient mqtt(tcpMqtt);
-    mqtt.setServer(host, 1883);
-    mqtt.setBufferSize(4096); // Needed only for this brief scoped session (freed on return!)
+static size_t encodeMqttRemainingLen(uint8_t out[4], size_t remLen) {
+    size_t i = 0;
+    do {
+        uint8_t b = static_cast<uint8_t>(remLen & 0x7FU);
+        remLen >>= 7;
+        if (remLen > 0U) b |= 0x80U;
+        out[i++] = b;
+    } while (remLen > 0U && i < 4U);
+    return i;
+}
 
-    g_cardReady.store(false, std::memory_order_relaxed);
-    mqtt.setCallback([](char* /*topic*/, byte* payload, unsigned int len) {
-        // Zero-copy extract compact item_id ("pkg_<domain>_<12hex>") when "ready":true
-        if (len < 16 || memmem(payload, len, "\"ready\":true", 12) == nullptr &&
-                        memmem(payload, len, "\"ready\": true", 13) == nullptr) {
-            return;
-        }
-        const char* idKey = static_cast<const char*>(memmem(payload, len, "\"item_id\":\"", 11));
-        if (idKey) {
-            idKey += 11;
-            const char* endQ = static_cast<const char*>(memchr(idKey, '"', 27));
-            if (endQ) {
-                const size_t n = static_cast<size_t>(endQ - idKey);
-                memcpy(g_itemId, idKey, n);
-                g_itemId[n] = '\0';
-                // Decode Base64 mini-poster & localized synopsis into card state here...
-                g_cardReady.store(true, std::memory_order_release);
-            }
-        }
-    });
+static bool sendMqttPacket(int sock, uint8_t fixedHdr, const uint8_t* body, size_t bodyLen) {
+    uint8_t hdr[5]{fixedHdr};
+    const size_t hdrLen = 1U + encodeMqttRemainingLen(hdr + 1, bodyLen);
+    return sendAllBounded(sock, hdr, hdrLen) && (bodyLen == 0U || sendAllBounded(sock, body, bodyLen));
+}
 
-    char lwtTopic[96], topic[128], msg[256];
-    snprintf(lwtTopic, sizeof(lwtTopic), "dmd_showcase/clients/%s/status", dmdId);
-    if (!mqtt.connect(dmdId, nullptr, nullptr, lwtTopic, 0, true, "{\"online\":false}")) {
+static bool sendMqttPublish(int sock, const char* topic, const char* json, bool retain) {
+    const uint16_t tLen = static_cast<uint16_t>(strlen(topic));
+    const size_t   pLen = strlen(json);
+    if (2U + tLen + pLen > sizeof(g_ioScratch)) return false;
+    g_ioScratch[0] = static_cast<uint8_t>(tLen >> 8);
+    g_ioScratch[1] = static_cast<uint8_t>(tLen & 0xFFU);
+    memcpy(g_ioScratch + 2, topic, tLen);
+    memcpy(g_ioScratch + 2 + tLen, json, pLen);
+    return sendMqttPacket(sock, static_cast<uint8_t>(0x30U | (retain ? 0x01U : 0x00U)), g_ioScratch, 2U + tLen + pLen);
+}
+
+bool claimReadyCardZeroHeapMqtt(const char* host, const char* dmdId, const char* domain, bool isModel2A) {
+    IPAddress srvIp;
+    if (!WiFi.hostByName(host, srvIp)) return false;
+
+    int sock = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) return false;
+    int one = 1;
+    lwip_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    struct timeval tv{0, 200000};
+    lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    lwip_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(1883);
+    addr.sin_addr.s_addr = static_cast<uint32_t>(srvIp);
+    if (lwip_connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+        closeSocketZeroTimeWait(sock);
         return false;
     }
 
+    // Minimal MQTT 3.1.1 CONNECT with LWT {"online":false} (zero WiFiClientRxBuffer heap!)
+    char lwtTopic[96];
+    snprintf(lwtTopic, sizeof(lwtTopic), "dmd_showcase/clients/%s/status", dmdId);
+    static constexpr const char* kLwtMsg = "{\"online\":false}";
+    const uint16_t idLen = static_cast<uint16_t>(strlen(dmdId));
+    const uint16_t lwTLen = static_cast<uint16_t>(strlen(lwtTopic));
+    const uint16_t lwMLen = static_cast<uint16_t>(strlen(kLwtMsg));
+    size_t pos = 0;
+    const uint8_t varHdr[10] = {0, 4, 'M', 'Q', 'T', 'T', 4, 0x26, 0, 30}; // CleanSession + WillFlag + WillRetain
+    memcpy(g_ioScratch + pos, varHdr, sizeof(varHdr)); pos += sizeof(varHdr);
+    g_ioScratch[pos++] = static_cast<uint8_t>(idLen >> 8);  g_ioScratch[pos++] = static_cast<uint8_t>(idLen & 0xFFU);
+    memcpy(g_ioScratch + pos, dmdId, idLen); pos += idLen;
+    g_ioScratch[pos++] = static_cast<uint8_t>(lwTLen >> 8); g_ioScratch[pos++] = static_cast<uint8_t>(lwTLen & 0xFFU);
+    memcpy(g_ioScratch + pos, lwtTopic, lwTLen); pos += lwTLen;
+    g_ioScratch[pos++] = static_cast<uint8_t>(lwMLen >> 8); g_ioScratch[pos++] = static_cast<uint8_t>(lwMLen & 0xFFU);
+    memcpy(g_ioScratch + pos, kLwtMsg, lwMLen); pos += lwMLen;
+    if (!sendMqttPacket(sock, 0x10U, g_ioScratch, pos)) {
+        closeSocketZeroTimeWait(sock);
+        return false;
+    }
+
+    // Publish retained hello (Model 2A) or config (Model 1), then SUBSCRIBE to {domain}/ready
     const IPAddress ip = WiFi.localIP();
+    char topic[128], msg[256];
     if (isModel2A) {
-        // Model 2A: Server-managed playlists in ./data/dmd_profiles.json, local 60 FPS Card on ESP32
         snprintf(topic, sizeof(topic), "dmd_showcase/clients/%s/hello", dmdId);
         snprintf(msg, sizeof(msg),
             "{\"dmd_id\":\"%s\",\"config_source\":\"server\",\"supports_local_card\":true,"
             "\"transport\":\"mqtt_tcp\",\"width\":%u,\"height\":%u,\"client_ip\":\"%u.%u.%u.%u\",\"lang\":\"fr\"}",
             dmdId, PANEL_W, PANEL_H, ip[0], ip[1], ip[2], ip[3]);
     } else {
-        // Model 1: Client-driven per-domain config
         snprintf(topic, sizeof(topic), "dmd_showcase/clients/%s/config", dmdId);
         snprintf(msg, sizeof(msg),
             "{\"dmd_id\":\"%s\",\"config_source\":\"client\",\"transport\":\"mqtt_tcp\","
             "\"width\":%u,\"height\":%u,\"client_ip\":\"%u.%u.%u.%u\",\"lang\":\"fr\"}",
             dmdId, PANEL_W, PANEL_H, ip[0], ip[1], ip[2], ip[3]);
     }
-    mqtt.publish(topic, reinterpret_cast<const uint8_t*>(msg), strlen(msg), /*retained=*/true);
+    sendMqttPublish(sock, topic, msg, /*retain=*/true);
 
     snprintf(topic, sizeof(topic), "dmd_showcase/clients/%s/%s/ready", dmdId, domain);
-    mqtt.subscribe(topic);
+    const uint16_t subTLen = static_cast<uint16_t>(strlen(topic));
+    g_ioScratch[0] = 0x00; g_ioScratch[1] = 0x01; // Packet ID = 1
+    g_ioScratch[2] = static_cast<uint8_t>(subTLen >> 8);
+    g_ioScratch[3] = static_cast<uint8_t>(subTLen & 0xFFU);
+    memcpy(g_ioScratch + 4, topic, subTLen);
+    g_ioScratch[4 + subTLen] = 0x00; // QoS 0
+    sendMqttPacket(sock, 0x82U, g_ioScratch, 5U + subTLen);
 
+    // Wait up to 600 ms for retained PUBLISH containing "ready":true + compact item_id
+    bool claimed = false;
+    size_t rxUsed = 0;
     const uint32_t waitStart = millis();
-    while (g_wantActive.load(std::memory_order_relaxed) && !g_cardReady.load(std::memory_order_acquire) &&
-           (millis() - waitStart) < 600U) {
-        mqtt.loop();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    if (!g_cardReady.load(std::memory_order_acquire)) {
-        mqtt.disconnect(); // Multi-engine DMD yields turn in 0 ms when ready == false!
-        return false;
-    }
-
-    // Claim Item N and trigger background N+1 preparation on the server, then CLOSE MQTT socket!
-    mqtt.unsubscribe(topic);
-    snprintf(topic, sizeof(topic), "dmd_showcase/clients/%s/%s/events", dmdId, domain);
-    snprintf(msg, sizeof(msg),
-        "{\"action\":\"start_card\",\"item_id\":\"%s\",\"client_ip\":\"%u.%u.%u.%u\"}",
-        g_itemId, ip[0], ip[1], ip[2], ip[3]);
-    mqtt.publish(topic, msg, /*retained=*/false);
-    mqtt.loop();
-    mqtt.disconnect();
-    tcpMqtt.stop(); // <--- 0 sockets open during Phase 1 local 60 FPS Card scroll!
-    return true;
-}
-
-// -----------------------------------------------------------------------------------------
-// STEP 2 (CORE 0): ZERO-HEAP RAW LWIP HTTP/1.1 TCP `DMDS` STREAMER (?purge=true&paced=1)
-// -----------------------------------------------------------------------------------------
-static int recvExactBounded(int sock, uint8_t* dst, size_t n, uint32_t idleTimeoutMs) {
-    size_t got = 0;
-    uint32_t lastProgressMs = millis();
-    while (got < n && g_wantActive.load(std::memory_order_relaxed)) {
-        const ssize_t r = lwip_recv(sock, dst + got, n - got, 0);
+    while (g_wantActive.load(std::memory_order_relaxed) && (millis() - waitStart) < 600U) {
+        const int r = lwip_recv(sock, g_ioScratch + rxUsed, sizeof(g_ioScratch) - 1U - rxUsed, 0);
         if (r > 0) {
-            got += static_cast<size_t>(r);
-            lastProgressMs = millis();
-        } else if (r == 0) {
-            return 0; // Clean server EOF
-        } else {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;
-            if ((millis() - lastProgressMs) > idleTimeoutMs) return -1;
+            rxUsed += static_cast<size_t>(r);
+            g_ioScratch[rxUsed] = '\0';
+            if (memmem(g_ioScratch, rxUsed, "\"ready\":true", 12) != nullptr ||
+                memmem(g_ioScratch, rxUsed, "\"ready\": true", 13) != nullptr) {
+                const char* idKey = static_cast<const char*>(memmem(g_ioScratch, rxUsed, "\"item_id\":\"", 11));
+                if (idKey) {
+                    idKey += 11;
+                    const char* endQ = static_cast<const char*>(memchr(idKey, '"', 27));
+                    if (endQ) {
+                        const size_t n = static_cast<size_t>(endQ - idKey);
+                        memcpy(g_itemId, idKey, n);
+                        g_itemId[n] = '\0';
+                        claimed = true;
+                        break;
+                    }
+                }
+            }
         }
     }
-    return (got == n) ? static_cast<int>(got) : -1;
+
+    if (claimed) {
+        snprintf(topic, sizeof(topic), "dmd_showcase/clients/%s/%s/events", dmdId, domain);
+        snprintf(msg, sizeof(msg),
+            "{\"action\":\"start_card\",\"item_id\":\"%s\",\"client_ip\":\"%u.%u.%u.%u\"}",
+            g_itemId, ip[0], ip[1], ip[2], ip[3]);
+        sendMqttPublish(sock, topic, msg, /*retain=*/false);
+    }
+    const uint8_t discPkt[2] = {0xE0U, 0x00U};
+    lwip_send(sock, discPkt, sizeof(discPkt), 0);
+    closeSocketZeroTimeWait(sock); // <--- 0 sockets & 0 TIME_WAIT PCBs during Phase 1 Card scroll!
+    return claimed;
 }
 
-bool streamUnifiedRgb565Http(const char* host, uint16_t port, const char* domain, const char* itemId) {
-    IPAddress srvIp;
-    if (!WiFi.hostByName(host, srvIp)) return false;
+// -----------------------------------------------------------------------------------------
+// STEP 2 (CORE 0): ZERO-HEAP LOSSLESS `DMDZ` v1 DECODER + RFC 6455 CREDIT-ACKED WEBSOCKET
+// -----------------------------------------------------------------------------------------
+struct DmdzStreamDecoder {
+    uint16_t cache[64]{};
+    uint32_t numPx = 0, pos = 0;
+    uint16_t w = 0, h = 0, rem = 0, last = 0;
+    uint8_t  litRem = 0, lo = 0, state = 0;
+    bool     err = false;
 
-    const int sock = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) return false;
+    static inline uint8_t hashPx(uint16_t p) {
+        return static_cast<uint8_t>(((((p >> 11) & 0x1FU) * 3U) + (((p >> 5) & 0x3FU) * 5U) + ((p & 0x1FU) * 7U)) & 63U);
+    }
+    void init(uint16_t width, uint16_t height) {
+        w = width; h = height; numPx = static_cast<uint32_t>(w) * h; err = (numPx == 0U);
+    }
+    bool beginFrame(uint16_t payloadLen) {
+        if (numPx == 0U || payloadLen == 0U) { err = true; return false; }
+        memset(cache, 0, sizeof(cache));
+        pos = 0; rem = payloadLen; last = 0; litRem = 0; state = 0; err = false;
+        return true;
+    }
+    bool feed(const uint8_t* src, size_t len, uint16_t* fb) {
+        if (err || !fb || len > rem) { err = true; return false; }
+        for (size_t i = 0; i < len; ++i) {
+            const uint8_t b = src[i];
+            --rem;
+            if (state == 0) { // FrameType: 0=delta, 1=vertical scroll + delta, 2=keyframe
+                if (b == 0U || b == 2U) state = 2;
+                else if (b == 1U) state = 1;
+                else { err = true; return false; }
+            } else if (state == 1) { // ScrollDy (in-place memmove)
+                const int dy = static_cast<int>(static_cast<int8_t>(b));
+                const uint16_t s = static_cast<uint16_t>(dy >= 0 ? dy : -dy);
+                if (s >= h) { err = true; return false; }
+                if (dy > 0) memmove(fb, fb + static_cast<size_t>(s) * w, static_cast<size_t>(h - s) * w * 2U);
+                else if (dy < 0) memmove(fb + static_cast<size_t>(s) * w, fb, static_cast<size_t>(h - s) * w * 2U);
+                state = 2;
+            } else if (state == 2) { // Op byte
+                if (b < 0x40U) { // SKIP (n + 1)
+                    const uint32_t n = static_cast<uint32_t>(b) + 1U;
+                    if (pos + n > numPx) { err = true; return false; }
+                    pos += n; last = fb[pos - 1U]; cache[hashPx(last)] = last;
+                } else if (b < 0x80U) { // RUN (n + 1)
+                    const uint32_t n = static_cast<uint32_t>(b & 0x3FU) + 1U;
+                    if (pos + n > numPx) { err = true; return false; }
+                    for (uint32_t k = 0; k < n; ++k) fb[pos++] = last;
+                } else if (b < 0xC0U) { // INDEX[64]
+                    if (pos >= numPx) { err = true; return false; }
+                    last = cache[b & 0x3FU]; fb[pos++] = last;
+                } else if (b < 0xE0U) { // DIFF (dr, dg, db in {-1, 0, +1})
+                    const uint8_t x = static_cast<uint8_t>(b & 0x1FU);
+                    if (x > 26U || pos >= numPx) { err = true; return false; }
+                    const uint16_t r  = static_cast<uint16_t>((static_cast<int>((last >> 11) & 0x1FU) + static_cast<int>(x / 9U) - 1) & 0x1F);
+                    const uint16_t g  = static_cast<uint16_t>((static_cast<int>((last >> 5) & 0x3FU) + static_cast<int>((x / 3U) % 3U) - 1) & 0x3F);
+                    const uint16_t bl = static_cast<uint16_t>((static_cast<int>(last & 0x1FU) + static_cast<int>(x % 3U) - 1) & 0x1F);
+                    last = static_cast<uint16_t>((r << 11) | (g << 5) | bl);
+                    fb[pos++] = last; cache[hashPx(last)] = last;
+                } else if (b < 0xF0U) { // LIT (n + 1) raw <H pixels
+                    litRem = static_cast<uint8_t>((b & 0x0FU) + 1U);
+                    if (pos + litRem > numPx) { err = true; return false; }
+                    state = 3;
+                } else if (b == 0xF0U) { // LONG SKIP (<H count)
+                    state = 5;
+                } else { err = true; return false; }
+            } else if (state == 3) { lo = b; state = 4; }
+            else if (state == 4) {
+                last = static_cast<uint16_t>(lo | (static_cast<uint16_t>(b) << 8));
+                fb[pos++] = last; cache[hashPx(last)] = last;
+                state = (--litRem > 0U) ? 3 : 2;
+            } else if (state == 5) { lo = b; state = 6; }
+            else {
+                const uint32_t n = static_cast<uint32_t>(lo) | (static_cast<uint32_t>(b) << 8);
+                if (n == 0U || pos + n > numPx) { err = true; return false; }
+                pos += n; last = fb[pos - 1U]; cache[hashPx(last)] = last; state = 2;
+            }
+        }
+        return true;
+    }
+    bool finishFrame() const { return !err && rem == 0U && state == 2U && pos == numPx; }
+};
 
+// RFC 6455 masked 1-byte 'A' (0x41) credit ACK frame returned to Showcase after each <= 1024 B WS message
+static const uint8_t kWsMaskedCreditAck[7] = {0x82U, 0x81U, 0x37U, 0xFAU, 0x21U, 0x3DU, static_cast<uint8_t>(0x41U ^ 0x37U)};
+
+struct SimpleWsBinaryDemuxer {
+    size_t  frameRem = 0;
+    uint8_t state = 0, opcode = 0, lenBytes = 0;
+    bool    fin = true, closed = false, err = false, pongPending = false;
+
+    size_t decode(const uint8_t* src, size_t srcLen, size_t& consumed, uint8_t* dst, size_t dstCap, uint8_t& creditsOut) {
+        consumed = 0; creditsOut = 0;
+        size_t written = 0;
+        while (consumed < srcLen && !closed && !err) {
+            if (state == 3) { // Unmasked server-to-client binary payload
+                size_t take = srcLen - consumed;
+                if (take > frameRem) take = frameRem;
+                if (take > dstCap - written) take = dstCap - written;
+                if (take == 0U) break;
+                memcpy(dst + written, src + consumed, take);
+                written += take; consumed += take; frameRem -= take;
+                if (frameRem == 0U) { if (fin) ++creditsOut; state = 0; }
+                if (written >= dstCap) break;
+                continue;
+            }
+            const uint8_t b = src[consumed++];
+            if (state == 0) {
+                fin = (b & 0x80U) != 0U; opcode = static_cast<uint8_t>(b & 0x0FU); state = 1;
+            } else if (state == 1) {
+                const uint8_t l7 = static_cast<uint8_t>(b & 0x7FU);
+                if (l7 < 126U) {
+                    frameRem = l7;
+                    state = (frameRem == 0U) ? 0 : (opcode >= 0x8U ? 4 : 3);
+                    if (frameRem == 0U) {
+                        if (opcode == 0x8U) closed = true;
+                        else if (fin && opcode <= 0x2U) ++creditsOut;
+                    }
+                }
+                else if (l7 == 126U) { frameRem = 0; lenBytes = 2; state = 2; }
+                else { err = true; }
+            } else if (state == 2) {
+                frameRem = (frameRem << 8) | b;
+                if (--lenBytes == 0U) state = (opcode >= 0x8U) ? 4 : 3;
+            } else { // Control frame payload (PING / CLOSE)
+                if (--frameRem == 0U) {
+                    if (opcode == 0x8U) closed = true;
+                    else if (opcode == 0x9U) pongPending = true;
+                    state = 0;
+                }
+            }
+        }
+        return written;
+    }
+};
+
+// Step-C-only LIFO g_frame565 guard on ESP32_STD (persistent PSRAM on ESP32-S3)
+struct StepCFrameBufferGuard {
+    bool ok = false;
+    StepCFrameBufferGuard() {
+        g_hasPsram = psramFound();
+        if (!g_frame565) {
+            g_frame565 = static_cast<uint16_t*>(heap_caps_malloc(
+                FRAME_BYTES, (g_hasPsram ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL) | MALLOC_CAP_8BIT));
+        }
+        if (g_frame565) { memset(g_frame565, 0, FRAME_BYTES); ok = true; }
+    }
+    ~StepCFrameBufferGuard() {
+        if (!g_hasPsram && g_frame565) {
+            g_frameSeq.store(1U, std::memory_order_seq_cst); // Block new Core 1 blits
+            while ((g_renderBlitSeq.load(std::memory_order_seq_cst) & 1U) != 0U) {
+                vTaskDelay(pdMS_TO_TICKS(1)); // Wait for any in-flight Core 1 memcpy (~15 us)
+            }
+            uint16_t* p = g_frame565;
+            g_frame565 = nullptr;
+            heap_caps_free(p); // LIFO release after socket closes -> 0 heap fragmentation!
+            g_frameSeq.store(0U, std::memory_order_seq_cst);
+        }
+    }
+};
+
+static int connectAndUpgradeOrFallback(
+    const IPAddress& srvIp, const char* host, uint16_t port, const char* domain,
+    const char* itemId, const char* dmdId, bool tryWebSocket, bool& outIsWs, size_t& outBodyOff, size_t& outUsed
+) {
+    int sock = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) return -1;
     int one = 1;
     lwip_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    struct timeval tv{0, 250000}; // 250 ms slice -> deactivate() always exits in < 250 ms!
+    struct timeval tv{0, 250000};
     lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     lwip_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     struct sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
-    addr.sin_addr.s_addr = static_cast<uint32_t>(srvIp);
+    addr.sin_family = AF_INET; addr.sin_port = htons(port); addr.sin_addr.s_addr = static_cast<uint32_t>(srvIp);
     if (lwip_connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
-        lwip_close(sock);
-        return false;
+        closeSocketZeroTimeWait(sock);
+        return -1;
     }
 
-    // Omit drop_late=1 so Content-Length is preserved and Uvicorn streams 100% raw unchunked binary DMDS
-    const int reqLen = snprintf(
-        reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
-        "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&paced=1 HTTP/1.1\r\n"
-        "Host: %s:%u\r\nConnection: close\r\n\r\n",
-        domain, itemId, host, port);
-    if (lwip_send(sock, g_ioScratch, static_cast<size_t>(reqLen), 0) != reqLen) {
-        lwip_close(sock);
-        return false;
+    const unsigned credits = g_hasPsram ? 8U : 2U;
+    const int reqLen = tryWebSocket
+        ? snprintf(reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
+            "GET /api/v1/%s/ws/%s.dmdz?purge=true&client_id=%s&credits=%u HTTP/1.1\r\n"
+            "Host: %s:%u\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            domain, itemId, dmdId, credits, host, port)
+        : snprintf(reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
+            "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&paced=1&codec=dmdz1 HTTP/1.1\r\n"
+            "Host: %s:%u\r\nConnection: close\r\n\r\n",
+            domain, itemId, host, port);
+    if (!sendAllBounded(sock, g_ioScratch, static_cast<size_t>(reqLen))) {
+        closeSocketZeroTimeWait(sock);
+        return -1;
     }
 
-    // Read HTTP response headers into g_ioScratch and locate "\r\n\r\n"
-    size_t used = 0, bodyOff = 0;
-    while (used + 1U < sizeof(g_ioScratch) && g_wantActive.load(std::memory_order_relaxed)) {
-        const ssize_t r = lwip_recv(sock, g_ioScratch + used, sizeof(g_ioScratch) - 1U - used, 0);
+    outUsed = 0; outBodyOff = 0;
+    while (outUsed + 1U < sizeof(g_ioScratch) && g_wantActive.load(std::memory_order_relaxed)) {
+        const int r = lwip_recv(sock, g_ioScratch + outUsed, sizeof(g_ioScratch) - 1U - outUsed, 0);
         if (r <= 0) {
             if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
-            lwip_close(sock);
-            return false;
+            closeSocketZeroTimeWait(sock);
+            return -1;
         }
-        used += static_cast<size_t>(r);
-        g_ioScratch[used] = '\0';
+        outUsed += static_cast<size_t>(r);
+        g_ioScratch[outUsed] = '\0';
         const char* hdrEnd = strstr(reinterpret_cast<const char*>(g_ioScratch), "\r\n\r\n");
         if (hdrEnd) {
-            bodyOff = static_cast<size_t>((hdrEnd + 4) - reinterpret_cast<const char*>(g_ioScratch));
+            outBodyOff = static_cast<size_t>((hdrEnd + 4) - reinterpret_cast<const char*>(g_ioScratch));
             break;
         }
     }
-    if (bodyOff == 0 || memmem(g_ioScratch, bodyOff, "200", 3) == nullptr) {
-        lwip_close(sock);
-        return false;
+    const bool okStatus = tryWebSocket
+        ? (outBodyOff > 0U && memmem(g_ioScratch, outBodyOff, " 101 ", 5) != nullptr)
+        : (outBodyOff > 0U && memmem(g_ioScratch, outBodyOff, " 200 ", 5) != nullptr);
+    if (!okStatus) {
+        closeSocketZeroTimeWait(sock);
+        return -1;
     }
-    const bool serverPaced = (memmem(g_ioScratch, bodyOff, "X-DMD-Paced: 1", 14) != nullptr) ||
-                             (memmem(g_ioScratch, bodyOff, "x-dmd-paced: 1", 14) != nullptr);
+    outIsWs = tryWebSocket;
+    return sock;
+}
 
-    // Read 16-byte Little-Endian `<4sBBHHHHH` DMDS header
-    uint8_t dmdsHdr[16]{};
-    const size_t avail = used - bodyOff;
-    const size_t take  = (avail < 16U) ? avail : 16U;
-    if (take > 0) memcpy(dmdsHdr, g_ioScratch + bodyOff, take);
-    if (take < 16U && recvExactBounded(sock, dmdsHdr + take, 16U - take, 3500U) != static_cast<int>(16U - take)) {
-        lwip_close(sock);
-        return false;
-    }
-    if (memcmp(dmdsHdr, "DMDS", 4) != 0) {
-        lwip_close(sock);
-        return false;
-    }
-    const uint8_t  fps         = (dmdsHdr[5] > 0U) ? dmdsHdr[5] : 20U;
-    const uint16_t w           = static_cast<uint16_t>(dmdsHdr[6]  | (dmdsHdr[7]  << 8));
-    const uint16_t h           = static_cast<uint16_t>(dmdsHdr[8]  | (dmdsHdr[9]  << 8));
-    const uint16_t totalFrames = static_cast<uint16_t>(dmdsHdr[10] | (dmdsHdr[11] << 8));
-    if (w != PANEL_W || h != PANEL_H || totalFrames == 0U) {
-        lwip_close(sock);
-        return false;
+bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, const char* itemId, const char* dmdId) {
+    IPAddress srvIp;
+    if (!WiFi.hostByName(host, srvIp)) return false;
+
+    StepCFrameBufferGuard fbGuard; // Allocates 8 KB g_frame565 only during Phase 2 on ESP32_STD!
+    if (!fbGuard.ok) return false;
+
+    bool isWs = false;
+    size_t bodyOff = 0, rxUsed = 0;
+    // Primary: ZeDMD-style credit-acked lossless DMDZ WebSocket; Fallback: paced HTTP ?paced=1&codec=dmdz1
+    int sock = connectAndUpgradeOrFallback(srvIp, host, port, domain, itemId, dmdId, /*tryWebSocket=*/true, isWs, bodyOff, rxUsed);
+    if (sock < 0) {
+        sock = connectAndUpgradeOrFallback(srvIp, host, port, domain, itemId, dmdId, /*tryWebSocket=*/false, isWs, bodyOff, rxUsed);
+        if (sock < 0) return false;
     }
 
-    size_t leftover = (avail > 16U) ? (avail - 16U) : 0U;
-    size_t leftoverOff = bodyOff + 16U;
+    SimpleWsBinaryDemuxer wsDemux{};
+    uint8_t appBuf[1024]{};
+    size_t  appAvail = 0, appOff = 0;
+    size_t  rawLeft = rxUsed - bodyOff, rawOff = bodyOff;
+
+    // Drain stream bytes seamlessly across either credit-acked WebSocket or HTTP TCP fallback
+    auto pullStreamBytes = [&](uint8_t* dst, size_t want) -> int {
+        size_t got = 0;
+        uint32_t lastProgressMs = millis();
+        while (got < want && g_wantActive.load(std::memory_order_relaxed)) {
+            if (appOff < appAvail) {
+                size_t take = appAvail - appOff;
+                if (take > want - got) take = want - got;
+                memcpy(dst + got, appBuf + appOff, take);
+                appOff += take; got += take;
+                continue;
+            }
+            if (rawLeft == 0U) {
+                if (isWs && wsDemux.closed) return 0;
+                const int r = lwip_recv(sock, g_ioScratch, 1024U, 0);
+                if (r > 0) { rawLeft = static_cast<size_t>(r); rawOff = 0; lastProgressMs = millis(); }
+                else if (r == 0) return 0;
+                else {
+                    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;
+                    if ((millis() - lastProgressMs) > 3500U) return -1;
+                    continue;
+                }
+            }
+            if (!isWs) {
+                size_t take = (rawLeft < (want - got)) ? rawLeft : (want - got);
+                memcpy(dst + got, g_ioScratch + rawOff, take);
+                rawOff += take; rawLeft -= take; got += take;
+            } else {
+                size_t consumed = 0; uint8_t credits = 0;
+                appAvail = wsDemux.decode(g_ioScratch + rawOff, rawLeft, consumed, appBuf, sizeof(appBuf), credits);
+                appOff = 0; rawOff += consumed; rawLeft -= consumed;
+                // Return 1-byte 'A' credit ACK per drained WS message (<= 2,048 B max in flight!)
+                for (uint8_t c = 0; c < credits; ++c) {
+                    if (!sendAllBounded(sock, kWsMaskedCreditAck, sizeof(kWsMaskedCreditAck))) return -1;
+                }
+                if (wsDemux.pongPending) {
+                    wsDemux.pongPending = false;
+                    const uint8_t pongFrame[6] = {0x8AU, 0x80U, 0x37U, 0xFAU, 0x21U, 0x3DU};
+                    sendAllBounded(sock, pongFrame, sizeof(pongFrame));
+                }
+                if (wsDemux.err) return -1;
+            }
+        }
+        return (got == want) ? static_cast<int>(got) : -1;
+    };
+
+    // Parse 16-byte Little-Endian <4sBBHHHHH> DMDZ v1 (or legacy DMDS) container header
+    uint8_t hdr[16]{};
+    if (pullStreamBytes(hdr, 16U) != 16) { closeSocketZeroTimeWait(sock); return false; }
+    const bool isDmdz = (memcmp(hdr, "DMDZ", 4) == 0 && hdr[4] == 1U);
+    const bool isDmds = (!isDmdz && memcmp(hdr, "DMDS", 4) == 0);
+    const uint8_t  fps         = (hdr[5] > 0U) ? hdr[5] : 15U;
+    const uint16_t w           = static_cast<uint16_t>(hdr[6]  | (hdr[7]  << 8));
+    const uint16_t h           = static_cast<uint16_t>(hdr[8]  | (hdr[9]  << 8));
+    const uint16_t totalFrames = static_cast<uint16_t>(hdr[10] | (hdr[11] << 8));
+    const uint16_t frameDurMs  = static_cast<uint16_t>(hdr[12] | (hdr[13] << 8));
+    if ((!isDmdz && !isDmds) || w != PANEL_W || h != PANEL_H || totalFrames == 0U) {
+        closeSocketZeroTimeWait(sock);
+        return false;
+    }
+
+    DmdzStreamDecoder dmdzDec{};
+    dmdzDec.init(w, h);
+    const uint32_t periodMs = (frameDurMs > 0U) ? frameDurMs : (1000U / fps);
+    uint32_t nextPresentMs = millis();
 
     for (uint16_t f = 0; f < totalFrames && g_wantActive.load(std::memory_order_relaxed); ++f) {
-        // 1. Wait for next server-paced frame in lwip_select WHILE g_frameSeq stays EVEN
-        //    so Core 1 never stalls during 40-66 ms inter-frame intervals!
-        if (leftover == 0U) {
-            const uint32_t waitStart = millis();
-            bool readable = false;
-            while (g_wantActive.load(std::memory_order_relaxed)) {
-                fd_set rfds;
-                FD_ZERO(&rfds);
-                FD_SET(sock, &rfds);
-                struct timeval selTv{0, 25000}; // 25 ms slice
-                const int sr = lwip_select(sock + 1, &rfds, nullptr, nullptr, &selTv);
-                if (sr > 0) { readable = true; break; }
-                if (sr < 0 && errno != EINTR) break;
-                if ((millis() - waitStart) > 3500U) break; // 3,500 ms TCP inactivity watchdog
-            }
-            if (!readable) break;
+        uint8_t lenRaw[2]{};
+        uint16_t payloadLen = 0;
+        if (isDmdz) {
+            if (pullStreamBytes(lenRaw, 2U) != 2) break;
+            payloadLen = static_cast<uint16_t>(lenRaw[0] | (lenRaw[1] << 8));
+            if (!dmdzDec.beginFrame(payloadLen)) break;
         }
 
-        // 2. Tear-free single-buffer guard: let Core 1 finish reading prior EVEN frame (<= 18 ms)
+        // Let Core 1 finish blitting the prior EVEN frame (<= 18 ms) before modifying g_frame565
         const uint32_t curSeq = g_frameSeq.load(std::memory_order_acquire);
         if (curSeq > 0U && g_consumedFrameSeq.load(std::memory_order_acquire) != curSeq) {
             const uint32_t guardStart = millis();
@@ -489,52 +776,61 @@ bool streamUnifiedRgb565Http(const char* host, uint16_t port, const char* domain
             }
         }
 
-        // 3. Mark g_frameSeq ODD -> read FRAME_BYTES straight into g_frame565 (~1.2 ms) -> mark EVEN
         g_frameSeq.fetch_add(1U, std::memory_order_acq_rel); // ODD (write in progress)
-        uint8_t* dst = reinterpret_cast<uint8_t*>(g_frame565);
-        size_t copied = 0U;
-        if (leftover > 0U) {
-            copied = (leftover < FRAME_BYTES) ? leftover : FRAME_BYTES;
-            memcpy(dst, g_ioScratch + leftoverOff, copied);
-            leftover -= copied;
-            leftoverOff += copied;
+        bool frameOk = false;
+        if (isDmdz) {
+            uint16_t rem = payloadLen;
+            uint8_t chunk[512];
+            frameOk = true;
+            while (rem > 0U) {
+                const size_t step = (rem < sizeof(chunk)) ? rem : sizeof(chunk);
+                if (pullStreamBytes(chunk, step) != static_cast<int>(step) ||
+                    !dmdzDec.feed(chunk, step, g_frame565)) {
+                    frameOk = false;
+                    break;
+                }
+                rem = static_cast<uint16_t>(rem - step);
+            }
+            frameOk = frameOk && dmdzDec.finishFrame();
+        } else {
+            frameOk = (pullStreamBytes(reinterpret_cast<uint8_t*>(g_frame565), FRAME_BYTES) == static_cast<int>(FRAME_BYTES));
         }
-        const int r = (copied < FRAME_BYTES)
-                          ? recvExactBounded(sock, dst + copied, FRAME_BYTES - copied, 3500U)
-                          : 1;
         g_frameSeq.fetch_add(1U, std::memory_order_release); // EVEN (coherent frame ready!)
-        if (r <= 0) break; // Clean server EOF or socket timeout
+        if (!frameOk) break;
 
-        // With X-DMD-Paced: 1, server clocks frames monotonically -> zero client sleep needed!
-        if (!serverPaced) {
-            vTaskDelay(pdMS_TO_TICKS(1000U / fps));
-        } else if ((f & 3U) == 3U) {
-            taskYIELD();
-        }
+        // Smooth client presentation cadence (re-anchoring if network jitter delayed a frame)
+        nextPresentMs += periodMs;
+        const int32_t waitMs = static_cast<int32_t>(nextPresentMs - millis());
+        if (waitMs > 1) vTaskDelay(pdMS_TO_TICKS(static_cast<uint32_t>(waitMs)));
+        else if (waitMs < -static_cast<int32_t>(periodMs)) nextPresentMs = millis();
+        else taskYIELD();
     }
 
-    lwip_close(sock); // Closing TCP socket triggers immediate server-side purge_consumed_package()!
-    return true;
+    closeSocketZeroTimeWait(sock); // SO_LINGER {1,0} -> 0 TIME_WAIT PCBs & triggers server purge!
+    return true; // StepCFrameBufferGuard destructor frees g_frame565 cleanly after socket closes
 }
 
 // -----------------------------------------------------------------------------------------
-// STEP 3 (CORE 1): ZERO-ALLOCATION 60 HZ `canvas_single` DIRTY-GATED COMMIT
+// STEP 3 (CORE 1): ZERO-ALLOCATION 60 HZ `canvas_single` SEQLOCK-GUARDED COMMIT
 // -----------------------------------------------------------------------------------------
 void renderStreamFrameOnCore1(uint16_t* offscreenCanvas565, uint32_t& lastRenderedSeq) {
-    const uint32_t fSeq = g_frameSeq.load(std::memory_order_acquire);
-    if ((fSeq & 1U) == 0U && fSeq != 0U && fSeq != lastRenderedSeq) {
-        memcpy(offscreenCanvas565, g_frame565, FRAME_BYTES);
+    g_renderBlitSeq.fetch_add(1U, std::memory_order_seq_cst); // ODD: Core 1 reading g_frame565
+    const uint32_t fSeq = g_frameSeq.load(std::memory_order_seq_cst);
+    const uint16_t* src = g_frame565;
+    if (src && (fSeq & 1U) == 0U && fSeq != 0U && fSeq != lastRenderedSeq) {
+        memcpy(offscreenCanvas565, src, FRAME_BYTES);
         if (g_frameSeq.load(std::memory_order_acquire) == fSeq) {
             lastRenderedSeq = fSeq;
             g_consumedFrameSeq.store(fSeq, std::memory_order_release);
             // Burst offscreenCanvas565 to Single HUB75 DMA Buffer via blitCanvas565()
         }
     }
+    g_renderBlitSeq.fetch_add(1U, std::memory_order_seq_cst); // EVEN: Core 1 idle
 }
 ```
 
 > [!TIP]
-> **Contrôle Temps Réel Modèle 2A (`dmd_showcase/clients/{dmd_id}/command`)** : Les afficheurs dédiés Modèle 2A qui maintiennent une écoute MQTT légère sur `command` traitent `"skip"`, `"stop"`, `"pause"`, `"resume"` et `"play_card"` (`FrontendSync` / `play_now`) en basculant `g_wantActive = false`, ce qui ferme la socket TCP `DMDS` en `< 25 ms` et enchaîne immédiatement sur la nouvelle fiche.
+> **Contrôle Temps Réel Modèle 2A (`dmd_showcase/clients/{dmd_id}/command`)** : Les afficheurs dédiés Modèle 2A qui maintiennent une écoute MQTT légère sur `command` traitent `"skip"`, `"stop"`, `"pause"`, `"resume"` et `"play_card"` (`FrontendSync` / `play_now`) en basculant `g_wantActive = false`, ce qui ferme la socket WebSocket `DMDZ` / HTTP avec `SO_LINGER {1, 0}` et enchaîne immédiatement sur la nouvelle fiche.
 
 ---
 
@@ -1027,14 +1323,14 @@ void loop() {
 
 ### C. Callback Optionnel de Commandes Live Modèle 2A (`dmd_showcase/clients/{dmd_id}/command`)
 
-Lorsqu'un afficheur dédié Modèle 2A (`ESP32-S3` ou `ESP32_STD` sans WebUI locale) garde un écouteur MQTT léger ouvert pour recevoir les commandes `Skip` / `Pause` / `Play Now` en `< 50 ms` pendant un flux TCP `DMDS` :
+Lorsqu'un afficheur dédié Modèle 2A (`ESP32-S3` ou `ESP32_STD` sans WebUI locale) garde un écouteur MQTT léger ouvert pour recevoir les commandes `Skip` / `Pause` / `Play Now` en `< 50 ms` pendant un flux WebSocket `DMDZ` / repli HTTP TCP :
 
 ```cpp
 void onHybridCommandMessage(const char* topic, const char* jsonPayload) {
     if (strstr(topic, "/command") == nullptr) return;
     // action: "play_card" | "skip" | "pause" | "resume" | "stop"
     if (strstr(jsonPayload, "\"skip\"") || strstr(jsonPayload, "\"stop\"")) {
-        // Wakes lwip_select() within <= 25 ms -> closes TCP DMDS socket & purges item on server!
+        // Exits streamShowcasePhase2() -> closes WS DMDZ / TCP socket (SO_LINGER {1,0}) & purges item!
         g_wantActive.store(false, std::memory_order_release);
     } else if (strstr(jsonPayload, "\"pause\"")) {
         g_paused.store(true, std::memory_order_release);

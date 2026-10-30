@@ -111,7 +111,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Consume-Once Protocol",
-        "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`) with automatic disk purge after playback.",
+        "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`, plus credit-acked lossless WebSocket `WS /api/v1/{domain}/ws/{item_id}.dmdz`) with automatic disk purge after playback.",
     },
     {
         "name": "DMD Rotation Protocol",
@@ -165,16 +165,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="DMD Media Showcase Server API",
-    summary="DMD Media Showcase Server (MQTT Retain + UDP FFmpeg -re & HTTP Consume-Once) for HUB75 LED Matrices",
+    summary="DMD Media Showcase Server (MQTT Retain + Credit-Acked WebSocket DMDZ, HTTP DMDS & UDP DMDF) for HUB75 LED Matrices",
     description=(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
         "### Architecture Highlights\n"
         "- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
-        "- **Dual Transport**: Real-time MQTT (`retain=True` + `LWT`) + monotonic UDP `DMDF` streaming "
-        "(`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks — full AsyncAPI 2.6 spec at "
-        "[`/asyncapi.yaml`](/asyncapi.yaml)), plus HTTP `DMDS` Streaming (`16`-byte `<4sBBHHHHH` header)."
+        "- **Multi-Tier Streaming Transport**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n"
+        "  1. **Credit-Acknowledged Lossless `DMDZ` v1 WebSocket (`WS /api/v1/{domain}/ws/{item_id}.dmdz`)** — primary data plane for `ESP32` (`ESP32_STD` 0 PSRAM) & `ESP32-S3` (`<= 1,024 B` sub-packets, `2`-credit sliding window `<= 2,048 B` in flight, 1-byte `'A'` client ACK),\n"
+        "  2. **HTTP TCP `DMDZ` / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)** — automatic `?paced=1&codec=dmdz1` fallback and unpaced raw `DMDS` preload for `ArcadeMatrix_RPi`,\n"
+        "  3. **Passive UDP `DMDF` (`:4210`, `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
     ),
     version=__version__,
     openapi_tags=OPENAPI_TAGS,

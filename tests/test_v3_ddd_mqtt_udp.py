@@ -2486,6 +2486,23 @@ def test_ws_credited_dmdz_stream_subpacket_and_lossless_roundtrip(tmp_path: Path
 
     chunks = []
     with TestClient(app) as tc:
+        # 1. Verify custom ?credits=4 window without purge (e.g. ESP32-S3 PSRAM wider sliding window)
+        psram_chunks = []
+        with tc.websocket_connect(
+            f"/api/v1/games/ws/{item_id}.dmdz?purge=false&client_id=esp32s3_ws_dmd&credits=4"
+        ) as ws_psram:
+            while True:
+                try:
+                    msg = ws_psram.receive_bytes()
+                except WebSocketDisconnect:
+                    break
+                assert 0 < len(msg) <= 1024
+                psram_chunks.append(msg)
+                ws_psram.send_bytes(b"A")
+        assert b"".join(psram_chunks)[:4] == b"DMDZ"
+        assert item_id in consume_once_orchestrator.active_packages
+
+        # 2. Verify default 2-credit window with purge=true (ESP32_STD 0 PSRAM)
         with tc.websocket_connect(f"/api/v1/games/ws/{item_id}.dmdz?purge=true&client_id=esp32_ws_dmd") as ws:
             while True:
                 try:

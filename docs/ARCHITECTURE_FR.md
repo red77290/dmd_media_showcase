@@ -13,7 +13,7 @@ Le serveur applique une **Architecture Hexagonale (Ports & Adapters) et Domain-D
 
 - **Couche Domaine (`app/domain/`)** : 100 % Python pur (zéro import FastAPI, HTTPX, Pillow, OpenCV ou Infrastructure). Regroupe les Entités & Objets-Valeurs immuables (`entities.py`, `board_identity.py`, `style_specs.py`, `on_demand_cache_key.py`), les Agrégats génériques et réutilisables (`app/domain/aggregates/`), le sous-paquet modulaire de Taxonomie multilingue (`app/domain/taxonomy/` couvrant `66` systèmes rétro/arcade canoniques soit `55+` plateformes) et les Ports Hexagonaux (`app/domain/ports/`).
 - **Couche Application (`app/application/`)** : Dépend exclusivement de `app/domain/` et de ses Ports. Découpée en services applicatifs à responsabilité unique — dont la chaîne multi-sources configurable (`DomainSourceChainService`) et l'enrichisseur composite inter-sources (`CandidateAggregator`) — orchestrés par la façade légère `ConsumeOnceOrchestrator` (`<= 550` lignes) et câblés via la Composition Root (`app/container.py`).
-- **Couches Infrastructure, Sécurité & Scheduler (`app/infrastructure/`, `app/security/`, `app/scheduler/`)** : Adaptateurs entrants (`6` routeurs FastAPI cohérents sous `app/infrastructure/http/routers/`, WebUI statique en ES Modules sous `app/infrastructure/web/static/` et `ShowcaseMqttGateway`), adaptateurs sortants (`11` adaptateurs scrapers & stratégies référentielles par source, moteur de rendu modulaire HUB75 sous `app/infrastructure/rendering/`, dépôts JSON, `DmdConverterAdapter` et `FfmpegUdpClockStreamer`), et briques de sécurité (`vault.py` coffre natif C `_prod_vault` à 3 niveaux et `log_redactor.py` `SecretRedactingLogFilter`).
+- **Couches Infrastructure, Sécurité & Scheduler (`app/infrastructure/`, `app/security/`, `app/scheduler/`)** : Adaptateurs entrants (`6` routeurs FastAPI cohérents sous `app/infrastructure/http/routers/` — dont le streaming WebSocket `DMDZ` acquitté par crédits et HTTP `DMDS` dans `consume_once.py` — WebUI statique en ES Modules sous `app/infrastructure/web/static/` et `ShowcaseMqttGateway`), adaptateurs sortants (`11` adaptateurs scrapers & stratégies référentielles par source, moteur de rendu modulaire HUB75 fiches/panoramas/vidéo/`DMDZ` incluant `dmdz_codec.py`, dépôts JSON & `on_demand_cache_store.py` préservant les `mtime`, `DmdConverterAdapter` et `FfmpegUdpClockStreamer`), et briques de sécurité (`vault.py` coffre natif C `_prod_vault` à 3 niveaux et `log_redactor.py` `SecretRedactingLogFilter`).
 
 ```mermaid
 flowchart TD
@@ -31,12 +31,12 @@ flowchart TD
     subgraph APP["Services Applicatifs (app/application/)"]
         ORCH["ConsumeOnceOrchestrator (Façade)"]
         REG_SVC["ClientRegistryService\n(MQTT+TCP / HTTP / UDP-PASSIVE / MQTT+UDP\n& Télémétrie Source Live)"]
-        PREP_SVC["SlotPreparationService\n(IDs compacts pkg_<domain>_<12hex>)"]
+        PREP_SVC["SlotPreparationService\n(IDs compacts pkg_{domain}_{12hex})"]
         QUEUE_SVC["OnDemandQueueService"]
         DIR_SVC["PassivePlaylistDirectorService"]
         STUDIO_SVC["StudioPreviewService"]
         CHAIN["DomainSourceChainService\n(Chaîne Multi-Sources Configurable)"]
-        AGG_SVC["CandidateAggregator\n(Enrichisseur <=3.0s Inter-Sources)"]
+        AGG_SVC["CandidateAggregator\n(Enrichisseur <= 3.0s Inter-Sources)"]
     end
 
     subgraph DOMAIN["Cœur Domaine (app/domain/)"]
@@ -48,15 +48,15 @@ flowchart TD
 
     subgraph INFRA_OUT["Adaptateurs Sortants & Sécurité (app/infrastructure/ & app/security/)"]
         SCRAPERS["11 Adaptateurs Scrapers + Référentiels\ngames(4) : igdb, screenscraper, arcadeitalia, libretro_wikidata\nmovies(2), series(3), anime(2)"]
-        RENDER["Moteur de Rendu Modulaire (rendering/)\ncard_geometry, card_layout_engine,\npanorama_and_static (YOKO/TATE), video_pipeline"]
-        PERSIST["Persistance & Sécurité 3 Niveaux\nserver_config (source_policies), dmd_profiles,\nseen_history, _prod_vault, SecretRedactingLogFilter"]
+        RENDER["Moteur de Rendu Modulaire (rendering/)\ncard_geometry, card_layout_engine, dmdz_codec,\npanorama_and_static (YOKO/TATE), video_pipeline"]
+        PERSIST["Persistance & Sécurité 3 Niveaux\nserver_config (source_policies), dmd_profiles, on_demand_cache_store,\nseen_history, _prod_vault, SecretRedactingLogFilter"]
         UDP["FfmpegUdpClockStreamer\n(Mode 2B Passif :4210 & MQTT+UDP DMDF optionnel)"]
     end
 
     BROWSER -->|"GET / & /static/*"| STATIC
     BROWSER -->|"REST /api/v1/*"| ROUTERS
     ENG <-->|"MQTT Retain + start_card"| MQTT
-    ROUTERS ==>|"HTTP TCP DMDS :8890 (?paced=1&drop_late=1)"| ENG
+    ROUTERS ==>|"WS DMDZ Acquitté par Crédits / HTTP DMDS :8890"| ENG
     ROUTERS --> ORCH
     MQTT --> ORCH
     ORCH --> REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC
@@ -127,18 +127,16 @@ En remplacement des paires statiques `[Primaire, Fallback]` codées en dur, `Scr
 
 ---
 
-## 4. Pipeline Temps Réel Principal `MQTT + TCP` (`DMDS`), Pipelining `N+1` & UDP Passif `DMDF`
+## 4. Pipeline Temps Réel Principal `MQTT + TCP` (WebSocket `DMDZ` Acquitté par Crédits & HTTP `DMDS`), Pipelining `N+1` & UDP Passif `DMDF`
 
 `ShowcaseRuntimeState.client_transports` suit quatre profils de transport déterministes remontés en direct dans `ClientRegistryService` et le Dashboard d'Administration :
-- **`MQTT+TCP` (Par défaut & Recommandé — Modèle 1 `ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi` & Modèle 2A Hybride `supports_local_card: true`)** : Associe le **Plan de Contrôle MQTT (`:1883`)** (`config`, `ready`, `start_card` avec `retain=True` + `LWT`) au **Streaming HTTP TCP `DMDS` Cadencé Temps Réel (`:8890`)** (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
-  - **Pourquoi `MQTT + TCP` (`DMDS`) est le transport par défaut** :
-    1. **Zéro Perte NAT UDP VM Docker Desktop / Rancher Desktop** : La connexion TCP entrante sur `:8890` traverse nativement les ponts réseau conteneurs et NAT des VMs hôtes sans expiration de trou NAT UDP retour ni blocage pare-feu.
-    2. **Zéro Surcharge de Réassemblage MTU** : Les trames RGB565LE contiguës arrivent dans l'ordre du flux sans masque binaire de réassemblage par paquet.
-    3. **Zéro Heap Client & Zéro Blocage `TCP_WND`** : Les clients embarqués ouvrent un `lwip_socket` brut (`HTTP/1.1`, `Connection: close`, sans `drop_late=1` pour conserver `Content-Length` et un flux `DMDS` non-chunké) lisant directement dans `m_frame565`, tandis que `_paced_dmds_generator()` côté serveur (`X-DMD-Paced: 1`) cadence les trames de manière monotone à `fps` (avec option `drop_late=1` / `X-DMD-Drop-Late: 1` pour les clients HTTP/1.1 chunk-decoding) afin d'éviter tout engorgement `TCP ZeroWindow` de LwIP `TCP_WND`.
-    4. **Identifiants `item_id` Compacts sans Collision** : Chaque package préparé reçoit un identifiant `pkg_<domain>_<12hex>` (`<= 24` caractères), logeant dans des buffers fixes sur pile embarquée sans aucune allocation dynamique.
-- **`HTTP`** : Polling HTTP Consume-Once sans état (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` + `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`).
-- **`UDP-PASSIVE` (Modèle 2B — `supports_local_card: false`)** : Récepteur framebuffer UDP `:4210` `DMDF` ultra-minimal (~180 lignes) où le serveur compose directement la Fiche Info (Phase 1) dans le flux RGB565 (`render_card_in_stream=True`).
-- **`MQTT+UDP` (`mqtt_udp` Legacy Optionnel)** : Événement explicite `start_stream` déclenchant l'émission de datagrammes `DMDF` via `FfmpegUdpClockStreamer` vers `{udp_ip}:{udp_port}`.
+- **`MQTT+TCP` (Par défaut & Recommandé — Modèle 1 `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi` & Modèle 2A Hybride `supports_local_card: true`)** : Associe le **Plan de Contrôle MQTT (`:1883`)** (`config`, `ready`, `start_card` avec `retain=True` + `LWT`, identifiants `item_id` compacts sans collision `pkg_<domain>_<12hex>` `<= 24` caractères) à un plan de données TCP (`:8890`) multi-niveaux additif adapté à chaque classe de client (et éliminant toute perte NAT UDP sous les VMs Docker Desktop / Rancher Desktop) :
+  1. **MCU Contraints — Canal Principal (`ESP32_STD` 0 PSRAM & `ESP32-S3` PSRAM) : WebSocket `DMDZ` v1 Sans Perte Acquitté par Crédits** : Se connecte en priorité à `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`ws_per_message_deflate=False` dans `main.py`, sous-paquets binaires RFC 6455 `<= 1 024 o`, fenêtre glissante de `2` crédits = `<= 2 048 o` max en vol, acquittement client `'A'` sur 1 octet par message WS). `dmdz_codec.py` réduit les vidéos `2.4–6x` et les panoramas `23–64x` sans aucune perte visuelle, `101 Switching Protocols` désactive toute mise en tampon HTTP des proxys inverses/VM (`gvproxy`, Nginx), et le plafond `<= 2 048 o` en vol maintient 100 % du trafic RX dans les buffers Wi-Fi statiques pré-alloués (`0` allocation heap dynamique, `0` épuisement de réassemblage LwIP `pcb->ooseq`, et fermeture propre `SO_LINGER {1, 0}`).
+  2. **Repli HTTP TCP Cadencé (`?purge=true&paced=1&codec=dmdz1` ou `DMDS` brut)** : `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream` (`X-DMD-Paced: 1`, `X-DMD-Codec: dmdz1`, tranches `<= 1 024 o`, ré-ancrage d'horloge monotone sans rafale de rattrapage — plus l'option `drop_late=1` / `X-DMD-Drop-Late: 1` pour les clients HTTP/1.1 chunk-decoding) utilisé automatiquement lorsqu'un proxy inverse bloque la mise à niveau WebSocket `101 Switching Protocols`.
+  3. **Pré-chargement Linux Haute-RAM (`ArcadeMatrix_RPi`)** : Téléchargement HTTP `DMDS` brut non cadencé (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true`) pré-chargé directement en RAM (`0` surcoût de codec ou de cadencement).
+- **`HTTP`** : Polling HTTP Consume-Once sans état (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`) diffusant sur ce même plan de données `:8890` additif (WebSocket `WS /api/v1/{domain}/ws/{item_id}.dmdz` acquitté par crédits, repli HTTP `DMDZ`/`DMDS` cadencé, ou pré-chargement `DMDS` non cadencé).
+- **`UDP-PASSIVE` (Modèle 2B — `supports_local_card: false`)** : Récepteur framebuffer UDP `:4210` `DMDF` `<4sHBBH` ultra-minimal (~180 lignes) où le serveur compose directement la Fiche Info (Phase 1) dans le flux RGB565 (`render_card_in_stream=True`).
+- **`MQTT+UDP` (`mqtt_udp` Legacy Optionnel)** : Événement explicite `start_stream` déclenchant l'émission de fragments UDP `DMDF` `<4sHBBH` via `FfmpegUdpClockStreamer` vers `{udp_ip}:{udp_port}`.
 
 > **Résilience aux Redémarrages Conteneur (`RetainedClientConfigStore`) :** Chaque configuration Mode 1 retenue (`dmd_showcase/clients/{dmd_id}/config`, `retain=True`) publiée sur le Broker MQTT embarqué (`:1883`) est persistée de manière atomique dans `./data/mqtt_retained_clients.json`. Au redémarrage du serveur ou du conteneur Docker, `ShowcaseMqttGateway` restaure automatiquement les 4 rotations DMD dans `EmbeddedMqttBroker.retained` et relance immédiatement le pré-chauffage `N / N+1` en tâche de fond (tout en conservant `online=False` jusqu'au prochain paquet live du DMD).
 
@@ -153,7 +151,7 @@ sequenceDiagram
 
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/config (retain=True, client_ip, domains)
     MQTT->>ORCH: handle_mqtt_client_config() -> client_transports = "MQTT+TCP"
-    ORCH->>PREP: ensure_slot_prepared() (prépare l'œuvre non vue N : pkg_<domain>_<12hex>)
+    ORCH->>PREP: ensure_slot_prepared() (prépare l'œuvre non vue N : pkg_{domain}_{12hex})
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, card, source_used)
     MQTT->>DMD: Délivre la fiche retenue (Œuvre N)
 
@@ -165,26 +163,51 @@ sequenceDiagram
     ORCH->>PREP: Pipelining N+1 en tâche de fond : prépare immédiatement Standby N+1 !
 
     alt Mode Principal MQTT+TCP (Modèles 1 & 2A — Par défaut)
-        Note over DMD: Fin du synopsis -> Flux TCP HTTP/1.1 DMDS brut LwIP
-        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=true&paced=1
-        HTTP-->>DMD: 200 OK (X-DMD-Paced: 1, En-tête DMDS 16 octets + Trame 0)
-        loop Trames Cadencées Côté Serveur (15-25 FPS)
-            HTTP-->>DMD: Trame RGB565LE contiguë (width * height * 2 octets) -> m_frame565
+        Note over DMD: Fin de la Fiche -> WS DMDZ acquitté (ESP32) ou HTTP .rgb565.stream (Repli / Pré-chargement RPi)
+        DMD->>HTTP: WS /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={dmd_id}&credits=2 (ou GET .rgb565.stream)
+        HTTP-->>DMD: 101 Switching Protocols + En-tête DMDZ 16o (fenêtre 2 crédits, <= 2048 o en vol)
+        loop Trames DMDZ Sans Perte (Sous-Paquets <= 1024 o @ 15-25 FPS)
+            HTTP-->>DMD: Sous-paquet binaire WS (<= 1024 o) -> DmdzStreamDecoder in-place -> m_frame565
+            DMD-->>HTTP: ACK de crédit 1 octet ('A')
         end
-        HTTP->>PREP: EOF HTTP -> purge_consumed_package(N) (suppression disque immédiate)
+        Note over DMD,HTTP: Vidage des ACKs finaux + fermeture ESP32 SO_LINGER {1, 0}
+        HTTP->>PREP: EOF du flux -> purge_consumed_package(N) (suppression disque immédiate)
     else Mode 2B Passif (UDP-PASSIVE :4210) ou MQTT+UDP Legacy Optionnel (start_stream)
         ORCH->>FFMPEG: Démarre le thread temps réel monotone DMDF
         loop Chaque Trame (15-25 FPS)
-            FFMPEG-->>DMD: Paquets UDP DMDF (En-tête 10 octets + <=1408o RGB565LE) vers udp_ip:udp_port
+            FFMPEG-->>DMD: Paquets UDP DMDF (En-tête 10 octets + <= 1408 o RGB565LE) vers udp_ip:udp_port
         end
         FFMPEG->>ORCH: EOF -> stream_eof + purge_consumed_package(N)
     end
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, Œuvre N+1)
 ```
 
-### En-tête Binaire HTTP TCP `DMDS` du Flux Unifié (16 Octets, Little-Endian `<4sBBHHHHH` — Transport Principal)
+### En-tête Binaire `DMDZ` v1 Sans Perte & Opcodes de Trame (16 Octets, Little-Endian `<4sBBHHHHH` — Codec Principal MCU Contraints)
 
-Servi par `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` avec les en-têtes `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` et `X-DMD-Drop-Late: 1` :
+Encodé à la demande en fichiers frères `.dmdz.stream` par `app/infrastructure/rendering/dmdz_codec.py` et servi via **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`** (`ws_per_message_deflate=False`, sous-paquets `<= 1 024 o`, fenêtre de `2` crédits) ainsi que via le repli HTTP cadencé **`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`** (`X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, `X-DMD-Codec: dmdz1`) :
+
+| Offset | Type | Champ | Description |
+| :--- | :--- | :--- | :--- |
+| `0..3` | `char[4]` | `magic` | `"DMDZ"` (`0x44 0x4D 0x44 0x5A`) |
+| `4` | `uint8` | `version` | Version du codec sans perte (`1`, identifiant `"dmdz1"`) |
+| `5` | `uint8` | `fps` | Cadence d'affichage cible (`8..60` FPS) |
+| `6..7` | `uint16le` | `width` | Largeur panneau en pixels (ex. `128`) |
+| `8..9` | `uint16le` | `height` | Hauteur panneau en pixels (ex. `32`) |
+| `10..11` | `uint16le` | `total_frames` | Nombre total de trames encodées (`1..65535`) |
+| `12..13` | `uint16le` | `frame_dur_ms` | Durée nominale par trame en ms (`round(1000 / fps)`) |
+| `14..15` | `uint16le` | `keyframe_interval` | Intervalle de trames clés périodiques (`0` = seule la trame `0` est `keyframe`) |
+| `16..EOF` | `uint8[]` | `frames` | Par trame : `<H` `payload_len` + `type` (`0=delta`, `1=scroll(dy)` `int8` signé par `memmove` sur place, `2=keyframe`) + flux d'opcodes couvrant `width * height` pixels RGB565LE |
+
+L'état du décodeur est réinitialisé à chaque trame (`last = 0`, `cache[64] = 0`, `hash(p) = (r * 3 + g * 5 + b * 7) & 63` sur R5/G6/B5) :
+- **`SKIP` (`00nnnnnn`, `1..64` px) & `LONG_SKIP` (`0xF0` + `<H` `count`)** : Conserve `count` pixels identiques à la trame de référence (`prev` ou `prev` décalée verticalement), puis met à jour `last = frame[pos - 1]` et `cache[hash(last)] = last`.
+- **`RUN` (`01nnnnnn`, `1..64` px)** : Répète `last` `n + 1` fois.
+- **`INDEX[64]` (`10iiiiii`)** : Émet `last = cache[i]`.
+- **`DIFF` (`110xxxxx`, `x = (dr + 1) * 9 + (dg + 1) * 3 + (db + 1)` avec `dr, dg, db` dans `{-1, 0, +1}`)** : Applique le delta par composante RGB565 à `last`, émet et mémorise dans `cache[hash(p)]`.
+- **`LIT` (`1110nnnn` + `n + 1` pixels `<H` RGB565LE bruts, `1..16` px)** : Émet des pixels RGB565 Little-Endian bruts en mettant à jour `last` et `cache[hash(p)]` à chaque pixel.
+
+### En-tête Binaire HTTP TCP `DMDS` Brut (16 Octets, Little-Endian `<4sBBHHHHH` — Pré-chargement RPi & Repli HTTP Brut)
+
+Servi sans cadencement (`?purge=true`) pour le pré-chargement RAM d'`ArcadeMatrix_RPi` ou cadencé (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, plus `&drop_late=1` optionnel) avec les en-têtes `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` et `X-DMD-Drop-Late: 1` :
 
 | Offset | Type | Champ | Description |
 | :--- | :--- | :--- | :--- |
@@ -196,11 +219,11 @@ Servi par `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=
 | `10..11` | `uint16le` | `total_frames` | Nombre total de trames RGB565LE concaténées (`1..65535`) |
 | `12..13` | `uint16le` | `frame_dur_ms` | Durée nominale par trame en ms (`round(1000 / fps)`) |
 | `14..15` | `uint16le` | `reserved` | Réservé (`0`) |
-| `16..EOF` | `uint8[]` | `frames` | Trames RGB565LE de `width * height * 2` octets cadencées côté serveur (`total_frames` nominal ; saut horloge si `drop_late=1`) |
+| `16..EOF` | `uint8[]` | `frames` | Trames RGB565LE brutes de `width * height * 2` octets (`total_frames` nominal ; saut horloge si `paced=1&drop_late=1`) |
 
 ### En-tête Binaire UDP `DMDF` (10 Octets, Little-Endian `<4sHBBH` — Mode 2B Passif `:4210` & `MQTT+UDP` Optionnel)
 
-> Spécification formelle complète (topics MQTT 3.1.1 + datagrammes UDP `DMDF`) : [`docs/asyncapi.yaml`](asyncapi.yaml) (chargée directement depuis le fichier YAML via `app/asyncapi_spec.py` et exposée sur `GET /asyncapi.yaml` et `GET /api/v1/asyncapi.yaml`).
+> Spécification formelle complète (topics MQTT 3.1.1 + WebSocket `DMDZ` acquitté par crédits + datagrammes UDP `DMDF`) : [`docs/asyncapi.yaml`](asyncapi.yaml) (chargée directement depuis le fichier YAML via `app/asyncapi_spec.py` et exposée sur `GET /asyncapi.yaml` et `GET /api/v1/asyncapi.yaml`).
 
 | Offset | Type | Champ | Description |
 | :--- | :--- | :--- | :--- |

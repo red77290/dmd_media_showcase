@@ -48,18 +48,21 @@ dmd_media_showcase/
 │   ├── container.py                      # Composition Root câblant les adaptateurs aux Ports Domaine
 │   ├── infrastructure/                   # Adaptateurs Concrets Entrants & Sortants
 │   │   ├── http/                         # Middleware sécurité, reloader live & 6 routeurs FastAPI
-│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, consume_once (TCP DMDS cadencé), rotation_batch
+│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, rotation_batch
+│   │   │       └── consume_once.py       # WS /ws/{item_id}.dmdz acquitté par crédits + HTTP DMDZ/DMDS cadencé/brut
 │   │   ├── web/                          # WebUI Control Center externalisé (zéro HTML/JS dans Python)
 │   │   │   ├── dashboard_loader.py       # Chargeur portable de index.html, CSS & modules ES
 │   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ modules ES)
 │   │   ├── rendering/                    # Pipeline modulaire de rendu HUB75 RGB565LE
 │   │   │   ├── card_geometry.py          # Solveur géométrique YOKO / Carré / TATE
 │   │   │   ├── card_layout_engine.py     # 5 layouts de fiches, polices bitmap & rendu DMDS
+│   │   │   ├── dmdz_codec.py             # Codec trame RGB565 DMDZ v1 sans perte (encode_dmdz_bytes, ensure_dmdz_sibling)
 │   │   │   ├── imaging_primitives.py     # Boost couleur, cadrage & conversion RGB565
 │   │   │   ├── panorama_and_static.py    # Panoramas déterministes TATE (G->D) / YOKO (H->B) zoom-to-cover
 │   │   │   └── video_pipeline.py         # Détection de fenêtre d'action & encodage trailers
 │   │   ├── mqtt/                         # EmbeddedMqttBroker (:1883) & ShowcaseMqttGateway
 │   │   ├── persistence/                  # JsonSeenHistoryRepository, DmdProfileStore, ServerConfigStore (source_policies)
+│   │   │   └── on_demand_cache_store.py  # Cache frère .rgb565.stream + .dmdz.stream préservant mtime (shutil.copy2)
 │   │   ├── scrapers/                     # 11 adaptateurs par domaine + ScraperRegistry + référentiels dédiés
 │   │   │   ├── games/                    # igdb_adapter, screenscraper_adapter, arcadeitalia_adapter, libretro_wikidata_adapter, arcade_aliases
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
@@ -74,7 +77,7 @@ dmd_media_showcase/
 │   │   ├── executor_lifecycle.py         # BoundedWorkerExecutorMixin[TJob] générique
 │   │   └── session_batch_manager.py      # Gestionnaire de sessions & batchs HTTP
 │   ├── asyncapi_spec.py                  # Charge docs/asyncapi.yaml directement depuis le disque
-│   └── main.py                           # Bootstrap FastAPI léger, montage /static & routeurs
+│   └── main.py                           # Bootstrap FastAPI léger, /static, routeurs & ws_per_message_deflate=False
 ├── scripts/compile_prod_vault.py         # Compilateur CI/CD PBKDF2-HMAC-SHA256 + XOR 3 parts (.so/.pyd)
 ├── docker-compose.override.yml           # Surcharge auto pour build local + dernier dmd_gif_converter
 ├── docs/                                 # Documentation EN/FR/ES, spécifications OpenAPI 3.1 & AsyncAPI 2.6
@@ -157,8 +160,13 @@ Ajoutez `"custom_retro"` dans `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources
    - Les exécutables PyInstaller figés résolvent `yt-dlp` via `resolve_ytdlp_command()` (dispatch précoce `[sys.executable, "--internal-ytdlp"]` dans `app/main.py` + repli Python `yt_dlp.YoutubeDL` dans `youtube_resolver.py`), éliminant tout besoin d'un binaire `yt-dlp.exe` externe malgré le `PATH` hermétique.
    - `enforce_hermetic_environment()` exporte le magasin CA `certifi` embarqué (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), tandis que `default_http_download_bytes()` (`imaging_primitives.py`) bascule automatiquement (avec cache par hôte) vers un contexte TLS non vérifié lorsqu'une archive rétro comme `adb.arcadeitalia.net` présente un certificat expiré.
 
-8. **Streaming Principal `MQTT+TCP` (`DMDS`), Identifiants `item_id` Compacts & Transports Clients** :
-   - Les Modèles 1 et 2A (`supports_local_card: true`) utilisent `MQTT+TCP` par défaut : MQTT (`:1883`) gère `config`, `ready` retenu et `start_card`, tandis que `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (`consume_once.py`) diffuse les trames `DMDS` RGB565LE cadencées côté serveur (`X-DMD-Paced: 1`, `X-DMD-Drop-Late: 1`, omission de `Content-Length` si `drop_late=1` saute les trames en retard) et purge le package disque en fin de flux.
+8. **Streaming Principal `MQTT+TCP` (WebSocket `DMDZ` Acquitté par Crédits & HTTP `DMDS`), Identifiants `item_id` Compacts & Transports Clients** :
+   - Les Modèles 1 et 2A (`supports_local_card: true`) utilisent `MQTT+TCP` par défaut : MQTT (`:1883`) gère `config`, `ready` retenu et `start_card`, tandis que les clients embarqués contraints (`ESP32_STD` / `ESP32-S3`) diffusent via la route WebSocket `DMDZ` v1 sans perte acquittée par crédits (style ZeDMD) `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`consume_once.py` + `dmdz_codec.py`) :
+     - Plafonner chaque message binaire WebSocket à `<= 1 024 o` (`DMDZ_SUBPACKET_BYTES = 1024`) régulé par une fenêtre glissante de crédits (`DMDZ_WS_INITIAL_CREDITS = 2` par défaut, `credits=1..16`, rechargée par les ACKs `'A'` d'1 octet) afin que `<= 2 048 o` maximum soient en vol simultanément.
+     - Maintenir `ws_per_message_deflate=False` dans `app/main.py` afin que RFC 7692 `permessage-deflate` n'alloue jamais de fenêtres dynamiques zlib/LZ77 côté Uvicorn ni côté MCU.
+     - Cadencer les trames de manière monotone en ré-ancrant `t0` dès qu'une contre-pression décale l'envoi de `> 1` période (`0` rafale de rattrapage dans les files RX Wi-Fi), et drainer les ACKs finaux avant fermeture.
+     - Conserver la copie `shutil.copy2` préservant les `st_mtime` dans `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) pour les fichiers frères `.rgb565.stream` et `.dmdz.stream` afin que `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) ne ré-encode jamais lors d'un hit de cache.
+   - Maintenir la compatibilité complète du repli HTTP cadencé (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` avec `X-DMD-Paced: 1` & `X-DMD-Codec: dmdz1`, ou `DMDS` brut cadencé avec `&drop_late=1` optionnel) lorsqu'un proxy inverse bloque l'upgrade WebSocket, ainsi que du téléchargement HTTP `DMDS` brut non cadencé (`?purge=true`) pour le pré-chargement RAM d'`ArcadeMatrix_RPi`.
    - Maintenir le format `pkg_<domain>_<12hex>` (`<= 24` caractères) pour `item_id` dans `SlotPreparationService`, `OnDemandQueueService` et `StudioPreviewService` (zéro allocation heap côté ESP32), et préserver les profils `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` par défaut, `HTTP`, `UDP-PASSIVE` pour le Mode 2B `:4210`, et `MQTT+UDP` optionnel).
 
 ---

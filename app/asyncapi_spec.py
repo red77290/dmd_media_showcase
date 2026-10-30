@@ -1,8 +1,9 @@
 """
 AsyncAPI 2.6.0 Specification Loader (`app/asyncapi_spec.py`).
 
-Loads the canonical MQTT & UDP `DMDF` specification directly from `docs/asyncapi.yaml`
-rather than duplicating 600+ lines of YAML inside Python source code.
+Loads the canonical MQTT, credit-acknowledged WebSocket `DMDZ`, and UDP `DMDF`
+specification directly from `docs/asyncapi.yaml` rather than duplicating YAML
+inside Python source code.
 """
 
 from __future__ import annotations

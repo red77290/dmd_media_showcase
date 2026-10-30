@@ -184,11 +184,32 @@ async def stream_consume_once_sequence(
     ),
 ) -> Response:
     """
-    Stream the unified `DMDS` binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
-    for `item_id` over HTTP TCP (`MQTT+TCP` or `HTTP` Consume-Once) and immediately purge the consumed
-    files from disk once the HTTP response completes (unless `purge=false` is explicitly passed).
+    Stream the unified binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
+    for `item_id` over HTTP TCP (`MQTT+TCP` fallback, `HTTP` Consume-Once, or high-RAM `ArcadeMatrix_RPi`
+    unpaced preload) and immediately purge the consumed files from disk once the response completes
+    (unless `purge=false` is explicitly passed).
 
-    ### Binary HTTP TCP `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
+    ### Primary Constrained-MCU WebSocket Companion Endpoint (`ESP32` / `ESP32-S3`)
+    Constrained embedded clients connect first to the ZeDMD-style credit-acknowledged lossless `DMDZ` v1
+    WebSocket route **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`**
+    (`ws_per_message_deflate=False`, `<= 1,024 B` RFC 6455 binary sub-packets, `2`-credit sliding window =
+    `<= 2,048 B` max in flight, 1-byte `'A'` client ACK per message — full schema in `/asyncapi.yaml`), and
+    fall back transparently to this HTTP route (`?purge=true&paced=1&codec=dmdz1`) if a proxy blocks WebSocket
+    `101 Switching Protocols`. High-RAM Linux clients (`ArcadeMatrix_RPi`) call this HTTP route unpaced
+    (`?purge=true`) to preload the raw `DMDS` container directly into RAM.
+
+    ### Binary Lossless `DMDZ` v1 Container (`?paced=1&codec=dmdz1` & `WS /ws/{item_id}.dmdz`)
+    - `0..3` (`char[4]`): `"DMDZ"` (`0x44 0x4D 0x44 0x5A`), response header `X-DMD-Codec: dmdz1`
+    - `4` (`uint8`): `version` (`1`)
+    - `5` (`uint8`): `fps` (`8..60`)
+    - `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)
+    - `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)
+    - `10..11` (`uint16le`): `total_frames` (`1..65535`)
+    - `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)
+    - `14..15` (`uint16le`): `keyframe_interval` (`0` = frame `0` keyframe)
+    - `16..EOF`: Per frame `<H` `payload_len` + `payload_len` bytes of lossless `dmdz1` frame ops (`0=delta`, `1=scroll(dy)`, `2=keyframe`).
+
+    ### Binary Raw `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
     - `0..3` (`char[4]`): `"DMDS"` (`0x44 0x4D 0x44 0x53`)
     - `4` (`uint8`): `version` (`1`)
     - `5` (`uint8`): `fps` (`8..60`)
@@ -199,7 +220,8 @@ async def stream_consume_once_sequence(
     - `14..15` (`uint16le`): `reserved` (`0`)
     - `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.
 
-    For passive Mode 2B UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.
+    For credit-acknowledged WebSocket `DMDZ` (`WS /api/v1/{domain}/ws/{item_id}.dmdz`) and passive Mode 2B
+    UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.
     """
     co = get_orchestrator()
     pkg = co.active_packages.get(item_id)
@@ -446,6 +468,7 @@ async def stream_consume_once_dmdz_ws(
     item_id: str,
     purge: bool = Query(default=True),
     client_id: Optional[str] = Query(default=None),
+    credits_window: int = Query(default=DMDZ_WS_INITIAL_CREDITS, alias="credits", ge=1, le=16),
 ) -> None:
     """
     ZeDMD-style credit-acknowledged lossless `DMDZ` WebSocket stream for constrained ESP32 clients.
@@ -489,7 +512,7 @@ async def stream_consume_once_dmdz_ws(
 
     await websocket.accept()
 
-    credits = DMDZ_WS_INITIAL_CREDITS
+    credits = credits_window
     peer_closed = False
     credit_evt = asyncio.Event()
     credit_evt.set()
@@ -584,12 +607,12 @@ async def stream_consume_once_dmdz_ws(
         drain_deadline = time.perf_counter() + 0.8
         while (
             sent_frames == int(total_frames)
-            and credits < DMDZ_WS_INITIAL_CREDITS
+            and credits < credits_window
             and not peer_closed
             and time.perf_counter() < drain_deadline
         ):
             credit_evt.clear()
-            if credits >= DMDZ_WS_INITIAL_CREDITS or peer_closed:
+            if credits >= credits_window or peer_closed:
                 break
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(credit_evt.wait(), timeout=0.1)

@@ -47,11 +47,22 @@ dmd_media_showcase/
 │   │   └── consume_once_orchestrator.py  # Fachada ligera de orquestación
 │   ├── container.py                      # Composition Root que conecta adaptadores con puertos
 │   ├── infrastructure/                   # Adaptadores Concretos de Entrada y Salida
-│   │   ├── http/                         # Middleware de seguridad, reloader en vivo y 6 routers FastAPI (consume_once TCP DMDS)
-│   │   ├── web/                          # WebUI Control Center externalizada (index.html, CSS y 15+ módulos ES)
-│   │   ├── rendering/                    # Motor modular HUB75 RGB565LE (incl. panoramas YOKO/TATE zoom-to-cover)
+│   │   ├── http/                         # Middleware de seguridad, reloader en vivo y 6 routers FastAPI
+│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, rotation_batch
+│   │   │       └── consume_once.py       # WS /ws/{item_id}.dmdz con ACK por créditos + HTTP DMDZ/DMDS con/sin marcapasos
+│   │   ├── web/                          # WebUI Control Center externalizada (cero HTML/JS en Python)
+│   │   │   ├── dashboard_loader.py       # Cargador portátil para index.html, CSS y módulos ES
+│   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ módulos ES)
+│   │   ├── rendering/                    # Motor modular de renderizado HUB75 RGB565LE
+│   │   │   ├── card_geometry.py          # Resolutor geométrico YOKO / Cuadrado / TATE
+│   │   │   ├── card_layout_engine.py     # 5 diseños de fichas, fuentes bitmap y renderizador DMDS
+│   │   │   ├── dmdz_codec.py             # Códec RGB565 DMDZ v1 sin pérdidas (encode_dmdz_bytes, ensure_dmdz_sibling)
+│   │   │   ├── imaging_primitives.py     # Realce de color, encuadre y conversión RGB565
+│   │   │   ├── panorama_and_static.py    # Panoramas deterministas TATE (I->D) / YOKO (A->Ab) zoom-to-cover
+│   │   │   └── video_pipeline.py         # Detección de ventana de acción y codificación de tráilers
 │   │   ├── mqtt/                         # EmbeddedMqttBroker (:1883) & ShowcaseMqttGateway
 │   │   ├── persistence/                  # JsonSeenHistoryRepository, DmdProfileStore, ServerConfigStore (source_policies)
+│   │   │   └── on_demand_cache_store.py  # Caché hermana .rgb565.stream + .dmdz.stream preservando mtime (shutil.copy2)
 │   │   ├── scrapers/                     # 11 adaptadores por dominio + ScraperRegistry + referenciales por fuente
 │   │   │   ├── games/                    # igdb_adapter, screenscraper_adapter, arcadeitalia_adapter, libretro_wikidata_adapter, arcade_aliases
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
@@ -62,9 +73,11 @@ dmd_media_showcase/
 │   ├── security/                         # Bóveda nativa de 3 niveles y redacción de logs
 │   │   ├── vault.py                      # Cargador en tiempo de ejecución de _prod_vault*.so
 │   │   └── log_redactor.py               # SecretRedactingLogFilter + httpx/httpcore en WARNING
-│   ├── scheduler/                        # BoundedWorkerExecutorMixin[TJob] & SessionBatchManager
+│   ├── scheduler/                        # Pool acotado de workers async + process/thread
+│   │   ├── executor_lifecycle.py         # BoundedWorkerExecutorMixin[TJob] genérico
+│   │   └── session_batch_manager.py      # Gestor de sesiones y lotes HTTP
 │   ├── asyncapi_spec.py                  # Carga docs/asyncapi.yaml directamente desde disco
-│   └── main.py                           # Arranque ligero de FastAPI, montaje /static y routers
+│   └── main.py                           # Arranque ligero de FastAPI, /static, routers y ws_per_message_deflate=False
 ├── scripts/compile_prod_vault.py         # Compilador CI/CD PBKDF2-HMAC-SHA256 + XOR de 3 partes (.so/.pyd)
 ├── docker-compose.override.yml           # Override automático de compilación local + dmd_gif_converter
 ├── docs/                                 # Documentación EN/FR/ES, especificaciones OpenAPI 3.1 y AsyncAPI 2.6
@@ -146,15 +159,28 @@ Añada `"custom_retro"` a `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`.
 7. **Paquetes Portátiles Herméticos (`Windows_x64`, `macOS`, `Linux_x64`) y Resiliencia TLS en Archivos Retro**:
    - Los ejecutables PyInstaller congelados resuelven `yt-dlp` mediante `resolve_ytdlp_command()` (despacho temprano `[sys.executable, "--internal-ytdlp"]` en `app/main.py` más respaldo en proceso `yt_dlp.YoutubeDL` en `youtube_resolver.py`) sin requerir un binario `yt-dlp.exe` externo.
    - `enforce_hermetic_environment()` exporta los certificados raíz `certifi` incluidos (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), mientras que `default_http_download_bytes()` (`imaging_primitives.py`) reintenta con contexto TLS no verificado (cacheado por host) cuando archivos retro como `adb.arcadeitalia.net` presentan certificados caducados.
-8. **Cascada CSS, Paridad I18n y Tablas Responsivas del WebUI (`app/infrastructure/web/static/`)**: Mantener paridad al 100 % entre `js/i18n/{en,fr,es}.js`, conservar el estado compartido (incluidas las insignias de fuente `playing_source`, `ready_source`, `standby_source`, `preparing_source`, `source_used`) en `uiState` (`js/state.js`), respetar el orden `css/dashboard.css` → `css/studio.css` → `css/responsive.css` (todos los `@media` en `responsive.css`), envolver cada `<table>` en `.table-wrap` y registrar cada manejador inline `onclick`/`onchange` en `WINDOW_HANDLERS` de `js/app.js`.
-
-9. **Streaming Principal `MQTT+TCP` (`DMDS`), Identificadores `item_id` Compactos y Transportes de Cliente**:
-   - Los Modelos 1 y 2A (`supports_local_card: true`) utilizan `MQTT+TCP` por defecto: MQTT (`:1883`) gestiona `config`, `ready` retenido y `start_card`, mientras que `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1` (`consume_once.py`) emite fotogramas `DMDS` RGB565LE con marcapasos del servidor (`X-DMD-Paced: 1`, `X-DMD-Drop-Late: 1`, omitiendo `Content-Length` cuando `drop_late=1` salta fotogramas atrasados) y purga el paquete en disco al finalizar.
+8. **Streaming Principal `MQTT+TCP` (WebSocket `DMDZ` con Créditos ACK y HTTP `DMDS`), Identificadores `item_id` Compactos y Transportes de Cliente**:
+   - Los Modelos 1 y 2A (`supports_local_card: true`) utilizan `MQTT+TCP` por defecto: MQTT (`:1883`) gestiona `config`, `ready` retenido y `start_card`, mientras que los clientes embebidos restringidos (`ESP32_STD` / `ESP32-S3`) transmiten mediante la ruta WebSocket `DMDZ` v1 sin pérdidas con créditos ACK (estilo ZeDMD) `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`consume_once.py` + `dmdz_codec.py`):
+     - Limitar cada mensaje binario WebSocket a `<= 1.024 B` (`DMDZ_SUBPACKET_BYTES = 1024`) regulado por una ventana deslizante de créditos (`DMDZ_WS_INITIAL_CREDITS = 2` por defecto, `credits=1..16`, recargada mediante ACKs `'A'` de 1 byte) de modo que nunca haya más de `<= 2.048 B` en vuelo.
+     - Mantener `ws_per_message_deflate=False` en `app/main.py` para que RFC 7692 `permessage-deflate` nunca asigne ventanas dinámicas zlib/LZ77 ni en Uvicorn ni en el MCU.
+     - Marcar el ritmo monotónicamente reanclando `t0` cuando la contrapresión retrase la entrega en `> 1` período (`0` ráfagas de recuperación hacia las colas RX Wi-Fi) y drenar los ACKs finales antes de cerrar.
+     - Preservar la copia `shutil.copy2` con `st_mtime` en `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) para los archivos hermanos `.rgb565.stream` y `.dmdz.stream` a fin de que `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) nunca recodifique en aciertos de caché.
+   - Mantener compatibilidad total con el respaldo HTTP con marcapasos (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` con `X-DMD-Paced: 1` y `X-DMD-Codec: dmdz1`, o `DMDS` puro con `&drop_late=1` opcional) cuando un proxy inverso bloquee actualizaciones WebSocket, así como con la descarga HTTP `DMDS` pura sin marcapasos (`?purge=true`) para la precarga en RAM de `ArcadeMatrix_RPi`.
    - Mantener `item_id` con el formato `pkg_<domain>_<12hex>` (`<= 24` caracteres) en `SlotPreparationService`, `OnDemandQueueService` y `StudioPreviewService` (cero heap en ESP32), y preservar `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` por defecto, `HTTP`, `UDP-PASSIVE` para Modo 2B `:4210` y `MQTT+UDP` opcional).
 
 ---
 
-## 4. Compilación Docker Local y Ejecución de Pruebas
+## 4. Evolución de la WebUI Modular (`app/infrastructure/web/static/`)
+
+El Control Center emplea ES Modules nativos (`<script type="module" src="/static/js/app.js"></script>`) sin pasos de compilación:
+- Mantener una paridad del 100 % en claves de traducción entre `js/i18n/en.js`, `js/i18n/fr.js` y `js/i18n/es.js` (verificada automáticamente por pytest).
+- Centralizar todo estado mutable compartido en `uiState` (`js/state.js`), incluidas las insignias de telemetría de fuente en vivo (`playing_source`, `ready_source`, `standby_source`, `preparing_source`, `source_used`).
+- Registrar cada manejador de eventos inline (`onclick="miAccion()"` en `index.html` o en plantillas JS dinámicas) dentro de `WINDOW_HANDLERS` en `js/app.js` (verificado por `test_webui_static_es_modules_resolution_and_dom_handler_binding`).
+- Respetar el orden estricto de cascada CSS (`css/dashboard.css` → `css/studio.css` → `css/responsive.css`): mantener todos los `@media` en `css/responsive.css` (cargado al final) y envolver cada `<table>` en `.table-wrap` (verificado por `test_webui_css_brace_balance_cascade_order_and_responsive_tables`).
+
+---
+
+## 5. Compilación Docker Local y Ejecución de Pruebas
 
 ```bash
 # Compilar e iniciar el código local + último dmd_gif_converter (usa docker-compose.override.yml automáticamente)
