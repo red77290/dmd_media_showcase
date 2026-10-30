@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -76,40 +76,76 @@ def _detect_scroll(cur: np.ndarray, prev: np.ndarray) -> Optional[int]:
     h, w = int(cur.shape[0]), int(cur.shape[1])
     if h < 4 or w <= 0:
         return None
+    total_px = h * w
     zero_matches = int(np.count_nonzero(cur == prev))
-    if zero_matches == h * w:
+    if zero_matches == total_px:
         return None
     # Fast exact-shift check + 100% lossless best-overlap fallback for pans with HUD/compression noise.
     best_dy: Optional[int] = None
     best_matches = zero_matches + max(16, w // 4)
     for mag in range(1, min(MAX_SCROLL_ROWS, h - 1) + 1):
-        if np.array_equal(cur[: h - mag], prev[mag:]):
+        shifted_px = (h - mag) * w
+        tail_px = mag * w
+
+        m_pos = int(np.count_nonzero(cur[: h - mag] == prev[mag:]))
+        if m_pos == shifted_px:
             return mag
-        if np.array_equal(cur[mag:], prev[: h - mag]):
+        if m_pos + tail_px > best_matches:
+            m_pos_total = m_pos + int(np.count_nonzero(cur[h - mag :] == prev[h - mag :]))
+            if m_pos_total > best_matches:
+                best_matches = m_pos_total
+                best_dy = mag
+
+        m_neg = int(np.count_nonzero(cur[mag:] == prev[: h - mag]))
+        if m_neg == shifted_px:
             return -mag
-        for dy in (mag, -mag):
-            if dy > 0:
-                m = int(np.count_nonzero(cur[: h - dy] == prev[dy:])) + int(
-                    np.count_nonzero(cur[h - dy :] == prev[h - dy :])
-                )
-            else:
-                s = -dy
-                m = int(np.count_nonzero(cur[s:] == prev[: h - s])) + int(
-                    np.count_nonzero(cur[:s] == prev[:s])
-                )
-            if m > best_matches:
-                best_matches = m
-                best_dy = dy
+        if m_neg + tail_px > best_matches:
+            m_neg_total = m_neg + int(np.count_nonzero(cur[:mag] == prev[:mag]))
+            if m_neg_total > best_matches:
+                best_matches = m_neg_total
+                best_dy = -mag
     return best_dy
 
 
-def encode_frame_ops(cur: Sequence[int], ref: Optional[Sequence[int]]) -> bytearray:
+def _append_skip_ops(out: bytearray, run: int) -> None:
+    while run > 0:
+        if run <= 64:
+            out.append(run - 1)
+            return
+        count = min(run, 0xFFFF)
+        out.append(0xF0)
+        out.append(count & 0xFF)
+        out.append((count >> 8) & 0xFF)
+        run -= count
+
+
+def encode_frame_ops(
+    cur: Union[Sequence[int], np.ndarray],
+    ref: Optional[Union[Sequence[int], np.ndarray]],
+) -> bytearray:
     """Encodes one frame's pixel stream (raster order) against an optional reference."""
+    cur_arr = np.ascontiguousarray(cur, dtype="<u2").ravel()
+    n = int(cur_arr.size)
     out = bytearray()
+    if n == 0:
+        return out
+
+    ref_arr: Optional[np.ndarray] = None
+    diff_mv: Optional[memoryview] = None
+    diff_len = 0
+    if ref is not None:
+        ref_arr = np.ascontiguousarray(ref, dtype="<u2").ravel()
+        diff_idx = np.flatnonzero(cur_arr != ref_arr)
+        diff_len = int(diff_idx.size)
+        if diff_len == 0:
+            _append_skip_ops(out, n)
+            return out
+        diff_mv = memoryview(diff_idx)
+
+    cur_mv = memoryview(cur_arr)
     cache = [0] * 64
     last = 0
     lit: List[int] = []
-    n = len(cur)
 
     def flush_lit() -> None:
         if lit:
@@ -120,31 +156,30 @@ def encode_frame_ops(cur: Sequence[int], ref: Optional[Sequence[int]]) -> bytear
             lit.clear()
 
     i = 0
+    d_pos = 0
     while i < n:
-        p = cur[i]
-        if ref is not None and p == ref[i]:
-            j = i + 1
-            while j < n and cur[j] == ref[j]:
-                j += 1
-            flush_lit()
-            run = j - i
-            while run > 0:
-                if run <= 64:
-                    out.append(run - 1)
-                    run = 0
-                else:
-                    count = min(run, 0xFFFF)
-                    out.append(0xF0)
-                    out.append(count & 0xFF)
-                    out.append((count >> 8) & 0xFF)
-                    run -= count
-            last = cur[j - 1]
-            cache[_hash(last)] = last
-            i = j
-            continue
+        if diff_mv is not None:
+            while d_pos < diff_len and diff_mv[d_pos] < i:
+                d_pos += 1
+            if d_pos >= diff_len:
+                flush_lit()
+                _append_skip_ops(out, n - i)
+                return out
+            next_diff = int(diff_mv[d_pos])
+            if next_diff > i:
+                flush_lit()
+                _append_skip_ops(out, next_diff - i)
+                last = cur_mv[next_diff - 1]
+                cache[_hash(last)] = last
+                i = next_diff
+                continue
+            d_pos += 1
+
+        p = cur_mv[i]
         if p == last:
             j = i + 1
-            while j < n and cur[j] == last and (j - i) < 64:
+            max_j = min(n, i + 64)
+            while j < max_j and cur_mv[j] == last:
                 j += 1
             flush_lit()
             out.append(0x40 | (j - i - 1))
@@ -180,21 +215,16 @@ def encode_dmdz_frames(frames: np.ndarray, keyframe_interval: int = 0) -> List[b
     prev: Optional[np.ndarray] = None
     for k in range(frames.shape[0]):
         cur = frames[k]
-        cur_list = cur.ravel().tolist()
         is_key = prev is None or (keyframe_interval > 0 and k % keyframe_interval == 0)
         if is_key:
-            payload = bytes([FRAME_KEY]) + bytes(encode_frame_ops(cur_list, None))
+            payload = bytes([FRAME_KEY]) + bytes(encode_frame_ops(cur, None))
         else:
             dy = _detect_scroll(cur, prev)
             if dy is not None:
                 ref = scrolled_reference(prev, dy)
-                payload = bytes([FRAME_SCROLL, dy & 0xFF]) + bytes(
-                    encode_frame_ops(cur_list, ref.ravel().tolist())
-                )
+                payload = bytes([FRAME_SCROLL, dy & 0xFF]) + bytes(encode_frame_ops(cur, ref))
             else:
-                payload = bytes([FRAME_DELTA]) + bytes(
-                    encode_frame_ops(cur_list, prev.ravel().tolist())
-                )
+                payload = bytes([FRAME_DELTA]) + bytes(encode_frame_ops(cur, prev))
         if len(payload) > 0xFFFF:
             raise ValueError("DMDZ frame payload exceeds 65535 bytes")
         payloads.append(payload)

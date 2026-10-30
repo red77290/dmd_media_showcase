@@ -16,10 +16,20 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from concurrent.futures.process import BrokenProcessPool
+
+from app.config import settings
 from app.domain.entities import PanelGeometry
 from app.infrastructure.http.dependencies import get_orchestrator
-from app.infrastructure.rendering.dmdz_codec import DMDZ_CODEC_ID, DMDZ_MAGIC, ensure_dmdz_sibling
+from app.infrastructure.rendering.dmdz_codec import (
+    DMDZ_CODEC_ID,
+    DMDZ_MAGIC,
+    dmdz_sibling_path,
+    ensure_dmdz_sibling,
+)
 from app.models import DomainType, SessionRegisterRequest
+from app.scheduler.asset_builder import encode_dmdz_sibling_worker_task
+from app.scheduler.worker_pool import batch_manager
 
 router = APIRouter()
 logger = logging.getLogger("dmd_showcase.http.stream")
@@ -33,6 +43,33 @@ DMDZ_LARGE_FRAME_BYTES = 1536
 DMDZ_SUBPACKET_BYTES = 1024
 DMDZ_WS_INITIAL_CREDITS = 2
 DMDZ_WS_ACK_TIMEOUT_S = 4.0
+
+
+async def _resolve_dmdz_sibling_nonblocking(raw_stream_path: Path) -> Optional[Path]:
+    """
+    Return an up-to-date `.dmdz.stream` sibling without blocking `uvicorn`'s main-process GIL:
+    1. Fast O(1) stat hit when `finalize_unified_stream_worker_task` already pre-encoded it.
+    2. Offloads missing/stale encoding to `batch_manager.shared_executor()` (`ProcessPoolExecutor`).
+    """
+    try:
+        dest = dmdz_sibling_path(raw_stream_path)
+        if dest.exists() and dest.stat().st_mtime >= raw_stream_path.stat().st_mtime:
+            return dest
+    except OSError:
+        return None
+
+    loop = asyncio.get_running_loop()
+    exec_pool = batch_manager.shared_executor()
+    try:
+        out_str = await loop.run_in_executor(
+            exec_pool,
+            encode_dmdz_sibling_worker_task,
+            str(raw_stream_path),
+            settings.worker_nice_increment,
+        )
+        return Path(out_str) if out_str else None
+    except BrokenProcessPool:
+        return ensure_dmdz_sibling(raw_stream_path)
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -246,7 +283,7 @@ async def stream_consume_once_sequence(
     stream_path = pkg.unified_stream_path
     file_size = stream_path.stat().st_size
     if paced and not drop_late and codec.strip().lower() == DMDZ_CODEC_ID and file_size > 16:
-        dmdz_path = await asyncio.to_thread(ensure_dmdz_sibling, stream_path)
+        dmdz_path = await _resolve_dmdz_sibling_nonblocking(stream_path)
         if dmdz_path is not None:
             return _paced_dmdz_response(co, pkg, domain, item_id, dmdz_path, purge)
     if paced and file_size > 16:
@@ -493,7 +530,7 @@ async def stream_consume_once_dmdz_ws(
         await websocket.close(code=1008)
         return
 
-    dmdz_path = await asyncio.to_thread(ensure_dmdz_sibling, pkg.unified_stream_path)
+    dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path)
     if dmdz_path is None or not dmdz_path.exists():
         await websocket.close(code=1011)
         return

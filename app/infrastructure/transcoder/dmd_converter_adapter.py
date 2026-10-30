@@ -27,6 +27,7 @@ from app.scheduler.asset_builder import (
     build_card_stream_sync,
     build_static_assets_sync,
     build_video_assets_worker_task,
+    finalize_unified_stream_worker_task,
 )
 
 logger = logging.getLogger("dmd_showcase.transcoder")
@@ -129,6 +130,38 @@ def merge_rgb565_streams(
         labeled, out_stream_path, width, height, fps
     )
     return total_frames, duration_s
+
+
+def finalize_unified_stream_sync(
+    labeled_stream_specs: List[Tuple[str, str, str]],
+    out_stream_path_str: str,
+    width: int,
+    height: int,
+    fps: int,
+) -> Tuple[int, float, List[Dict[str, object]], int, bool]:
+    """
+    Synchronous unified `DMDS` chapter assembly + lossless `DMDZ` sibling pre-encoding
+    invoked by `app.scheduler.asset_builder.finalize_unified_stream_worker_task`.
+    """
+    out_stream_path = Path(out_stream_path_str)
+    labeled_streams = [(ch_id, ch_label, Path(sp_str)) for ch_id, ch_label, sp_str in labeled_stream_specs]
+    total_frames, total_dur_s, chapters = merge_rgb565_streams_with_chapters(
+        labeled_streams,
+        out_stream_path,
+        width,
+        height,
+        fps,
+    )
+    actual_fps = fps
+    dmdz_ok = False
+    if out_stream_path.exists():
+        raw_hdr = out_stream_path.read_bytes()[:16]
+        if len(raw_hdr) == 16:
+            parsed_hdr = read_rgb565_stream_header(raw_hdr)
+            if int(parsed_hdr.get("fps") or 0) > 0:
+                actual_fps = int(parsed_hdr["fps"])
+        dmdz_ok = ensure_dmdz_sibling(out_stream_path) is not None
+    return total_frames, total_dur_s, chapters, actual_fps, dmdz_ok
 
 
 class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
@@ -282,27 +315,27 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
                 labeled_streams.append(("video", "5. Video", v_path))
 
         unified_stream_path = out_dir / f"unified_{geometry.width}x{geometry.height}.rgb565.stream"
-        total_frames, total_dur_s, chapters = await loop.run_in_executor(
-            None,
-            merge_rgb565_streams_with_chapters,
-            labeled_streams,
-            unified_stream_path,
+        labeled_stream_specs = [
+            (ch_id, ch_label, str(sp)) for ch_id, ch_label, sp in labeled_streams
+        ]
+        (
+            total_frames,
+            total_dur_s,
+            chapters,
+            actual_fps,
+            dmdz_ok,
+        ) = await loop.run_in_executor(
+            exec_pool,
+            finalize_unified_stream_worker_task,
+            labeled_stream_specs,
+            str(unified_stream_path),
             geometry.width,
             geometry.height,
             eff_fps,
+            settings.worker_nice_increment,
         )
-
-        actual_fps = eff_fps
-        if unified_stream_path.exists():
-            raw_hdr = unified_stream_path.read_bytes()[:16]
-            if len(raw_hdr) == 16:
-                parsed_hdr = read_rgb565_stream_header(raw_hdr)
-                if int(parsed_hdr.get("fps") or 0) > 0:
-                    actual_fps = int(parsed_hdr["fps"])
-            # Pre-encode the lossless DMDZ sibling (~1 ms/frame) so constrained clients never wait for it.
-            dmdz_path = await loop.run_in_executor(None, ensure_dmdz_sibling, unified_stream_path)
-            if dmdz_path is None:
-                logger.warning("[CONVERTER] DMDZ encoding skipped for '%s'", unified_stream_path.name)
+        if unified_stream_path.exists() and not dmdz_ok:
+            logger.warning("[CONVERTER] DMDZ encoding skipped for '%s'", unified_stream_path.name)
 
         files_map["poster_rgb565_b64"] = poster_b64
         files_map["card_stream_rgb565"] = card_stream_name

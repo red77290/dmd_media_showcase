@@ -418,3 +418,142 @@ def test_ws_pacing_lead_50ms_credit_clamping_and_dockerfile_deflate_parity(tmp_p
                 assert np.array_equal(decoded, expected_565)
     finally:
         consume_once_orchestrator.active_packages.pop(item_id, None)
+
+
+def test_vectorized_dmdz_encoder_lossless_edge_cases_and_1522_frame_throughput() -> None:
+    """
+    Verify vectorized `encode_frame_ops` / `encode_dmdz_bytes`:
+    1. Reconstructs 100% bit-exact RGB565 pixels across keyframes, `dy > 0`/`dy < 0` scroll frames,
+       `RUN` crossing `cur == ref` indices, `DIFF`, `INDEX`, `LIT`, and `LONG SKIP` (`> 64` & full-frame).
+    2. Encodes a 61 s (`1,522`-frame) `128x32` movie stream rapidly (`< 1.2s`).
+    """
+    import time
+
+    from app.infrastructure.rendering.dmdz_codec import scrolled_reference
+
+    rng = np.random.default_rng(2026)
+    h, w = 32, 128
+
+    # Craft adversarial sequence: keyframe -> identical frame (full-frame LONG SKIP) ->
+    # RUN crossing ref match -> vertical scroll (+3 and -2 with noisy HUD row) -> random delta
+    f0 = rng.integers(0, 65536, size=(h, w), dtype="<u2")
+    f1 = f0.copy()
+    f2 = f0.copy()
+    # Force a RUN of `last` starting at a `cur != ref` pixel and crossing over `cur == ref` pixels
+    f2[0, 10] = np.uint16(0x1234)
+    f0[0, 9] = np.uint16(0x1234)
+    f0[0, 11:18] = np.uint16(0x1234)
+    f2[0, 11:25] = np.uint16(0x1234)
+    f3 = scrolled_reference(f2, 3)
+    f3[0, :20] ^= np.uint16(0x0021)  # HUD noise on top row
+    f4 = scrolled_reference(f3, -2)
+    f4[-1, 40:70] = np.uint16(0xF800)
+
+    adv_frames = np.stack([f0, f1, f2, f3, f4]).astype("<u2")
+    raw_adv = struct.pack(HEADER_FMT, b"DMDS", 1, 25, w, h, adv_frames.shape[0], 40, 0) + adv_frames.tobytes()
+    dmdz_adv = encode_dmdz_bytes(raw_adv)
+    dec_adv = decode_dmdz_bytes(dmdz_adv)
+    assert np.array_equal(dec_adv, adv_frames)
+
+    # Throughput benchmark on realistic 1,522-frame (61 s @ 25 FPS) panorama + video sequence
+    base = np.tile(np.arange(w, dtype="<u2")[None, :], (h, 1)) * np.uint16(37)
+    movie_frames = np.empty((1522, h, w), dtype="<u2")
+    cur = base.copy()
+    for k in range(1522):
+        if k < 200 and k > 0:
+            cur = scrolled_reference(cur, 1)
+            cur[-1, :] = np.uint16((k * 131) & 0xFFFF)
+        elif k > 0:
+            cur = cur.copy()
+            x0 = (k * 3) % (w - 32)
+            cur[8:24, x0 : x0 + 32] = np.uint16(((k * 17) << 5) & 0xFFFF)
+        movie_frames[k] = cur
+
+    raw_movie = struct.pack(HEADER_FMT, b"DMDS", 1, 25, w, h, 1522, 40, 0) + movie_frames.tobytes()
+    t0 = time.perf_counter()
+    dmdz_movie = encode_dmdz_bytes(raw_movie)
+    elapsed_s = time.perf_counter() - t0
+    assert elapsed_s < 1.2, f"Expected 1,522-frame DMDZ encode < 1.2s, took {elapsed_s:.3f}s"
+    assert np.array_equal(decode_dmdz_bytes(dmdz_movie[:16] + dmdz_movie[16:]), movie_frames)
+
+
+@pytest.mark.asyncio
+async def test_transcode_candidate_and_ws_resolver_isolate_dmdz_encoding_from_main_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verify `DmdConverterTranscoderAdapter.transcode_candidate` NEVER calls `loop.run_in_executor(None, ...)`
+    when `batch_manager.shared_executor()` is active, and `_resolve_dmdz_sibling_nonblocking` returns
+    pre-encoded `.dmdz.stream` siblings in O(1) without spawning executor work.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.infrastructure.transcoder.dmd_converter_adapter import (
+        DmdConverterTranscoderAdapter,
+    )
+    from app.scheduler.asset_builder import finalize_unified_stream_worker_task
+    from app.scheduler.worker_pool import batch_manager
+
+    seg_path = tmp_path / "jacket.rgb565.stream"
+    write_rgb565_stream([np.full((32, 128, 3), 90, dtype=np.uint8) for _ in range(4)], seg_path, fps=20)
+    poster_path = tmp_path / "poster.rgb565"
+    poster_path.write_bytes(b"\x00\x00" * (32 * 32))
+
+    fake_pool = ThreadPoolExecutor(max_workers=1)
+    executor_targets: List[object] = []
+    orig_run_in_executor = asyncio.get_running_loop().run_in_executor
+
+    def _spy_run_in_executor(executor, func, *args):  # type: ignore[no-untyped-def]
+        executor_targets.append((executor, getattr(func, "__name__", str(func))))
+        return orig_run_in_executor(executor, func, *args)
+
+    def _fake_static_assets(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "poster_rgb565": poster_path.name,
+            "poster_png": "",
+            "jacket_stream_rgb565": seg_path.name,
+            "marquee_stream_rgb565": "",
+            "snapshot_streams_rgb565": [],
+            "panorama_streams_rgb565": [seg_path.name],
+        }
+
+    monkeypatch.setattr(batch_manager, "shared_executor", lambda: fake_pool)
+    monkeypatch.setattr(
+        "app.infrastructure.transcoder.dmd_converter_adapter.build_static_assets_sync",
+        _fake_static_assets,
+    )
+    monkeypatch.setattr(asyncio.get_running_loop(), "run_in_executor", _spy_run_in_executor)
+
+    try:
+        adapter = DmdConverterTranscoderAdapter()
+        cand = MediaCandidate(
+            id="tmdb_99",
+            domain="movies",
+            source_id="tmdb",
+            title="Interstellar",
+            year="2014",
+            badge="MOVIE",
+            badge_color="#FF8800",
+            subtitle="Sci-Fi",
+            rating="8.7",
+            synopsis="Space.",
+        )
+        crit = FilterCriteria(domain="movies", include_video=False, video_fps=20)
+        geom = PanelGeometry(width=128, height=32)
+        res = await adapter.transcode_candidate(cand, crit, geom, tmp_path)
+
+        assert res["stream_frames"] == 4
+        assert all(ex is fake_pool for ex, _fn in executor_targets), (
+            f"Expected all executor calls to target shared_executor (never None), got {executor_targets}"
+        )
+        assert any(fn == finalize_unified_stream_worker_task.__name__ for _ex, fn in executor_targets)
+
+        unified = Path(str(res["unified_stream_path"]))
+        executor_targets.clear()
+        resolved = await consume_once._resolve_dmdz_sibling_nonblocking(unified)
+        assert resolved is not None and resolved.exists()
+        assert executor_targets == [], "Up-to-date DMDZ sibling must resolve via O(1) stat with zero executor hop"
+    finally:
+        fake_pool.shutdown(wait=True)

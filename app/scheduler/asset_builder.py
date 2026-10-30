@@ -9,10 +9,14 @@ seam compatibility for offline test fixtures.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 from app.infrastructure.rendering.card_layout_engine import (
     build_card_stream_sync,
     build_fast_studio_card_preview_sync,
 )
+from app.infrastructure.rendering.dmdz_codec import ensure_dmdz_sibling
 from app.infrastructure.rendering.imaging_primitives import (
     apply_amber_dmd_palette as _apply_amber_dmd_palette,
     apply_worker_nice as _apply_worker_nice,
@@ -35,6 +39,29 @@ from app.infrastructure.rendering.video_pipeline import build_video_assets_worke
 # `app.scheduler.asset_builder._download_bytes` intercept all rendering downloads.
 _download_bytes = default_http_download_bytes
 
+
+def encode_dmdz_sibling_worker_task(raw_stream_path_str: str, nice_inc: int = 10) -> Optional[str]:
+    """Pickleable `ProcessPoolExecutor` entrypoint isolating DMDZ encoding away from `uvicorn`'s GIL."""
+    _apply_worker_nice(nice_inc, 1)
+    dest = ensure_dmdz_sibling(Path(raw_stream_path_str))
+    return str(dest) if dest is not None else None
+
+
+def finalize_unified_stream_worker_task(
+    labeled_stream_specs: List[Tuple[str, str, str]],
+    out_stream_path_str: str,
+    width: int,
+    height: int,
+    fps: int,
+    worker_nice_increment: int = 10,
+) -> Tuple[int, float, List[Dict[str, object]], int, bool]:
+    """Pickleable `ProcessPoolExecutor` entrypoint merging `DMDS` chapters + pre-encoding `DMDZ`."""
+    from app.infrastructure.transcoder.dmd_converter_adapter import finalize_unified_stream_sync
+
+    _apply_worker_nice(worker_nice_increment, 1)
+    return finalize_unified_stream_sync(labeled_stream_specs, out_stream_path_str, width, height, fps)
+
+
 __all__ = [
     "_apply_amber_dmd_palette",
     "_apply_worker_nice",
@@ -50,5 +77,7 @@ __all__ = [
     "build_fast_studio_card_preview_sync",
     "build_static_assets_sync",
     "build_video_assets_worker_task",
+    "encode_dmdz_sibling_worker_task",
+    "finalize_unified_stream_worker_task",
     "resolve_framing_and_color_params",
 ]
