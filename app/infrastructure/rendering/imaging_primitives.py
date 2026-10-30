@@ -231,9 +231,11 @@ def fit_poster_preserving_cover(
 def resolve_framing_and_color_params(
     video_mode: str = "auto_action",
     color_boost: Union[str, bool] = "auto",
+    domain: str = "",
 ) -> Tuple[bool, bool, bool, Literal["pixel_art", "anime", "cinema"]]:
     """Resolve orthogonal framing (`video_mode`) and LED colorimetry (`color_boost`) settings."""
     vm = str(video_mode or "auto_action").strip().lower()
+    dom = str(domain or "").strip().lower()
     scroll_on_video = vm == "panorama"
     use_auto_action = vm not in ("panorama", "center_crop")
 
@@ -251,6 +253,10 @@ def resolve_framing_and_color_params(
     else:
         if vm in ("pixel_art", "anime", "cinema"):
             preset_mode = vm  # type: ignore[assignment]
+        elif dom in ("movies", "series"):
+            preset_mode = "cinema"
+        elif dom == "anime":
+            preset_mode = "anime"
         else:
             preset_mode = "pixel_art"
         use_smart_color_boost = True

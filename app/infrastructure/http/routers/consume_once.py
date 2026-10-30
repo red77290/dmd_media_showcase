@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import socket
 import struct
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ logger = logging.getLogger("dmd_showcase.http.stream")
 # TCP window acts as a jitter buffer; larger video frames (> 1.5 KB) pace strictly 1-per-period
 # so NAT proxies never burst multiple multi-KB frames into a constrained ESP32 Wi-Fi RX queue.
 DMDZ_SEND_LEAD_S = 0.06
+DMDZ_WS_SEND_LEAD_S = 0.25
 DMDZ_LARGE_FRAME_BYTES = 1536
 DMDZ_SUBPACKET_BYTES = 1024
 DMDZ_WS_INITIAL_CREDITS = 2
@@ -511,6 +513,11 @@ async def stream_consume_once_dmdz_ws(
         co.state.client_transports[claim_key] = "MQTT+TCP"
 
     await websocket.accept()
+    with contextlib.suppress(Exception):
+        transport = websocket.scope.get("transport") if isinstance(websocket.scope, dict) else None
+        raw_sock = transport.get_extra_info("socket") if transport is not None else None
+        if raw_sock is not None:
+            raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     credits = credits_window
     peer_closed = False
@@ -570,6 +577,7 @@ async def stream_consume_once_dmdz_ws(
             return
 
         period = 1.0 / float(eff_fps)
+        eff_ws_lead = min(DMDZ_WS_SEND_LEAD_S, max(period, float(credits_window) * period * 0.75))
         t0 = time.perf_counter()
         for frame_idx in range(int(total_frames)):
             size_raw = fh.read(2)
@@ -580,12 +588,12 @@ async def stream_consume_once_dmdz_ws(
             if len(payload) < length:
                 break
             if frame_idx > 0:
-                target_t = t0 + (frame_idx * period)
+                target_t = t0 + (frame_idx * period) - eff_ws_lead
                 delay = target_t - time.perf_counter()
                 if delay > 0.001:
                     await asyncio.sleep(delay)
-                elif delay < -period:
-                    t0 = time.perf_counter() - (frame_idx * period)
+                elif delay < -(period + eff_ws_lead):
+                    t0 = time.perf_counter() - (frame_idx * period) + eff_ws_lead
                     reanchors += 1
             if (frame_idx % 15) == 0:
                 ts_now = time.time()

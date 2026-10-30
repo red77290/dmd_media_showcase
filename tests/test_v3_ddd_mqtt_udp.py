@@ -1180,8 +1180,13 @@ def test_resolve_framing_and_color_params_orthogonal_matrix():
     """Verify `resolve_framing_and_color_params` across all `video_mode` and `color_boost` combinations."""
     from app.scheduler.asset_builder import resolve_framing_and_color_params
 
-    # 1. Default auto_action + auto color boost
+    # 1. Default auto_action + auto color boost (games / unspecified domain -> pixel_art)
     assert resolve_framing_and_color_params("auto_action", "auto") == (True, False, True, "pixel_art")
+    assert resolve_framing_and_color_params("auto_action", "auto", domain="games") == (True, False, True, "pixel_art")
+    # 1b. Domain-aware auto colorimetry: movies/series -> cinema, anime -> anime (prevents red/green shadow clipping)
+    assert resolve_framing_and_color_params("auto_action", "auto", domain="movies") == (True, False, True, "cinema")
+    assert resolve_framing_and_color_params("auto_action", "auto", domain="series") == (True, False, True, "cinema")
+    assert resolve_framing_and_color_params("auto_action", "auto", domain="anime") == (True, False, True, "anime")
     # 2. Panorama + anime preset
     assert resolve_framing_and_color_params("panorama", "anime") == (False, True, False, "anime")
     # 3. Center crop + cinema preset
@@ -2519,3 +2524,89 @@ def test_ws_credited_dmdz_stream_subpacket_and_lossless_roundtrip(tmp_path: Path
     expected = np.frombuffer(raw_bytes[16:], dtype="<u2").reshape(decoded.shape)
     assert np.array_equal(decoded, expected)
     assert item_id not in consume_once_orchestrator.active_packages
+
+
+def test_temporal_dither_stabilizer_and_ws_coalesced_credit_acks(tmp_path: Path):
+    """
+    1. `stabilize_rgb565_stream_temporal_dither` suppresses 1-LSB inter-frame GIF dithering boil
+       (shrinking DMDZ delta frames) while preserving scrolling frames and periodic anchor refreshes.
+    2. `/ws/{item_id}.dmdz` accepts coalesced multi-byte client ACKs (`b"AA"` / `b"AAA"`).
+    """
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.infrastructure.rendering.dmdz_codec import (
+        decode_dmdz_bytes,
+        encode_dmdz_bytes,
+        stabilize_rgb565_stream_temporal_dither,
+    )
+
+    rng = np.random.default_rng(2026)
+    base_frame = rng.integers(2, 28, size=(32, 128), dtype=np.uint16)
+    base_565 = ((base_frame << 11) | ((base_frame * 2) << 5) | base_frame).astype("<u2")
+
+    raw_frames = [base_565.copy()]
+    for k in range(1, 20):
+        dr = rng.integers(-1, 2, size=(32, 128), dtype=np.int16)
+        dg = rng.integers(-2, 3, size=(32, 128), dtype=np.int16)
+        db = rng.integers(-1, 2, size=(32, 128), dtype=np.int16)
+        r = np.clip(((base_565 >> 11) & 0x1F).astype(np.int16) + dr, 0, 31).astype(np.uint16)
+        g = np.clip(((base_565 >> 5) & 0x3F).astype(np.int16) + dg, 0, 63).astype(np.uint16)
+        b = np.clip((base_565 & 0x1F).astype(np.int16) + db, 0, 31).astype(np.uint16)
+        noisy = ((r << 11) | (g << 5) | b).astype("<u2")
+        # Inject real foreground sprite motion (> 1 LSB) that must NEVER be suppressed
+        noisy[8:14, (k * 4) % 100 : ((k * 4) % 100) + 12] = np.uint16(0xFFE0)
+        raw_frames.append(noisy)
+
+    stacked = np.stack(raw_frames)
+    stream_path = tmp_path / "video_128x32.rgb565.stream"
+    hdr = struct.pack("<4sBBHHHHH", b"DMDS", 1, 15, 128, 32, len(raw_frames), 67, 0)
+    stream_path.write_bytes(hdr + stacked.tobytes())
+
+    before_dmdz = encode_dmdz_bytes(stream_path.read_bytes())
+    assert stabilize_rgb565_stream_temporal_dither(stream_path) is True
+    after_raw = stream_path.read_bytes()
+    after_dmdz = encode_dmdz_bytes(after_raw)
+
+    assert len(after_dmdz) * 2 < len(before_dmdz)
+    stabilized_frames = np.frombuffer(after_raw[16:], dtype="<u2").reshape(stacked.shape)
+    for k in range(1, 20):
+        x0 = (k * 4) % 100
+        assert np.all(stabilized_frames[k, 8:14, x0 : x0 + 12] == 0xFFE0)
+    assert np.array_equal(decode_dmdz_bytes(after_dmdz), stabilized_frames)
+
+    # Verify coalesced multi-byte credit ACKs (`b"AAA"`) over WebSocket
+    item_id = "ws_coalesced_ack_item"
+    cand = MediaCandidate(
+        id="ss_coal", domain="movies", source_id="tmdb", title="Blade Runner", year="1982",
+        badge="MOVIE", badge_color="#FF6D00", subtitle="Sci-Fi", rating="8.1", synopsis="Replicants.",
+    )
+    card = ShowcaseCard(
+        item_id=item_id, domain="movies", title="Blade Runner", year="1982", badge="MOVIE",
+        badge_color="#FF6D00", subtitle="Sci-Fi", rating="8.1", synopsis="Replicants.", lang="en",
+        source_used="tmdb", poster_width=32, poster_height=32, poster_rgb565_b64="",
+        has_video=True, stream_frames=20, stream_fps=60, stream_duration_s=0.33,
+    )
+    consume_once_orchestrator.active_packages[item_id] = PreparedShowcasePackage(
+        item_id=item_id, dmd_id="esp32_coal_dmd", domain="movies", candidate=cand,
+        geometry=PanelGeometry(width=128, height=32), card=card, item_dir=tmp_path,
+        unified_stream_path=stream_path, consumed=True,
+    )
+    rx = []
+    pending_ack = 0
+    with TestClient(app) as tc:
+        with tc.websocket_connect(
+            f"/api/v1/movies/ws/{item_id}.dmdz?purge=false&client_id=esp32_coal_dmd&credits=4"
+        ) as ws:
+            while True:
+                try:
+                    msg = ws.receive_bytes()
+                except WebSocketDisconnect:
+                    break
+                rx.append(msg)
+                pending_ack += 1
+                if pending_ack >= 2:
+                    ws.send_bytes(b"A" * pending_ack)
+                    pending_ack = 0
+    assert np.array_equal(decode_dmdz_bytes(b"".join(rx)), stabilized_frames)
+    consume_once_orchestrator.active_packages.pop(item_id, None)

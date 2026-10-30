@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 
 from app.domain.taxonomy.resolver import resolve_canonical_genre
+from app.infrastructure.rendering.dmdz_codec import stabilize_rgb565_stream_temporal_dither
 from app.infrastructure.rendering.imaging_primitives import (
     apply_worker_nice,
     resolve_active_downloader,
@@ -147,7 +148,7 @@ def build_video_assets_worker_task(
         }
 
     use_auto_action, scroll_on_video, use_smart_color_boost, preset_mode = (
-        resolve_framing_and_color_params(video_mode=video_mode, color_boost=color_boost)
+        resolve_framing_and_color_params(video_mode=video_mode, color_boost=color_boost, domain=domain)
     )
 
     scene_hint = resolve_domain_scene_type_hint(domain=domain, genre_hint=genre_hint)
@@ -180,6 +181,8 @@ def build_video_assets_worker_task(
             export_rgb565_stream=True,
             stem=stem,
         )
+        if res.frame_count > 1:
+            stabilize_rgb565_stream_temporal_dither(out_dir / f"{stem}.rgb565.stream")
         logger.info(
             "[CONVERTER] Encoded real video for '%s' -> %dx%d @ %dfps | frames=%d (%.1fs) | score=%d | took %.2fs",
             title,
