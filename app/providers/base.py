@@ -16,41 +16,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
+from app.infrastructure.scrapers.http_utils import install_ipv4_preference
 from app.models import DomainType, SessionRegisterRequest
 
 logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
-
-_ORIG_GETADDRINFO = socket.getaddrinfo
-_IPV4_INSTALLED = False
-
-
-def install_ipv4_preference() -> None:
-    """
-    Prefer IPv4 (AF_INET) DNS records before IPv6 (AF_INET6) so Docker bridge
-    containers without global IPv6 routing never hang on AAAA SYN timeouts.
-    """
-    global _IPV4_INSTALLED
-    if _IPV4_INSTALLED:
-        return
-
-    def _ipv4_first_getaddrinfo(
-        host: Any,
-        port: Any,
-        family: int = 0,
-        type: int = 0,
-        proto: int = 0,
-        flags: int = 0,
-    ) -> List[Any]:
-        res = _ORIG_GETADDRINFO(host, port, family, type, proto, flags)
-        v4 = [r for r in res if r[0] == socket.AF_INET]
-        return v4 if v4 else res
-
-    socket.getaddrinfo = _ipv4_first_getaddrinfo  # type: ignore[assignment]
-    _IPV4_INSTALLED = True
-
 
 install_ipv4_preference()
 

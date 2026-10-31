@@ -43,12 +43,10 @@ _download_bytes = default_http_download_bytes
 def encode_dmdz_sibling_worker_task(
     raw_stream_path_str: str,
     nice_inc: int = 10,
-    version: int = 1,
-    profile: str = "",
 ) -> Optional[str]:
-    """Pickleable `ProcessPoolExecutor` entrypoint isolating DMDZ encoding away from `uvicorn`'s GIL."""
+    """Pickleable `ProcessPoolExecutor` entrypoint isolating DMDZ v2 encoding away from `uvicorn`'s GIL."""
     _apply_worker_nice(nice_inc, 1)
-    dest = ensure_dmdz_sibling(Path(raw_stream_path_str), version=version, profile=profile)
+    dest = ensure_dmdz_sibling(Path(raw_stream_path_str))
     return str(dest) if dest is not None else None
 
 

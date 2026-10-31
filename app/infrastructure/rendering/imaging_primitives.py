@@ -19,7 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 from app.domain.style_specs import parse_hex_rgb
-from app.providers.base import install_ipv4_preference
+from app.infrastructure.scrapers.http_utils import install_ipv4_preference
 from src.engine.conversion.core import DEFAULT_PARAMS
 
 DEFAULT_PARAMS["font_name"] = None

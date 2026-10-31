@@ -91,19 +91,19 @@ async def swagger_alias(request: Request) -> HTMLResponse:
 @router.get(
     "/api/v1/asyncapi.yaml",
     tags=["System & Admin"],
-    summary="Get AsyncAPI 2.6 Specification (MQTT 3.1.1, Credit-Acked WebSocket DMDZ & UDP DMDF Streaming)",
+    summary="Get AsyncAPI 2.6 Specification (MQTT 3.1.1 Control Plane & Passive UDP DMDF Streaming)",
     responses={
         200: {
             "content": {"application/yaml": {"schema": {"type": "string"}}},
-            "description": "AsyncAPI 2.6.0 YAML specification for MQTT `:1883` topics, credit-acked WebSocket `DMDZ` (`/api/v1/{domain}/ws/{item_id}.dmdz`), and UDP `DMDF` `<4sHBBH` frame datagrams.",
+            "description": "AsyncAPI 2.6.0 YAML specification for MQTT `:1883` topics and UDP `DMDF` `<4sHBBH` frame datagrams.",
         }
     },
 )
 async def get_asyncapi_spec() -> Response:
     """
     Serve the authoritative AsyncAPI 2.6.0 specification describing:
-    - MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)
-    - Credit-acknowledged `DMDZ` (`v1`/`v2`) WebSocket streaming (`WS /api/v1/{domain}/ws/{item_id}.dmdz`, `profile=sram|psram|psram_hd`, coalesced `16 B` header + Frame `0`, `<= 1,400 B` `FRAME_PAL8` SRAM cap + `'A'` credit ACKs)
+    - MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `command`, `stream_state`)
+    - Plain HTTP `1.1` `Content-Length` lossless `DMDZ` v2 (`.dmdz2.stream`, `?codec=dmdz2`) & raw `DMDS` (`.rgb565.stream`) handoff
     - Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE)
     """
     return Response(content=ASYNCAPI_YAML, media_type="application/yaml; charset=utf-8")

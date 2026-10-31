@@ -59,4 +59,4 @@ EXPOSE 8890 1883 5353/udp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8890/api/v1/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8890", "--proxy-headers", "--forwarded-allow-ips", "*", "--ws-per-message-deflate", "false"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8890", "--proxy-headers", "--forwarded-allow-ips", "*"]

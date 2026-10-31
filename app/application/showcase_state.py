@@ -136,7 +136,6 @@ class ShowcaseRuntimeState:
         self.director_playlist_cursors: Dict[str, Tuple[int, int]] = {}
 
         self.metrics = WorkerMetricsTracker()
-        self.active_tcp_streams: int = 0
         self._transcode_sem: Optional[DynamicAsyncLimiter] = None
         self._transcode_sem_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -175,19 +174,11 @@ class ShowcaseRuntimeState:
         defer_started_at: Optional[float],
     ) -> Tuple[bool, Optional[float]]:
         """
-        Yield background slot preparation to active real-time TCP/WS video streams so `yt-dlp`,
-        `ffmpeg`, and `AutoAction` never contend with 20-30 FPS packet pacing over Docker NAT:
-        - Empty N+1 sibling slots defer up to `45s` while another slot is actively streaming.
-        - N+2 standby slots defer to missing N+1 sibling slots and up to `65s` during live streams.
+        Prioritize empty `N+1` ready slots ahead of `N+2` standby pre-warming:
+        - Empty `N+1` slots (`key not in self.ready_packages`) never defer.
+        - `N+2` standby slots yield briefly while any sibling `N+1` slot is still preparing its ready package.
         """
         if key not in self.ready_packages:
-            if self.active_tcp_streams > 0 and len(self.client_configs) > 1:
-                now_mono = time.monotonic()
-                started = now_mono if defer_started_at is None else defer_started_at
-                if (now_mono - started) < 45.0:
-                    await asyncio.sleep(0.15)
-                    return True, started
-                return False, started
             return False, None
         sibling_missing_ready = any(
             other_k != key
@@ -202,13 +193,6 @@ class ShowcaseRuntimeState:
             finally:
                 self.metrics.fairness_waiting_jobs = max(0, self.metrics.fairness_waiting_jobs - 1)
             return True, defer_started_at
-        if self.active_tcp_streams > 0:
-            now_mono = time.monotonic()
-            started = now_mono if defer_started_at is None else defer_started_at
-            if (now_mono - started) < 65.0:
-                await asyncio.sleep(0.15)
-                return True, started
-            return False, started
         return False, None
 
     async def execute_with_transcode_gate(

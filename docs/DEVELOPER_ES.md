@@ -49,29 +49,28 @@ dmd_media_showcase/
 │   ├── infrastructure/                   # Adaptadores Concretos de Entrada y Salida
 │   │   ├── http/                         # Middleware de seguridad, reloader en vivo y 6 routers FastAPI
 │   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, rotation_batch
-│   │   │       └── consume_once.py       # WS /ws/{item_id}.dmdz de 3 niveles profile=sram|psram|psram_hd + HTTP DMDZ/DMDS
+│   │   │       └── consume_once.py       # Streaming HTTP Content-Length DMDZ v2 / DMDS sin pérdidas + limpieza DELETE
 │   │   ├── web/                          # WebUI Control Center externalizada (cero HTML/JS en Python)
 │   │   │   ├── dashboard_loader.py       # Cargador portátil para index.html, CSS y módulos ES
 │   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ módulos ES)
 │   │   ├── rendering/                    # Motor modular de renderizado HUB75 RGB565LE
 │   │   │   ├── card_geometry.py          # Resolutor geométrico YOKO / Cuadrado / TATE
 │   │   │   ├── card_layout_engine.py     # 5 diseños de fichas, fuentes bitmap y renderizador DMDS
-│   │   │   ├── dmdz_codec.py             # Códec DMDZ v1/v2 True-RGB565 + perfil sram (encode_dmdz_bytes, ensure_dmdz_sibling)
-│   │   │   ├── dmdz_motion.py            # Búsqueda scroll 2D + filtro temporal H.264 stabilize_rgb565_frames_sram
-│   │   │   ├── dmdz_pal8.py              # Codificador/decodificador adaptativo FRAME_PAL8 (0x05) de escena (<= 1.400 B/fotograma)
+│   │   │   ├── dmdz_codec.py             # Códec DMDZ v2 True-RGB565 sin pérdidas (encode_dmdz_bytes, ensure_dmdz_sibling)
+│   │   │   ├── dmdz_motion.py            # Búsqueda exacta sin pérdidas de desplazamiento 1D/2D y referencias desplazadas
 │   │   │   ├── imaging_primitives.py     # Realce de color, encuadre y conversión RGB565
 │   │   │   ├── panorama_and_static.py    # Panoramas deterministas TATE (I->D) / YOKO (A->Ab) zoom-to-cover
-│   │   │   └── video_pipeline.py         # Detección de ventana de acción y codificación de tráilers
+│   │   │   └── video_pipeline.py         # Detección de ventana de acción y codificación directa RGB565 de tráilers
 │   │   ├── mqtt/                         # EmbeddedMqttBroker (:1883) & ShowcaseMqttGateway
 │   │   ├── persistence/                  # JsonSeenHistoryRepository, DmdProfileStore, ServerConfigStore (source_policies)
-│   │   │   └── on_demand_cache_store.py  # Caché hermana .rgb565/.dmdz/.dmdz2/.dmdz2.sram preservando mtime (shutil.copy2)
+│   │   │   └── on_demand_cache_store.py  # Caché hermana .rgb565.stream + .dmdz2.stream preservando mtime (shutil.copy2)
 │   │   ├── scrapers/                     # 11 adaptadores por dominio + ScraperRegistry + referenciales por fuente
 │   │   │   ├── games/                    # igdb_adapter, screenscraper_adapter, arcadeitalia_adapter, libretro_wikidata_adapter, arcade_aliases
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
 │   │   │   ├── series/                   # tmdb_series_adapter, tvmaze_adapter (+ tvdb_adapter)
 │   │   │   └── anime/                    # jikan_animethemes_adapter, anilist_adapter
 │   │   ├── streaming/                    # FfmpegUdpClockStreamer (Modo 2B Pasivo :4210 y MQTT+UDP DMDF opcional)
-│   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.4)
+│   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.13)
 │   ├── security/                         # Bóveda nativa de 3 niveles y redacción de logs
 │   │   ├── vault.py                      # Cargador en tiempo de ejecución de _prod_vault*.so
 │   │   └── log_redactor.py               # SecretRedactingLogFilter + httpx/httpcore en WARNING
@@ -79,7 +78,7 @@ dmd_media_showcase/
 │   │   ├── executor_lifecycle.py         # BoundedWorkerExecutorMixin[TJob] genérico
 │   │   └── session_batch_manager.py      # Gestor de sesiones y lotes HTTP
 │   ├── asyncapi_spec.py                  # Carga docs/asyncapi.yaml directamente desde disco
-│   └── main.py                           # Arranque ligero de FastAPI, /static, routers y ws_per_message_deflate=False
+│   └── main.py                           # Arranque ligero de FastAPI, /static y routers
 ├── scripts/compile_prod_vault.py         # Compilador CI/CD PBKDF2-HMAC-SHA256 + XOR de 3 partes (.so/.pyd)
 ├── docker-compose.override.yml           # Override automático de compilación local + dmd_gif_converter
 ├── docs/                                 # Documentación EN/FR/ES, especificaciones OpenAPI 3.1 y AsyncAPI 2.6
@@ -161,14 +160,12 @@ Añada `"custom_retro"` a `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`.
 7. **Paquetes Portátiles Herméticos (`Windows_x64`, `macOS`, `Linux_x64`) y Resiliencia TLS en Archivos Retro**:
    - Los ejecutables PyInstaller congelados resuelven `yt-dlp` mediante `resolve_ytdlp_command()` (despacho temprano `[sys.executable, "--internal-ytdlp"]` en `app/main.py` más respaldo en proceso `yt_dlp.YoutubeDL` en `youtube_resolver.py`) sin requerir un binario `yt-dlp.exe` externo.
    - `enforce_hermetic_environment()` exporta los certificados raíz `certifi` incluidos (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), mientras que `default_http_download_bytes()` (`imaging_primitives.py`) reintenta con contexto TLS no verificado (cacheado por host) cuando archivos retro como `adb.arcadeitalia.net` presentan certificados caducados.
-8. **Streaming Adaptativo `MQTT+TCP` de 3 Niveles (`profile=sram | psram | psram_hd`), `DMDZ` v2 + `FRAME_PAL8` (`0x05`), Identificadores `item_id` Compactos y Transportes de Cliente**:
-   - Los Modelos 1 y 2A (`supports_local_card: true`) utilizan `MQTT+TCP` por defecto: MQTT (`:1883`) gestiona `config`, `ready` retenido y `start_card`, mientras que el plano de datos `:8890` (`consume_once.py` + `dmdz_codec.py` + `dmdz_pal8.py` + `dmdz_motion.py`) sirve tres perfiles adaptativos:
-     - **`profile=sram` (`esp32dev` 0 PSRAM)**: `.dmdz2.sram.stream` combina estabilización temporal H.264 `stabilize_rgb565_frames_sram()` con el códec híbrido True-RGB565 `DMDZ` v2 (`<= 1.400 B`) y **`FRAME_PAL8` (`0x05`)** (`1..128` colores RGB565 de escena + desplazamiento 2D opcional + `PAL_INDEX`/`PAL_SKIP`/`PAL_RUN`/`PAL_LONG_SKIP`) garantizando **cada fotograma `<= 1.400 B`** (`0` deriva de referencia, panoramas limpios 100 % sin pérdidas). Servido en `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` con **fusión `[cabecera DMDZ 16 B + Fotograma 0]`** en la ventana binaria inicial y **espaciado de `2 ms` entre fragmentos** al dividir fotogramas multifragmento.
-     - **`profile=psram` (`ESP32-S3 <= 128x64`) y `profile=psram_hd` (`ESP32-S3 256x64+`)**: Sirven `.dmdz2.stream` True-RGB565 sin pérdidas y sin marcapasos por HTTP (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`, `X-DMD-Codec: dmdz2`, `X-DMD-Profile: psram|psram_hd`, `Content-Length` exacto) para precarga en PSRAM (`0` tráfico Wi-Fi durante la reproducción a `24–30 FPS`), o en vivo por WebSocket (`credits=12..16, chunk=1400`, `0 ms` entre fragmentos).
-     - Mantener `ws_per_message_deflate=False` en `app/main.py` para que RFC 7692 `permessage-deflate` nunca asigne ventanas dinámicas zlib/LZ77 ni en Uvicorn ni en el MCU.
-     - Marcar el ritmo en vivo monotónicamente reanclando `t0` cuando la contrapresión retrase la entrega en `> 1` período (`0` ráfagas de recuperación hacia las colas RX Wi-Fi) y drenar los ACKs finales antes de cerrar.
-     - Preservar la copia `shutil.copy2` con `st_mtime` en `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) para los archivos hermanos `.rgb565.stream`, `.dmdz.stream`, `.dmdz2.stream` y `.dmdz2.sram.stream` a fin de que `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) nunca recodifique en aciertos de caché.
-   - Mantener compatibilidad total con el respaldo HTTP con marcapasos (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=sram` con `X-DMD-Paced: 1`, `X-DMD-Codec: dmdz2` y `X-DMD-Profile: sram`, o `dmdz1` / `DMDS` puro con `&drop_late=1` opcional) cuando un proxy inverso bloquee actualizaciones WebSocket, así como con la descarga HTTP `DMDS` pura sin marcapasos (`?purge=false|true`, sin `codec`) para la precarga en RAM de `ArcadeMatrix_RPi`.
+8. **Streaming Unificado Sin Pérdidas `MQTT+TCP` (`codec=dmdz2`), Identificadores `item_id` Compactos y Transportes de Cliente**:
+   - Los Modelos 1 y 2A (`supports_local_card: true`) utilizan `MQTT+TCP` por defecto: MQTT (`:1883`) gestiona `config`, `ready` retenido, `start_card` y `stop_stream`, mientras que el plano de datos `:8890` (`consume_once.py` + `dmdz_codec.py` + `dmdz_motion.py`) sirve un único archivo hermano `.dmdz2.stream` True-RGB565 100 % sin pérdidas en HTTP `1.1` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge={true|false}&codec=dmdz2`, `X-DMD-Codec: dmdz2`, `Content-Length` exacto, más limpieza idempotente `DELETE /api/v1/{domain}/stream/{item_id}.rgb565.stream`):
+     - **`esp32dev` (`0` PSRAM)**: Descarga `.dmdz2.stream` en su tarjeta SD `25 MHz` (`/cache/showcase_live.dmdz`) durante la Ficha Informativa de la Fase 1, cierra el socket TCP al completar la descarga (`0` tráfico Wi-Fi y `0` `pbuf`s `lwIP` en reproducción) y decodifica localmente mediante un anillo SPSC sin bloqueos de `8.448 B` hacia el lienzo `SRAM1` Cero-Copia (`ScopedCanvasGuard`).
+     - **`ESP32-S3` (`8 MB` PSRAM Octal, `0` tarjeta SD)**: Precarga `.dmdz2.stream` hasta `4 MB` (`freePsram - 1,5 MB` de reserva) en PSRAM durante la Ficha Informativa (`0` tráfico Wi-Fi en reproducción), o transmite flujos HD `256x64` extensos por un anillo SPSC PSRAM de `1 MB`.
+     - **`ArcadeMatrix_RPi` (RAM Linux)**: Precarga `.dmdz2.stream` sin pérdidas directamente en RAM (con respaldo automático a `DMDS` puro si se omite `codec=dmdz2`).
+     - Preservar la copia `shutil.copy2` con `st_mtime` en `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) para los archivos hermanos `.rgb565.stream` y `.dmdz2.stream` a fin de que `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) nunca recodifique en aciertos de caché.
    - Mantener `item_id` con el formato `pkg_<domain>_<12hex>` (`<= 24` caracteres) en `SlotPreparationService`, `OnDemandQueueService` y `StudioPreviewService` (cero heap en ESP32), y preservar `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` por defecto, `HTTP`, `UDP-PASSIVE` para Modo 2B `:4210` y `MQTT+UDP` opcional).
 
 ---

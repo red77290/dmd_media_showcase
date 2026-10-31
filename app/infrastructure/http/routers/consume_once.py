@@ -1,35 +1,26 @@
 """
-Stateless Consume-Once HTTP Polling & Streaming Routes (`app/infrastructure/http/routers/consume_once.py`).
+Stateless Consume-Once HTTP Polling & Binary Streaming Routes (`app/infrastructure/http/routers/consume_once.py`).
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
+from concurrent.futures.process import BrokenProcessPool
 import logging
-import socket
-import struct
-import time
 from pathlib import Path
+import time
 from typing import Any, AsyncIterator, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-
-from concurrent.futures.process import BrokenProcessPool
 
 from app.config import settings
 from app.domain.entities import PanelGeometry
 from app.infrastructure.http.dependencies import get_orchestrator
 from app.infrastructure.rendering.dmdz_codec import (
     DMDZ_CODEC_ID,
-    DMDZ_MAGIC,
-    DMDZ_V2_CODEC_ID,
-    DMDZ_V2_VERSION,
-    DMDZ_VERSION,
     dmdz_sibling_path,
     ensure_dmdz_sibling,
-    normalize_stream_profile,
 )
 from app.models import DomainType, SessionRegisterRequest
 from app.scheduler.asset_builder import encode_dmdz_sibling_worker_task
@@ -38,30 +29,13 @@ from app.scheduler.worker_pool import batch_manager
 router = APIRouter()
 logger = logging.getLogger("dmd_showcase.http.stream")
 
-# Compact DMDZ frames (< 1.5 KB) may lead the real-time clock slightly so the client's ~5.7 KB
-# TCP window acts as a jitter buffer; larger video frames (> 1.5 KB) pace strictly 1-per-period
-# so NAT proxies never burst multiple multi-KB frames into a constrained ESP32 Wi-Fi RX queue.
-DMDZ_SEND_LEAD_S = 0.06
-DMDZ_WS_SEND_LEAD_S = 0.05
-DMDZ_LARGE_FRAME_BYTES = 1536
-DMDZ_SUBPACKET_BYTES = 1024
-DMDZ_WS_INITIAL_CREDITS = 2
-DMDZ_WS_ACK_TIMEOUT_S = 4.0
 
-
-async def _resolve_dmdz_sibling_nonblocking(
-    raw_stream_path: Path,
-    version: int = DMDZ_VERSION,
-    profile: str = "",
-) -> Optional[Path]:
+async def _resolve_dmdz_sibling_nonblocking(raw_stream_path: Path) -> Optional[Path]:
     """
-    Return an up-to-date `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2`), or `.dmdz2.sram.stream`
-    (`v2`, `profile='sram'`) sibling without blocking `uvicorn`'s main-process GIL.
+    Return an up-to-date lossless `.dmdz2.stream` sibling without blocking `uvicorn`'s main-process GIL.
     """
-    eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
-    norm_prof = normalize_stream_profile(profile) if eff_ver >= 2 else ""
     try:
-        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver, profile=norm_prof)
+        dest = dmdz_sibling_path(raw_stream_path)
         if dest.exists() and dest.stat().st_mtime >= raw_stream_path.stat().st_mtime:
             return dest
     except OSError:
@@ -70,33 +44,15 @@ async def _resolve_dmdz_sibling_nonblocking(
     loop = asyncio.get_running_loop()
     exec_pool = batch_manager.shared_executor()
     try:
-        if eff_ver == DMDZ_VERSION and not norm_prof:
-            out_str = await loop.run_in_executor(
-                exec_pool,
-                encode_dmdz_sibling_worker_task,
-                str(raw_stream_path),
-                settings.worker_nice_increment,
-            )
-        elif not norm_prof:
-            out_str = await loop.run_in_executor(
-                exec_pool,
-                encode_dmdz_sibling_worker_task,
-                str(raw_stream_path),
-                settings.worker_nice_increment,
-                eff_ver,
-            )
-        else:
-            out_str = await loop.run_in_executor(
-                exec_pool,
-                encode_dmdz_sibling_worker_task,
-                str(raw_stream_path),
-                settings.worker_nice_increment,
-                eff_ver,
-                norm_prof,
-            )
+        out_str = await loop.run_in_executor(
+            exec_pool,
+            encode_dmdz_sibling_worker_task,
+            str(raw_stream_path),
+            settings.worker_nice_increment,
+        )
         return Path(out_str) if out_str else None
     except BrokenProcessPool:
-        return ensure_dmdz_sibling(raw_stream_path, version=eff_ver, profile=norm_prof)
+        return ensure_dmdz_sibling(raw_stream_path)
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -231,52 +187,37 @@ async def stream_consume_once_poster(
 async def stream_consume_once_sequence(
     domain: DomainType,
     item_id: str,
-    background_tasks: BackgroundTasks,
     purge: bool = Query(
         default=True,
-        description="Purge package from disk immediately after HTTP TCP response completes (pass purge=false only when preloading before an explicit stop_stream purge)",
-    ),
-    paced: bool = Query(
-        default=False,
-        description="Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND",
-    ),
-    drop_late: bool = Query(
-        default=False,
-        description="Skip stale frames via wall-clock seek for HTTP/1.1 chunk-decoding clients (omits Content-Length and enables Transfer-Encoding: chunked; omit drop_late on raw unchunked lwip_socket readers)",
+        description="Purge package from disk immediately after HTTP TCP response completes (pass purge=false when preloading before an explicit MQTT stop_stream or HTTP DELETE purge).",
     ),
     codec: str = Query(
         default="",
-        description="Optional `DMDZ` stream codec (`dmdz1` or `dmdz2`). Supports both paced streaming (`paced=1`) and unpaced PSRAM bulk preload (`paced=0&purge=false&codec=dmdz2&profile=psram|psram_hd`) without `drop_late`; omit `codec` for raw `DMDS` (`ArcadeMatrix_RPi`).",
-    ),
-    profile: str = Query(
-        default="",
-        description="Optional hardware stream tier (`sram`, `psram`, or `psram_hd`) selecting `.dmdz2.sram.stream` (`sram`) or `.dmdz2.stream` (`psram`/`psram_hd`) and echoed in `X-DMD-Profile`.",
+        description="Optional lossless `DMDZ` v2 codec (`dmdz2` serves `.dmdz2.stream` with `X-DMD-Codec: dmdz2`; omit `codec` for raw `DMDS` `.rgb565.stream`).",
     ),
 ) -> Response:
     """
-    Stream the unified binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
-    for `item_id` over HTTP TCP (`MQTT+TCP` fallback, `HTTP` Consume-Once, PSRAM `dmdz2` bulk preload,
-    or high-RAM `ArcadeMatrix_RPi` raw `DMDS` preload) and purge consumed files once `purge=true` completes.
+    Serve the unified lossless 16-bit True-RGB565 binary sequence
+    (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`) over plain HTTP `1.1` with
+    deterministic `Content-Length`:
+    - **`esp32dev` (`0 KB` PSRAM)**: Downloads `?purge=false&codec=dmdz2` onto its `25 MHz` SD card
+      (`/cache/showcase_live.dmdz`) during the Info Card dwell, closes TCP (`0` Wi-Fi traffic during
+      playback), and decodes locally from SD into its Zero-Copy `SRAM1` Canvas.
+    - **`ESP32-S3` (Octal PSRAM)**: Preloads `?purge=false&codec=dmdz2` (`<= 4 MB`) directly into PSRAM
+      during the Info Card (`0` Wi-Fi traffic during playback), or streams oversized `256x64` HD clips
+      into a `1 MB` PSRAM SPSC ring buffer.
+    - **`ArcadeMatrix_RPi` (Linux RAM)**: Preloads `?purge=false&codec=dmdz2` (or raw `DMDS` when `codec`
+      is omitted) directly into RAM during the Info Card.
 
-    ### Adaptive Hardware Stream Tiers (`ESP32` / `ESP32-S3` / `ArcadeMatrix_RPi`)
-    - **`profile=sram` (`esp32dev` 0 PSRAM)**: Connects primarily via credit-acknowledged WebSocket
-      `WS /api/v1/{domain}/ws/{item_id}.dmdz?v=2&credits=4&chunk=1360&profile=sram` (`.dmdz2.sram.stream`,
-      hybrid True-RGB565 + `FRAME_PAL8` `0x05` capped `<= 1,400 B/frame`, coalesced `16 B` header + Frame `0`,
-      `2 ms` inter-chunk pacing) with paced HTTP `?paced=1&codec=dmdz2&profile=sram` fallback.
-    - **`profile=psram` / `profile=psram_hd` (`ESP32-S3` Octal PSRAM)**: Preloads unpaced True-RGB565
-      `dmdz2` (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`) directly into PSRAM during the
-      Card intro (`0` Wi-Fi traffic during playback, `24–30 FPS`), falling back to `WS ?v=2&credits=12..16&chunk=1400`.
-    - **`ArcadeMatrix_RPi` (Linux RAM)**: Calls `?purge=false|true` (no `codec`) to preload raw `DMDS`.
-
-    ### Binary `DMDZ` Container (`v1` `dmdz1` & `v2` `dmdz2` — `<4sBBHHHHH` 16-Byte Header)
-    - `0..3`: `"DMDZ"`, `4`: `version` (`1` or `2`), `5`: `fps`, `6..7`: `width`, `8..9`: `height`,
+    ### Binary Lossless `DMDZ` v2 Container (`codec=dmdz2` — `<4sBBHHHHH` 16-Byte Header)
+    - `0..3`: `"DMDZ"`, `4`: `version` (`2`), `5`: `fps`, `6..7`: `width`, `8..9`: `height`,
       `10..11`: `total_frames`, `12..13`: `frame_dur_ms`, `14..15`: `keyframe_interval`.
-    - `16..EOF`: Per frame `<H` `payload_len` + frame ops (`0=delta`, `1=scroll(dy)`, `2=keyframe`,
-      plus `v2` `3=scroll_2d(dx,dy)`, `4=raw`, and `5=pal8` scene-palette op stream).
+    - `16..EOF`: Per frame `<H` `payload_len` + lossless frame ops (`0=delta`, `1=scroll(dy)`,
+      `2=keyframe`, `3=scroll_2d(dx,dy)`, `4=raw`).
 
-    ### Binary Raw `DMDS` Header (`<4sBBHHHHH` 16 Bytes + `total_frames * width * height * 2` RGB565LE)
+    ### Binary Raw `DMDS` Container (`codec` omitted — `<4sBBHHHHH` 16 Bytes + RGB565LE Frames)
     - `0..3`: `"DMDS"`, `4`: `1`, `5`: `fps`, `6..7`: `width`, `8..9`: `height`, `10..11`: `total_frames`,
-      `12..13`: `frame_dur_ms`, `14..15`: `0`. Full WebSocket & UDP `DMDF` specs in `/asyncapi.yaml`.
+      `12..13`: `frame_dur_ms`, `14..15`: `0`.
     """
     co = get_orchestrator()
     pkg = co.active_packages.get(item_id)
@@ -299,453 +240,66 @@ async def stream_consume_once_sequence(
     stream_path = pkg.unified_stream_path
     file_size = stream_path.stat().st_size
     norm_codec = codec.strip().lower()
-    norm_profile = normalize_stream_profile(profile)
-    if not drop_late and norm_codec in (DMDZ_CODEC_ID, DMDZ_V2_CODEC_ID) and file_size > 16:
-        req_ver = DMDZ_V2_VERSION if norm_codec == DMDZ_V2_CODEC_ID else DMDZ_VERSION
-        dmdz_path = await _resolve_dmdz_sibling_nonblocking(
-            stream_path, version=req_ver, profile=norm_profile
-        )
-        if dmdz_path is not None:
-            if paced:
-                return _paced_dmdz_response(
-                    co, pkg, domain, item_id, dmdz_path, purge, codec_id=norm_codec, profile=norm_profile
-                )
+    if norm_codec == DMDZ_CODEC_ID and file_size > 16:
+        dmdz_path = await _resolve_dmdz_sibling_nonblocking(stream_path)
+        if dmdz_path is not None and dmdz_path.exists():
             stream_path = dmdz_path
             file_size = dmdz_path.stat().st_size
-    if paced and file_size > 16:
-        with stream_path.open("rb") as probe_fh:
-            hdr = probe_fh.read(16)
-        if len(hdr) == 16 and hdr[:4] == b"DMDS":
-            _, _ver, hdr_fps, width, height, _total_frames, _frame_dur_ms, _res = struct.unpack(
-                "<4sBBHHHHH", hdr
-            )
-            frame_bytes = max(2, int(width) * int(height) * 2)
-            eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
-            total_frames_avail = max(1, (file_size - 16) // frame_bytes)
-            claim_key = (pkg.dmd_id, domain)
 
-            async def _paced_dmds_generator() -> AsyncIterator[bytes]:
-                fh = stream_path.open("rb")
-                co.state.active_tcp_streams += 1
-                try:
-                    now_wall = time.time()
-                    co.state.client_last_seen[claim_key] = now_wall
-                    co.state.last_claimed_until[claim_key] = now_wall + 15.0
-                    first_payload = fh.read(16 + frame_bytes)
-                    if first_payload:
-                        yield first_payload
-                    t0 = time.perf_counter()
-                    frame_idx = 1
-                    frame_period_s = 1.0 / float(eff_fps)
-                    while frame_idx < total_frames_avail:
-                        target_t = t0 + (frame_idx * frame_period_s)
-                        now_perf = time.perf_counter()
-                        sleep_s = target_t - now_perf
-                        if sleep_s > 0.001:
-                            await asyncio.sleep(sleep_s)
-                            now_perf = time.perf_counter()
-                            sleep_s = target_t - now_perf
-                        if drop_late and sleep_s < -(1.25 * frame_period_s):
-                            due_frame = int((now_perf - t0) * float(eff_fps))
-                            if due_frame >= total_frames_avail:
-                                break
-                            if due_frame > frame_idx:
-                                frame_idx = due_frame
-                                fh.seek(16 + frame_idx * frame_bytes)
-                        elif not drop_late and sleep_s <= 0.001:
-                            if sleep_s < -frame_period_s:
-                                # Re-anchor monotonic clock as soon as the stream falls >1 frame behind
-                                # so subsequent frames resume smooth nominal FPS instead of bursting at 30+ FPS.
-                                t0 = now_perf - (frame_idx * frame_period_s)
-                            await asyncio.sleep(0.0015)
-
-                        chunk = fh.read(frame_bytes)
-                        if not chunk:
-                            break
-                        if (frame_idx % 15) == 0:
-                            ts_now = time.time()
-                            co.state.client_last_seen[claim_key] = ts_now
-                            co.state.last_claimed_until[claim_key] = ts_now + 15.0
-                        yield chunk
-                        frame_idx += 1
-                finally:
-                    co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
-                    fh.close()
-                    co.state.last_claimed_until.pop(claim_key, None)
-                    if purge:
-                        await co.purge_consumed_package(item_id)
-
-            paced_headers: Dict[str, str] = {
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "X-DMD-Consume-Once": "1",
-                "X-DMD-Paced": "1",
-                "X-Accel-Buffering": "no",
-            }
-            if drop_late:
-                paced_headers["X-DMD-Drop-Late"] = "1"
-            else:
-                paced_headers["Content-Length"] = str(file_size)
-
-            return StreamingResponse(
-                _paced_dmds_generator(),
-                media_type="application/octet-stream",
-                headers=paced_headers,
-            )
-
-    async def _chunked_dmds_generator() -> AsyncIterator[bytes]:
+    async def _stream_file_generator() -> AsyncIterator[bytes]:
         fh = stream_path.open("rb")
+        started = time.perf_counter()
+        sent_bytes = 0
         try:
             while True:
                 block = fh.read(65536)
                 if not block:
                     break
+                sent_bytes += len(block)
                 yield block
         finally:
             fh.close()
-            if purge:
-                await co.purge_consumed_package(item_id)
-
-    unpaced_headers: Dict[str, str] = {
-        "Content-Length": str(file_size),
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-        "X-DMD-Consume-Once": "1",
-    }
-    if stream_path != pkg.unified_stream_path and norm_codec in (DMDZ_CODEC_ID, DMDZ_V2_CODEC_ID):
-        unpaced_headers["X-DMD-Codec"] = norm_codec
-        if norm_profile:
-            unpaced_headers["X-DMD-Profile"] = norm_profile
-
-    return StreamingResponse(
-        _chunked_dmds_generator(),
-        media_type="application/octet-stream",
-        headers=unpaced_headers,
-    )
-
-
-def _paced_dmdz_response(
-    co: Any,
-    pkg: Any,
-    domain: str,
-    item_id: str,
-    dmdz_path: Path,
-    purge: bool,
-    codec_id: str = DMDZ_CODEC_ID,
-    profile: str = "",
-) -> Response:
-    """
-    Serve the lossless `DMDZ` sibling of a unified stream with lead pacing.
-
-    Frames are sent up to `DMDZ_SEND_LEAD_S` ahead of the real-time clock: compressed frames are small
-    enough for several to sit in an embedded client's TCP window, which presents them on its own clock.
-    TCP backpressure (window full) re-anchors the server clock instead of triggering catch-up bursts.
-    """
-    file_size = dmdz_path.stat().st_size
-    with dmdz_path.open("rb") as probe_fh:
-        hdr = probe_fh.read(16)
-    _, _ver, hdr_fps, _w, _h, total_frames, _dur, _kf = struct.unpack("<4sBBHHHHH", hdr)
-    if hdr[:4] != DMDZ_MAGIC:
-        raise HTTPException(status_code=500, detail="Corrupted DMDZ stream sibling.")
-    eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
-    claim_key = (pkg.dmd_id, domain)
-
-    async def _generator() -> AsyncIterator[bytes]:
-        fh = dmdz_path.open("rb")
-        co.state.active_tcp_streams += 1
-        sent = 0
-        reanchors = 0
-        max_block_ms = 0.0
-        started = time.perf_counter()
-        try:
-            now_wall = time.time()
-            co.state.client_last_seen[claim_key] = now_wall
-            co.state.last_claimed_until[claim_key] = now_wall + 15.0
-            header = fh.read(16)
-            period = 1.0 / float(eff_fps)
-            t0 = time.perf_counter()
-            pending = header
-            prev_wire_bytes = 0
-            for frame_idx in range(int(total_frames)):
-                size_raw = fh.read(2)
-                if len(size_raw) < 2:
-                    break
-                (length,) = struct.unpack("<H", size_raw)
-                payload = fh.read(length)
-                if len(payload) < length:
-                    break
-                wire_chunk = pending + size_raw + payload
-                if frame_idx > 0:
-                    eff_lead = (
-                        0.0
-                        if (prev_wire_bytes >= DMDZ_LARGE_FRAME_BYTES or len(wire_chunk) >= DMDZ_LARGE_FRAME_BYTES)
-                        else min(DMDZ_SEND_LEAD_S, period)
-                    )
-                    target_t = t0 + (frame_idx * period) - eff_lead
-                    delay = target_t - time.perf_counter()
-                    if delay > 0.001:
-                        await asyncio.sleep(delay)
-                    elif delay < -(period + eff_lead):
-                        t0 = time.perf_counter() - (frame_idx * period) + eff_lead
-                        reanchors += 1
-                if (frame_idx % 15) == 0:
-                    ts_now = time.time()
-                    co.state.client_last_seen[claim_key] = ts_now
-                    co.state.last_claimed_until[claim_key] = ts_now + 15.0
-                block_t = time.perf_counter()
-                if len(wire_chunk) <= DMDZ_SUBPACKET_BYTES:
-                    yield wire_chunk
-                else:
-                    for off in range(0, len(wire_chunk), DMDZ_SUBPACKET_BYTES):
-                        if off > 0:
-                            await asyncio.sleep(0.002)
-                        yield wire_chunk[off : off + DMDZ_SUBPACKET_BYTES]
-                max_block_ms = max(max_block_ms, (time.perf_counter() - block_t) * 1000.0)
-                prev_wire_bytes = len(wire_chunk)
-                pending = b""
-                sent += 1
-        finally:
-            co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
-            fh.close()
-            co.state.last_claimed_until.pop(claim_key, None)
             logger.info(
-                "[STREAM] %s '%s' -> %s: frames=%d/%d dur=%.1fs reanchors=%d max_send_block=%.0fms size=%dB",
-                codec_id,
+                "[STREAM] %s '%s' -> %s: bytes=%d/%d dur=%.2fs purge=%s",
+                norm_codec or "dmds",
                 item_id,
                 pkg.dmd_id,
-                sent,
-                int(total_frames),
-                time.perf_counter() - started,
-                reanchors,
-                max_block_ms,
+                sent_bytes,
                 file_size,
+                time.perf_counter() - started,
+                purge,
             )
             if purge:
                 await co.purge_consumed_package(item_id)
 
-    paced_dmdz_headers: Dict[str, str] = {
+    headers: Dict[str, str] = {
+        "Content-Length": str(file_size),
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "X-DMD-Consume-Once": "1",
-        "X-DMD-Paced": "1",
-        "X-DMD-Codec": codec_id,
-        "X-Accel-Buffering": "no",
-        "Content-Length": str(file_size),
     }
-    if profile:
-        paced_dmdz_headers["X-DMD-Profile"] = profile
+    if stream_path != pkg.unified_stream_path and norm_codec == DMDZ_CODEC_ID:
+        headers["X-DMD-Codec"] = DMDZ_CODEC_ID
 
     return StreamingResponse(
-        _generator(),
+        _stream_file_generator(),
         media_type="application/octet-stream",
-        headers=paced_dmdz_headers,
+        headers=headers,
     )
 
 
-@router.websocket("/api/v1/{domain}/ws/{item_id}.dmdz")
-async def stream_consume_once_dmdz_ws(
-    websocket: WebSocket,
+@router.delete("/api/v1/{domain}/stream/{item_id}.rgb565.stream", tags=["Consume-Once Protocol"])
+async def purge_consume_once_sequence(
     domain: DomainType,
     item_id: str,
-    purge: bool = Query(default=True),
-    client_id: Optional[str] = Query(default=None),
-    credits_window: int = Query(default=DMDZ_WS_INITIAL_CREDITS, alias="credits"),
-    codec_version: int = Query(default=DMDZ_VERSION, alias="v"),
-    chunk_bytes: int = Query(default=DMDZ_SUBPACKET_BYTES, alias="chunk"),
-    profile: str = Query(default=""),
-) -> None:
+) -> Dict[str, str]:
     """
-    ZeDMD-style credit-acknowledged `DMDZ` (`v1` / `v2`) WebSocket stream for ESP32 & ESP32-S3 clients.
-
-    - Supports adaptive `profile=sram|psram|psram_hd` (`sram` serves `.dmdz2.sram.stream` with `FRAME_PAL8`
-      `<= 1,400 B` ceiling and `2 ms` inter-chunk pacing; `psram`/`psram_hd` serve True-RGB565 `.dmdz2.stream`).
-    - Coalesces the 16-byte `DMDZ` header with Frame `0` into the initial WebSocket message window, saving a
-      full round-trip ACK before first-pixel display.
+    Idempotently purge a consumed package that was preloaded with `purge=false`
+    (HTTP equivalent of publishing MQTT `{"action": "stop_stream", "purge": true}`).
     """
     co = get_orchestrator()
-    pkg = co.active_packages.get(item_id)
-    if pkg is None:
-        for (slot_dmd, slot_dom), rpkg in list(co.ready_packages.items()):
-            if rpkg.item_id == item_id:
-                pkg = await co.claim_next_package(slot_dmd, slot_dom, item_id=item_id)
-                break
-    if pkg is None or not pkg.unified_stream_path or not pkg.unified_stream_path.exists():
-        await websocket.close(code=1008)
-        return
-
-    norm_profile = normalize_stream_profile(profile)
-    req_ver = DMDZ_V2_VERSION if int(codec_version) >= 2 else DMDZ_VERSION
-    eff_chunk_bytes = max(256, min(1400, int(chunk_bytes)))
-    dmdz_path = await _resolve_dmdz_sibling_nonblocking(
-        pkg.unified_stream_path, version=req_ver, profile=norm_profile
-    )
-    if (dmdz_path is None or not dmdz_path.exists()) and norm_profile:
-        dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=req_ver)
-    if (dmdz_path is None or not dmdz_path.exists()) and req_ver != DMDZ_VERSION:
-        dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=DMDZ_VERSION)
-    if dmdz_path is None or not dmdz_path.exists():
-        await websocket.close(code=1011)
-        return
-
-    with dmdz_path.open("rb") as probe_fh:
-        hdr = probe_fh.read(16)
-    if len(hdr) < 16 or hdr[:4] != DMDZ_MAGIC:
-        await websocket.close(code=1011)
-        return
-
-    _, hdr_ver, hdr_fps, _w, _h, total_frames, _dur, _kf = struct.unpack("<4sBBHHHHH", hdr)
-    eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
-    file_size = dmdz_path.stat().st_size
-    effective_dmd = (client_id or "").strip() or pkg.dmd_id
-    claim_key = (pkg.dmd_id, domain)
-    if claim_key in co.state.client_configs and co.state.client_transports.get(claim_key) != "HTTP":
-        co.state.client_transports[claim_key] = "MQTT+TCP"
-
-    await websocket.accept()
-    with contextlib.suppress(Exception):
-        transport = websocket.scope.get("transport") if isinstance(websocket.scope, dict) else None
-        raw_sock = transport.get_extra_info("socket") if transport is not None else None
-        if raw_sock is not None:
-            raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-    credits_window = max(1, min(16, int(credits_window)))
-    credits = credits_window
-    peer_closed = False
-    credit_evt = asyncio.Event()
-    credit_evt.set()
-
-    async def _ack_reader() -> None:
-        nonlocal credits, peer_closed
-        try:
-            while True:
-                msg = await websocket.receive()
-                mtype = msg.get("type")
-                if mtype == "websocket.disconnect":
-                    peer_closed = True
-                    credit_evt.set()
-                    return
-                raw_b = msg.get("bytes")
-                raw_t = msg.get("text")
-                inc = len(raw_b) if raw_b else (len(raw_t) if raw_t else 0)
-                if inc > 0:
-                    credits += inc
-                    credit_evt.set()
-        except (WebSocketDisconnect, RuntimeError, OSError):
-            peer_closed = True
-            credit_evt.set()
-
-    async def _send_credited(chunk: bytes) -> bool:
-        nonlocal credits
-        while credits <= 0 and not peer_closed:
-            credit_evt.clear()
-            if credits > 0 or peer_closed:
-                break
-            try:
-                await asyncio.wait_for(credit_evt.wait(), timeout=DMDZ_WS_ACK_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                return False
-        if peer_closed:
-            return False
-        credits -= 1
-        await websocket.send_bytes(chunk)
-        return True
-
-    ack_task = asyncio.create_task(_ack_reader())
-    fh = dmdz_path.open("rb")
-    co.state.active_tcp_streams += 1
-    sent_frames = 0
-    reanchors = 0
-    started = time.perf_counter()
-    end_reason = "eof"
-    try:
-        now_wall = time.time()
-        co.state.client_last_seen[claim_key] = now_wall
-        co.state.last_claimed_until[claim_key] = now_wall + 15.0
-        header = fh.read(16)
-        if int(total_frames) <= 0:
-            if not await _send_credited(header):
-                end_reason = "hdr_abort"
-            return
-
-        period = 1.0 / float(eff_fps)
-        if norm_profile in ("psram", "psram_hd"):
-            lead_cap_s = 0.20
-        elif int(hdr_ver) >= 2 and credits_window >= 4:
-            lead_cap_s = 0.08
-        else:
-            lead_cap_s = DMDZ_WS_SEND_LEAD_S
-        eff_ws_lead = min(lead_cap_s, max(period, float(credits_window) * period * 0.75))
-        t0 = time.perf_counter()
-        for frame_idx in range(int(total_frames)):
-            size_raw = fh.read(2)
-            if len(size_raw) < 2:
-                break
-            (length,) = struct.unpack("<H", size_raw)
-            payload = fh.read(length)
-            if len(payload) < length:
-                break
-            if frame_idx > 0:
-                target_t = t0 + (frame_idx * period) - eff_ws_lead
-                delay = target_t - time.perf_counter()
-                if delay > 0.001:
-                    await asyncio.sleep(delay)
-                elif delay < -(period + eff_ws_lead):
-                    t0 = time.perf_counter() - (frame_idx * period) + eff_ws_lead
-                    reanchors += 1
-            if (frame_idx % 15) == 0:
-                ts_now = time.time()
-                co.state.client_last_seen[claim_key] = ts_now
-                co.state.last_claimed_until[claim_key] = ts_now + 15.0
-
-            wire_frame = (header + size_raw + payload) if frame_idx == 0 else (size_raw + payload)
-            ok_frame = True
-            for off in range(0, len(wire_frame), eff_chunk_bytes):
-                if off > 0 and norm_profile == "sram":
-                    await asyncio.sleep(0.002)
-                if not await _send_credited(wire_frame[off : off + eff_chunk_bytes]):
-                    ok_frame = False
-                    break
-            if not ok_frame:
-                end_reason = "peer_closed" if peer_closed else "ack_timeout"
-                break
-            sent_frames += 1
-
-        # Wait briefly for final in-flight ACKs so TCP never closes before ESP32 drains the tail
-        drain_deadline = time.perf_counter() + 0.8
-        while (
-            sent_frames == int(total_frames)
-            and credits < credits_window
-            and not peer_closed
-            and time.perf_counter() < drain_deadline
-        ):
-            credit_evt.clear()
-            if credits >= credits_window or peer_closed:
-                break
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(credit_evt.wait(), timeout=0.1)
-    except (WebSocketDisconnect, RuntimeError, OSError):
-        end_reason = "peer_closed"
-    finally:
-        ack_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await ack_task
-        with contextlib.suppress(Exception):
-            if not peer_closed:
-                await websocket.close()
-        co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
-        fh.close()
-        co.state.last_claimed_until.pop(claim_key, None)
-        ws_codec_tag = "ws-dmdz2" if int(hdr_ver) >= 2 else "ws-dmdz1"
-        if norm_profile:
-            ws_codec_tag = f"{ws_codec_tag}:{norm_profile}"
-        logger.info(
-            "[STREAM] %s '%s' -> %s (%s): frames=%d/%d dur=%.1fs reanchors=%d size=%dB",
-            ws_codec_tag,
-            item_id,
-            effective_dmd,
-            end_reason,
-            sent_frames,
-            int(total_frames),
-            time.perf_counter() - started,
-            reanchors,
-            file_size,
-        )
-        if purge:
-            await co.purge_consumed_package(item_id)
+    await co.purge_consumed_package(item_id)
+    return {
+        "status": "purged",
+        "domain": domain,
+        "item_id": item_id,
+    }

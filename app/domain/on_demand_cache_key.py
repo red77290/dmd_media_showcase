@@ -30,8 +30,8 @@ _ROM_EXT_RE = re.compile(
 _SAFE_TOKEN_RE = re.compile(r"[^a-z0-9]+")
 
 # Bumped whenever the binary RGB565 / DMDZ rendering pipeline changes materially so legacy
-# 256-color GIF-quantized or oversaturated cached packages are cleanly invalidated on disk.
-STREAM_PIPELINE_VERSION = "true565_dmdz_v2"
+# 256-color GIF-quantized or degraded-colorimetry cached packages are cleanly invalidated on disk.
+STREAM_PIPELINE_VERSION = "led_boost_dmdz_v2"
 
 
 @dataclass(frozen=True)

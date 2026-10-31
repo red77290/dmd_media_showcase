@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DMD Media Showcase Server API",
-    "summary": "DMD Media Showcase Server (MQTT Retain + Credit-Acked WebSocket DMDZ, HTTP DMDS & UDP DMDF) for HUB75 LED Matrices",
-    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **3-Tier Adaptive Streaming Transport (`profile=sram | psram | psram_hd`)**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n  1. **Credit-Acknowledged `DMDZ` v2 WebSocket (`WS /api/v1/{domain}/ws/{item_id}.dmdz`)** — primary data plane for `esp32dev` (`profile=sram`: hybrid True-RGB565 + `FRAME_PAL8` `0x05` capped `<= 1,400 B/frame`, `credits=4&chunk=1360`, coalesced `16 B` header + Frame `0`, `2 ms` inter-chunk pacing) and live fallback for `ESP32-S3` (`profile=psram|psram_hd`, `credits=12..16&chunk=1400`),\n  2. **HTTP TCP `DMDZ` / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)** — unpaced PSRAM bulk preload (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`, `0` Wi-Fi traffic during playback at `24–30 FPS`), paced `?paced=1&codec=dmdz2|dmdz1` fallback, and unpaced raw `DMDS` preload for `ArcadeMatrix_RPi`,\n  3. **Passive UDP `DMDF` (`:4210`, `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml).",
+    "summary": "DMD Media Showcase Server (MQTT Retain + Lossless HTTP DMDZ v2 / DMDS & Passive UDP DMDF) for HUB75 LED Matrices",
+    "description": "Self-hosted multilingual media & video trailer streaming server for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n### Architecture Highlights\n- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n- **Lossless 16-Bit True-RGB565 Streaming (`MQTT+TCP` Default)**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n  1. **Plain HTTP `1.1` `Content-Length` Lossless `DMDZ` v2 / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?codec=dmdz2`)** — downloaded during the Info Card onto `esp32dev`'s `25 MHz` SD card (`0` Wi-Fi traffic during playback, Zero-Copy `SRAM1` Canvas), preloaded directly into `ESP32-S3` Octal PSRAM (`<= 4 MB`, or streamed via a `1 MB` PSRAM SPSC ring for oversized `256x64` HD clips), and preloaded into RAM on `ArcadeMatrix_RPi`,\n  2. **Passive UDP `DMDF` (`:4210`, `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml).",
     "version": "1.1.4"
   },
   "paths": {
@@ -12,12 +12,12 @@
         "tags": [
           "System & Admin"
         ],
-        "summary": "Get AsyncAPI 2.6 Specification (MQTT 3.1.1, Credit-Acked WebSocket DMDZ & UDP DMDF Streaming)",
-        "description": "Serve the authoritative AsyncAPI 2.6.0 specification describing:\n- MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `stream_state`)\n- Credit-acknowledged `DMDZ` (`v1`/`v2`) WebSocket streaming (`WS /api/v1/{domain}/ws/{item_id}.dmdz`, `profile=sram|psram|psram_hd`, coalesced `16 B` header + Frame `0`, `<= 1,400 B` `FRAME_PAL8` SRAM cap + `'A'` credit ACKs)\n- Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE)",
+        "summary": "Get AsyncAPI 2.6 Specification (MQTT 3.1.1 Control Plane & Passive UDP DMDF Streaming)",
+        "description": "Serve the authoritative AsyncAPI 2.6.0 specification describing:\n- MQTT 3.1.1 retained & event channels (`status`, `referential`, `config`, `ready`, `events`, `command`, `stream_state`)\n- Plain HTTP `1.1` `Content-Length` lossless `DMDZ` v2 (`.dmdz2.stream`, `?codec=dmdz2`) & raw `DMDS` (`.rgb565.stream`) handoff\n- Real-time UDP `DMDF` binary frame chunk datagrams (`10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE)",
         "operationId": "get_asyncapi_spec_api_v1_asyncapi_yaml_get",
         "responses": {
           "200": {
-            "description": "AsyncAPI 2.6.0 YAML specification for MQTT `:1883` topics, credit-acked WebSocket `DMDZ` (`/api/v1/{domain}/ws/{item_id}.dmdz`), and UDP `DMDF` `<4sHBBH` frame datagrams.",
+            "description": "AsyncAPI 2.6.0 YAML specification for MQTT `:1883` topics and UDP `DMDF` `<4sHBBH` frame datagrams.",
             "content": {
               "application/json": {
                 "schema": {}
@@ -1578,7 +1578,7 @@
           "Consume-Once Protocol"
         ],
         "summary": "Stream Consume Once Sequence",
-        "description": "Stream the unified binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)\nfor `item_id` over HTTP TCP (`MQTT+TCP` fallback, `HTTP` Consume-Once, PSRAM `dmdz2` bulk preload,\nor high-RAM `ArcadeMatrix_RPi` raw `DMDS` preload) and purge consumed files once `purge=true` completes.\n\n### Adaptive Hardware Stream Tiers (`ESP32` / `ESP32-S3` / `ArcadeMatrix_RPi`)\n- **`profile=sram` (`esp32dev` 0 PSRAM)**: Connects primarily via credit-acknowledged WebSocket\n  `WS /api/v1/{domain}/ws/{item_id}.dmdz?v=2&credits=4&chunk=1360&profile=sram` (`.dmdz2.sram.stream`,\n  hybrid True-RGB565 + `FRAME_PAL8` `0x05` capped `<= 1,400 B/frame`, coalesced `16 B` header + Frame `0`,\n  `2 ms` inter-chunk pacing) with paced HTTP `?paced=1&codec=dmdz2&profile=sram` fallback.\n- **`profile=psram` / `profile=psram_hd` (`ESP32-S3` Octal PSRAM)**: Preloads unpaced True-RGB565\n  `dmdz2` (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`) directly into PSRAM during the\n  Card intro (`0` Wi-Fi traffic during playback, `24–30 FPS`), falling back to `WS ?v=2&credits=12..16&chunk=1400`.\n- **`ArcadeMatrix_RPi` (Linux RAM)**: Calls `?purge=false|true` (no `codec`) to preload raw `DMDS`.\n\n### Binary `DMDZ` Container (`v1` `dmdz1` & `v2` `dmdz2` — `<4sBBHHHHH` 16-Byte Header)\n- `0..3`: `\"DMDZ\"`, `4`: `version` (`1` or `2`), `5`: `fps`, `6..7`: `width`, `8..9`: `height`,\n  `10..11`: `total_frames`, `12..13`: `frame_dur_ms`, `14..15`: `keyframe_interval`.\n- `16..EOF`: Per frame `<H` `payload_len` + frame ops (`0=delta`, `1=scroll(dy)`, `2=keyframe`,\n  plus `v2` `3=scroll_2d(dx,dy)`, `4=raw`, and `5=pal8` scene-palette op stream).\n\n### Binary Raw `DMDS` Header (`<4sBBHHHHH` 16 Bytes + `total_frames * width * height * 2` RGB565LE)\n- `0..3`: `\"DMDS\"`, `4`: `1`, `5`: `fps`, `6..7`: `width`, `8..9`: `height`, `10..11`: `total_frames`,\n  `12..13`: `frame_dur_ms`, `14..15`: `0`. Full WebSocket & UDP `DMDF` specs in `/asyncapi.yaml`.",
+        "description": "Serve the unified lossless 16-bit True-RGB565 binary sequence\n(`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`) over plain HTTP `1.1` with\ndeterministic `Content-Length`:\n- **`esp32dev` (`0 KB` PSRAM)**: Downloads `?purge=false&codec=dmdz2` onto its `25 MHz` SD card\n  (`/cache/showcase_live.dmdz`) during the Info Card dwell, closes TCP (`0` Wi-Fi traffic during\n  playback), and decodes locally from SD into its Zero-Copy `SRAM1` Canvas.\n- **`ESP32-S3` (Octal PSRAM)**: Preloads `?purge=false&codec=dmdz2` (`<= 4 MB`) directly into PSRAM\n  during the Info Card (`0` Wi-Fi traffic during playback), or streams oversized `256x64` HD clips\n  into a `1 MB` PSRAM SPSC ring buffer.\n- **`ArcadeMatrix_RPi` (Linux RAM)**: Preloads `?purge=false&codec=dmdz2` (or raw `DMDS` when `codec`\n  is omitted) directly into RAM during the Info Card.\n\n### Binary Lossless `DMDZ` v2 Container (`codec=dmdz2` — `<4sBBHHHHH` 16-Byte Header)\n- `0..3`: `\"DMDZ\"`, `4`: `version` (`2`), `5`: `fps`, `6..7`: `width`, `8..9`: `height`,\n  `10..11`: `total_frames`, `12..13`: `frame_dur_ms`, `14..15`: `keyframe_interval`.\n- `16..EOF`: Per frame `<H` `payload_len` + lossless frame ops (`0=delta`, `1=scroll(dy)`,\n  `2=keyframe`, `3=scroll_2d(dx,dy)`, `4=raw`).\n\n### Binary Raw `DMDS` Container (`codec` omitted — `<4sBBHHHHH` 16 Bytes + RGB565LE Frames)\n- `0..3`: `\"DMDS\"`, `4`: `1`, `5`: `fps`, `6..7`: `width`, `8..9`: `height`, `10..11`: `total_frames`,\n  `12..13`: `frame_dur_ms`, `14..15`: `0`.",
         "operationId": "stream_consume_once_sequence_api_v1__domain__stream__item_id__rgb565_stream_get",
         "parameters": [
           {
@@ -1611,35 +1611,11 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "Purge package from disk immediately after HTTP TCP response completes (pass purge=false only when preloading before an explicit stop_stream purge)",
+              "description": "Purge package from disk immediately after HTTP TCP response completes (pass purge=false when preloading before an explicit MQTT stop_stream or HTTP DELETE purge).",
               "default": true,
               "title": "Purge"
             },
-            "description": "Purge package from disk immediately after HTTP TCP response completes (pass purge=false only when preloading before an explicit stop_stream purge)"
-          },
-          {
-            "name": "paced",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "description": "Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND",
-              "default": false,
-              "title": "Paced"
-            },
-            "description": "Pace DMDS frames in real time at header FPS so constrained embedded TCP clients never stall LwIP TCP_WND"
-          },
-          {
-            "name": "drop_late",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "description": "Skip stale frames via wall-clock seek for HTTP/1.1 chunk-decoding clients (omits Content-Length and enables Transfer-Encoding: chunked; omit drop_late on raw unchunked lwip_socket readers)",
-              "default": false,
-              "title": "Drop Late"
-            },
-            "description": "Skip stale frames via wall-clock seek for HTTP/1.1 chunk-decoding clients (omits Content-Length and enables Transfer-Encoding: chunked; omit drop_late on raw unchunked lwip_socket readers)"
+            "description": "Purge package from disk immediately after HTTP TCP response completes (pass purge=false when preloading before an explicit MQTT stop_stream or HTTP DELETE purge)."
           },
           {
             "name": "codec",
@@ -1647,23 +1623,11 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "Optional `DMDZ` stream codec (`dmdz1` or `dmdz2`). Supports both paced streaming (`paced=1`) and unpaced PSRAM bulk preload (`paced=0&purge=false&codec=dmdz2&profile=psram|psram_hd`) without `drop_late`; omit `codec` for raw `DMDS` (`ArcadeMatrix_RPi`).",
+              "description": "Optional lossless `DMDZ` v2 codec (`dmdz2` serves `.dmdz2.stream` with `X-DMD-Codec: dmdz2`; omit `codec` for raw `DMDS` `.rgb565.stream`).",
               "default": "",
               "title": "Codec"
             },
-            "description": "Optional `DMDZ` stream codec (`dmdz1` or `dmdz2`). Supports both paced streaming (`paced=1`) and unpaced PSRAM bulk preload (`paced=0&purge=false&codec=dmdz2&profile=psram|psram_hd`) without `drop_late`; omit `codec` for raw `DMDS` (`ArcadeMatrix_RPi`)."
-          },
-          {
-            "name": "profile",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "description": "Optional hardware stream tier (`sram`, `psram`, or `psram_hd`) selecting `.dmdz2.sram.stream` (`sram`) or `.dmdz2.stream` (`psram`/`psram_hd`) and echoed in `X-DMD-Profile`.",
-              "default": "",
-              "title": "Profile"
-            },
-            "description": "Optional hardware stream tier (`sram`, `psram`, or `psram_hd`) selecting `.dmdz2.sram.stream` (`sram`) or `.dmdz2.stream` (`psram`/`psram_hd`) and echoed in `X-DMD-Profile`."
+            "description": "Optional lossless `DMDZ` v2 codec (`dmdz2` serves `.dmdz2.stream` with `X-DMD-Codec: dmdz2`; omit `codec` for raw `DMDS` `.rgb565.stream`)."
           }
         ],
         "responses": {
@@ -1672,6 +1636,66 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Consume-Once Protocol"
+        ],
+        "summary": "Purge Consume Once Sequence",
+        "description": "Idempotently purge a consumed package that was preloaded with `purge=false`\n(HTTP equivalent of publishing MQTT `{\"action\": \"stop_stream\", \"purge\": true}`).",
+        "operationId": "purge_consume_once_sequence_api_v1__domain__stream__item_id__rgb565_stream_delete",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "games",
+                "movies",
+                "series",
+                "anime"
+              ],
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Purge Consume Once Sequence Api V1  Domain  Stream  Item Id  Rgb565 Stream Delete"
+                }
               }
             }
           },
@@ -5552,7 +5576,7 @@
     },
     {
       "name": "Consume-Once Protocol",
-      "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`, plus credit-acked lossless WebSocket `WS /api/v1/{domain}/ws/{item_id}.dmdz`) with automatic disk purge after playback."
+      "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `GET/DELETE /stream/{item_id}.rgb565.stream?codec=dmdz2`) with deterministic `Content-Length` and automatic disk purge after playback."
     },
     {
       "name": "DMD Rotation Protocol",

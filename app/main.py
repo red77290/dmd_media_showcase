@@ -111,7 +111,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Consume-Once Protocol",
-        "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `/stream/{item_id}.rgb565.stream`, plus credit-acked lossless WebSocket `WS /api/v1/{domain}/ws/{item_id}.dmdz`) with automatic disk purge after playback.",
+        "description": "Stateless Consume-Once endpoints (`/config`, `/next`, `GET/DELETE /stream/{item_id}.rgb565.stream?codec=dmdz2`) with deterministic `Content-Length` and automatic disk purge after playback.",
     },
     {
         "name": "DMD Rotation Protocol",
@@ -165,17 +165,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="DMD Media Showcase Server API",
-    summary="DMD Media Showcase Server (MQTT Retain + Credit-Acked WebSocket DMDZ, HTTP DMDS & UDP DMDF) for HUB75 LED Matrices",
+    summary="DMD Media Showcase Server (MQTT Retain + Lossless HTTP DMDZ v2 / DMDS & Passive UDP DMDF) for HUB75 LED Matrices",
     description=(
         "Self-hosted multilingual media & video trailer streaming server "
         "for **ArcadeMatrix (ESP32 / ESP32-S3)** and **ArcadeMatrix_RPi** LED matrices.\n\n"
         "### Architecture Highlights\n"
         "- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
-        "- **3-Tier Adaptive Streaming Transport (`profile=sram | psram | psram_hd`)**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n"
-        "  1. **Credit-Acknowledged `DMDZ` v2 WebSocket (`WS /api/v1/{domain}/ws/{item_id}.dmdz`)** — primary data plane for `esp32dev` (`profile=sram`: hybrid True-RGB565 + `FRAME_PAL8` `0x05` capped `<= 1,400 B/frame`, `credits=4&chunk=1360`, coalesced `16 B` header + Frame `0`, `2 ms` inter-chunk pacing) and live fallback for `ESP32-S3` (`profile=psram|psram_hd`, `credits=12..16&chunk=1400`),\n"
-        "  2. **HTTP TCP `DMDZ` / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)** — unpaced PSRAM bulk preload (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`, `0` Wi-Fi traffic during playback at `24–30 FPS`), paced `?paced=1&codec=dmdz2|dmdz1` fallback, and unpaced raw `DMDS` preload for `ArcadeMatrix_RPi`,\n"
-        "  3. **Passive UDP `DMDF` (`:4210`, `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
+        "- **Lossless 16-Bit True-RGB565 Streaming (`MQTT+TCP` Default)**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n"
+        "  1. **Plain HTTP `1.1` `Content-Length` Lossless `DMDZ` v2 / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?codec=dmdz2`)** — downloaded during the Info Card onto `esp32dev`'s `25 MHz` SD card (`0` Wi-Fi traffic during playback, Zero-Copy `SRAM1` Canvas), preloaded directly into `ESP32-S3` Octal PSRAM (`<= 4 MB`, or streamed via a `1 MB` PSRAM SPSC ring for oversized `256x64` HD clips), and preloaded into RAM on `ArcadeMatrix_RPi`,\n"
+        "  2. **Passive UDP `DMDF` (`:4210`, `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
     ),
     version=__version__,
     openapi_tags=OPENAPI_TAGS,
@@ -225,7 +224,6 @@ def run() -> None:
         log_level=settings.log_level.lower(),
         proxy_headers=settings.trust_proxy_headers,
         forwarded_allow_ips="*",
-        ws_per_message_deflate=False,
         **ssl_kwargs,
     )
 

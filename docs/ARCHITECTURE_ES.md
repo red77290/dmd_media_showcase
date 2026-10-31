@@ -13,7 +13,7 @@ El servidor aplica una estricta **Arquitectura Hexagonal (Puertos y Adaptadores)
 
 - **Capa de Dominio (`app/domain/`)**: 100 % Python puro (cero importaciones de FastAPI, HTTPX, Pillow, OpenCV o Infraestructura). Contiene Entidades y Objetos de Valor (`entities.py`, `board_identity.py`, `style_specs.py`, `on_demand_cache_key.py`), Agregados genéricos y reutilizables (`app/domain/aggregates/`), el subpaquete modular de Taxonomía multilingüe (`app/domain/taxonomy/` con `66` sistemas retro/arcade canónicos en `55+` plataformas) y los Puertos Hexagonales (`app/domain/ports/`).
 - **Capa de Aplicación (`app/application/`)**: Depende exclusivamente de `app/domain/` y sus Puertos. Dividida en servicios de aplicación de responsabilidad única — incluidos el enrutador multifuente configurable (`DomainSourceChainService`) y el enriquecedor compuesto cruzado (`CandidateAggregator`) — coordinados por la fachada ligera `ConsumeOnceOrchestrator` (`<= 550` líneas) e inyectados mediante `app/container.py`.
-- **Capas de Infraestructura, Seguridad y Scheduler (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Adaptadores de entrada (`6` routers FastAPI en `app/infrastructure/http/routers/` — incluido el streaming adaptativo de 3 niveles `profile=sram|psram|psram_hd` WebSocket `DMDZ` con créditos ACK y HTTP `DMDZ`/`DMDS` en `consume_once.py` — WebUI estática en módulos ES en `app/infrastructure/web/static/` y `ShowcaseMqttGateway`), adaptadores de salida (`11` adaptadores de scrapers y estrategias referenciales por fuente, motor de renderizado HUB75 de fichas/panoramas/vídeo/`DMDZ` con `dmdz_codec.py`, `dmdz_pal8.py` y `dmdz_motion.py`, repositorios JSON y `on_demand_cache_store.py` con preservación de `mtime`, `DmdConverterAdapter` y `FfmpegUdpClockStreamer`), y módulos de seguridad (`vault.py` bóveda nativa C `_prod_vault` de 3 niveles y `log_redactor.py` `SecretRedactingLogFilter`).
+- **Capas de Infraestructura, Seguridad y Scheduler (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Adaptadores de entrada (`6` routers FastAPI en `app/infrastructure/http/routers/` — incluido el streaming HTTP `1.1` `Content-Length` `DMDZ` v2 / `DMDS` sin pérdidas y limpieza `DELETE` en `consume_once.py` — WebUI estática en módulos ES en `app/infrastructure/web/static/` y `ShowcaseMqttGateway`), adaptadores de salida (`11` adaptadores de scrapers y estrategias referenciales por fuente, motor de renderizado HUB75 de fichas/panoramas/vídeo/`DMDZ` con `dmdz_codec.py` y `dmdz_motion.py`, repositorios JSON y `on_demand_cache_store.py` con preservación de `mtime`, `DmdConverterAdapter` y `FfmpegUdpClockStreamer`), y módulos de seguridad (`vault.py` bóveda nativa C `_prod_vault` de 3 niveles y `log_redactor.py` `SecretRedactingLogFilter`).
 
 ```mermaid
 flowchart TD
@@ -56,7 +56,7 @@ flowchart TD
     BROWSER -->|"GET / & /static/*"| STATIC
     BROWSER -->|"REST /api/v1/*"| ROUTERS
     ENG <-->|"MQTT Retain + start_card"| MQTT
-    ROUTERS ==>|"WS DMDZ con Créditos ACK / HTTP DMDS :8890"| ENG
+    ROUTERS ==>|"HTTP Content-Length DMDZ v2 / DMDS :8890"| ENG
     ROUTERS --> ORCH
     MQTT --> ORCH
     ORCH --> REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC
@@ -125,15 +125,14 @@ En lugar de pares estáticos `[Primaria, Respaldo]` codificados de forma rígida
 
 ---
 
-## 4. Streaming Adaptativo `MQTT + TCP` de 3 Niveles en Tiempo Real (`profile=sram | psram | psram_hd`), `DMDZ` v2 + `FRAME_PAL8` (`0x05`), Pipelining `N+1` y UDP Pasivo `DMDF`
+## 4. Streaming Unificado Sin Pérdidas `MQTT + TCP` (`codec=dmdz2`), Pipelining `N+1` y UDP Pasivo `DMDF`
 
 `ShowcaseRuntimeState.client_transports` rastrea cuatro perfiles deterministas de transporte expuestos en vivo en `ClientRegistryService` y en el Panel de Administración:
-- **`MQTT+TCP` (Por defecto y Recomendado — Modelo 1 `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi` y Modelo 2A Híbrido `supports_local_card: true`)**: Combina el **Plano de Control MQTT (`:1883`)** (`config`, `ready`, `start_card` con `retain=True` + `LWT`, identificadores `item_id` compactos sin colisión `pkg_<domain>_<12hex>` `<= 24` caracteres, y respaldo automático `MQTT -> HTTP (/config + /next)` en el mismo turno) con un plano de datos TCP (`:8890`) adaptativo de 3 niveles (`profile=sram | psram | psram_hd`):
-  1. **Nivel 1 — `profile=sram` (`esp32dev`, `0 KB` PSRAM)**: Se conecta a `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` (`ws_per_message_deflate=False`). Sirve `.dmdz2.sram.stream` combinando estabilización temporal H.264 `stabilize_rgb565_frames_sram()` con el códec híbrido True-RGB565 `DMDZ` v2 (`<= 1.400 B`) y **`FRAME_PAL8` (`0x05`)** (`dmdz_pal8.py`, `1..128` colores RGB565 de escena + desplazamiento 2D opcional + `PAL_INDEX`/`PAL_SKIP`/`PAL_RUN`/`PAL_LONG_SKIP`), garantizando **cada fotograma `<= 1.400 B`** (`0` deriva de referencia). La ruta WebSocket fusiona la cabecera `DMDZ` `16 B` con el Fotograma `0` en la ventana binaria inicial y espacia los subpaquetes multifragmento `2 ms` (`20–24 FPS` en un anillo SPSC sin bloqueos de `8–10 KB`).
-  2. **Nivel 2 — `profile=psram` (`ESP32-S3 <= 128x64`, PSRAM Octal)**: Precarga `.dmdz2.stream` True-RGB565 sin marcapasos hasta `1,5 MB` directamente en PSRAM durante la Ficha Info (Fase 1) mediante `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram` (`X-DMD-Codec: dmdz2`, `X-DMD-Profile: psram` -> `0` tráfico Wi-Fi durante la reproducción a `25–30 FPS`), con respaldo en vivo a `WS ?v=2&credits=12&chunk=1400&profile=psram` (anillo SPSC PSRAM `256 KB`).
-  3. **Nivel 3 — `profile=psram_hd` (`ESP32-S3 256x64+`, PSRAM Octal)**: Precarga hasta `3,5 MB` de `.dmdz2.stream` True-RGB565 sin marcapasos en PSRAM (`?purge=false&paced=0&codec=dmdz2&profile=psram_hd`) o transmite en vivo por `WS ?v=2&credits=16&chunk=1400&profile=psram_hd` (anillo SPSC PSRAM `768 KB`, `24–30 FPS` HD).
-  4. **Respaldo HTTP TCP con Marcapasos y Precarga Linux de Alta RAM (`ArcadeMatrix_RPi`)**: `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=sram` ofrece respaldo HTTP con marcapasos resistente a proxies, mientras que `ArcadeMatrix_RPi` precarga `DMDS` puro sin marcapasos (`?purge=false|true`, sin `codec`) directamente en RAM.
-- **`HTTP`**: Sondeo HTTP Consume-Once sin estado (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`) transmitiendo sobre el mismo plano de datos `:8890` de 3 niveles.
+- **`MQTT+TCP` (Por defecto y Recomendado — Modelo 1 `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi` y Modelo 2A Híbrido `supports_local_card: true`)**: Combina el **Plano de Control MQTT (`:1883`)** (`config`, `ready`, `start_card`, `stop_stream` con `retain=True` + `LWT`, identificadores `item_id` compactos sin colisión `pkg_<domain>_<12hex>` `<= 24` caracteres, y respaldo automático `MQTT -> HTTP (/config + /next)` en el mismo turno) con un flujo HTTP `1.1` (`:8890`) `Content-Length` unificado sin pérdidas (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge={true|false}&codec=dmdz2` + limpieza idempotente `DELETE`):
+  1. **`esp32dev` (`0 KB` PSRAM — Cola Local en Tarjeta SD `25 MHz`)**: Descarga `.dmdz2.stream` sin pérdidas (`?purge=false&codec=dmdz2`) en `/cache/showcase_live.dmdz` durante la Ficha Informativa de la Fase 1, cierra el socket TCP al completar la descarga (`0` tráfico Wi-Fi y `0` `pbuf`s `lwIP` en reproducción) y decodifica localmente mediante un anillo SPSC sin bloqueos de `8.448 B` hacia el lienzo `SRAM1` Cero-Copia (`ScopedCanvasGuard`).
+  2. **`ESP32-S3` (`8 MB` PSRAM Octal — 100 % PSRAM, `0` Tarjeta SD)**: Precarga `.dmdz2.stream` sin pérdidas (`<= 4 MB`, `freePsram - 1,5 MB` de reserva) directamente en PSRAM durante la Ficha Informativa (`?purge=false&codec=dmdz2` -> `0` tráfico Wi-Fi en reproducción), o transmite flujos HD `256x64` extensos por un anillo SPSC PSRAM de `1 MB`.
+  3. **`ArcadeMatrix_RPi` (Precarga RAM Linux)**: Precarga `.dmdz2.stream` sin pérdidas directamente en RAM (`?purge=false|true&codec=dmdz2`), con respaldo automático a `DMDS` puro si se omite `codec=dmdz2`.
+- **`HTTP`**: Sondeo HTTP Consume-Once sin estado (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`) transmitiendo sobre el mismo plano de datos `:8890` sin pérdidas.
 - **`UDP-PASSIVE` (Modelo 2B — `supports_local_card: false`)**: Receptor pasivo ultramínimo (~180 líneas) de búfer de fotogramas UDP `:4210` `DMDF` `<4sHBBH` donde el servidor compone incluso las Fichas Info de Fase 1 dentro del flujo RGB565 (`render_card_in_stream=True`).
 - **`MQTT+UDP` (`mqtt_udp` Heredado Opcional)**: Evento explícito `start_stream` que activa fragmentos UDP `DMDF` `<4sHBBH` mediante `FfmpegUdpClockStreamer` hacia `{udp_ip}:{udp_port}`.
 
@@ -150,25 +149,22 @@ sequenceDiagram
 
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/config (retain=True, client_ip, domains)
     MQTT->>ORCH: handle_mqtt_client_config() -> client_transports = "MQTT+TCP"
-    ORCH->>PREP: ensure_slot_prepared() (prepara Elemento N no visto + hermanos .dmdz/.dmdz2/.dmdz2.sram)
+    ORCH->>PREP: ensure_slot_prepared() (prepara Elemento N no visto + hermano .dmdz2.stream)
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, card, source_used)
     MQTT->>DMD: Entrega la ficha retenida (Elemento N)
 
-    Note over DMD: Inicia turno de rotación -> Fase 1: Ficha Info + Póster HTTP .rgb565 (o Precarga PSRAM dmdz2)
+    Note over DMD: Inicia turno de rotación -> Fase 1: Ficha Info + Póster HTTP .rgb565 + Descarga .dmdz2 paralela
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/events {"action":"start_card", "item_id": N}
     MQTT->>ORCH: claim_next_package(N) -> DualSlotPipeline.claim_ready() + mark_consumed(N)
     ORCH->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=False)
     ORCH->>PREP: Pipelining N+1 en segundo plano: ¡prepara inmediatamente Standby N+1!
 
-    alt Modo Principal MQTT+TCP (Modelos 1 y 2A — Adaptativo 3 Niveles)
-        Note over DMD: Precarga PSRAM (?paced=0&codec=dmdz2) O WS DMDZ v2 con ACK (?v=2&profile=sram|psram)
-        DMD->>HTTP: WS /api/v1/{domain}/ws/{N}.dmdz?v=2&credits=4&chunk=1360&profile=sram (o GET .rgb565.stream)
-        HTTP-->>DMD: 101 Switching Protocols + [Cabecera DMDZ 16B + Fotograma 0] fusionados
-        loop Fotogramas DMDZ v2 Adaptativos (<= 1400 B PAL8/True565 en sram @ 20-24 FPS; 24-30 FPS en psram/psram_hd)
-            HTTP-->>DMD: Subpaquete binario WS (<= 1360..1400 B) -> Anillo SPSC -> Core 1 DmdzStreamDecoder in-place
-            DMD-->>HTTP: ACK de crédito agrupado ('A' / 'AA...')
-        end
-        HTTP->>PREP: EOF del flujo / stop_stream -> purge_consumed_package(N)
+    alt Modo Principal MQTT+TCP (Modelos 1 y 2A — HTTP DMDZ v2 Sin Pérdidas)
+        DMD->>HTTP: GET /api/v1/{domain}/stream/{N}.rgb565.stream?purge=false&codec=dmdz2
+        HTTP-->>DMD: 200 OK (Content-Length, X-DMD-Codec: dmdz2) -> Cola SD (esp32dev) o PSRAM/RAM (S3/RPi)
+        Note over DMD: Cierre TCP -> ¡0 tráfico Wi-Fi durante la reproducción local Cero-Copia SRAM1 / PSRAM / RAM!
+        DMD->>MQTT: stop_stream (o HTTP DELETE /api/v1/{domain}/stream/{N}.rgb565.stream)
+        MQTT->>PREP: purge_consumed_package(N)
     else Modo 2B Pasivo (UDP-PASSIVE :4210) o MQTT+UDP Heredado Opcional (start_stream)
         ORCH->>FFMPEG: Inicia hilo monotónico en tiempo real DMDF
         loop Cada Fotograma (15-25 FPS)
@@ -179,32 +175,27 @@ sequenceDiagram
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, Elemento N+1)
 ```
 
-### Contenedor Binario `DMDZ` (`v1` `dmdz1` y `v2` `dmdz2`) y Códec Híbrido `FRAME_PAL8` (`0x05`) (Cabecera 16 Bytes `<4sBBHHHHH`)
+### Contenedor Binario `DMDZ` v2 (`dmdz2`) True-RGB565 Sin Pérdidas (Cabecera 16 Bytes `<4sBBHHHHH`)
 
-Precodificado en `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2` True-RGB565 sin pérdidas para `psram` / `psram_hd`) y `.dmdz2.sram.stream` (`v2` `profile=sram` acotado `<= 1.400 B/fotograma`) por `dmdz_codec.py` + `dmdz_pal8.py`:
+Precodificado en `.dmdz2.stream` (`v2` True-RGB565 100 % sin pérdidas) por `dmdz_codec.py` + `dmdz_motion.py`:
 
 | Offset | Tipo | Campo | Descripción |
 | :--- | :--- | :--- | :--- |
 | `0..3` | `char[4]` | `magic` | `"DMDZ"` (`0x44 0x4D 0x44 0x5A`) |
-| `4` | `uint8` | `version` | Versión binaria `DMDZ` (`1` = `"dmdz1"`, `2` = `"dmdz2"`) |
-| `5` | `uint8` | `fps` | Frecuencia objetivo (`8..60`, p. ej. `20–24` en `sram`, `24–30` en `psram`/`psram_hd`) |
+| `4` | `uint8` | `version` | Versión binaria `DMDZ` (`2` = `"dmdz2"`) |
+| `5` | `uint8` | `fps` | Frecuencia objetivo (`8..60`, p. ej. `24–30`) |
 | `6..7` | `uint16le` | `width` | Ancho del panel en píxeles (`128`, `256`, etc.) |
 | `8..9` | `uint16le` | `height` | Alto del panel en píxeles (`32`, `64`, etc.) |
 | `10..11` | `uint16le` | `total_frames` | Total de fotogramas codificados (`1..65535`) |
 | `12..13` | `uint16le` | `frame_dur_ms` | Duración nominal por fotograma en ms (`round(1000 / fps)`) |
 | `14..15` | `uint16le` | `keyframe_interval` | Intervalo periódico de fotogramas clave (`0` = fotograma `0` `keyframe`) |
-| `16..EOF` | `uint8[]` | `frames` | Por fotograma: `<H` `payload_len` + `type` (`0=delta`, `1=scroll(dy)`, `2=keyframe`, `3=scroll_2d(dx,dy)`, `4=raw`, `5=pal8`) + opcodes |
+| `16..EOF` | `uint8[]` | `frames` | Por fotograma: `<H` `payload_len` + `type` (`0=delta`, `1=scroll(dy)`, `2=keyframe`, `3=scroll_2d(dx,dy)`, `4=raw`) + opcodes |
 
-- **Opcodes True-RGB565 (`type 0..3`, `cache[64]`, `last = 0`)**: `SKIP` (`00nnnnnn`), `LONG_SKIP` (`0xF0 + <H`), `RUN` (`01nnnnnn`), `INDEX[64]` (`10iiiiii`), `DIFF` (`110xxxxx`), `LIT` (`1110nnnn`), más en `v=2` `OP_LUMA` espacial (`0xDC..0xDF`), `OP_TLUMA` temporal (`0xF1..0xF4`), `OP_LZ` hacia atrás (`0xF6..0xF7`) y `OP_TDIFF` de 1 byte (`0xF8..0xFF`), acotados por `FRAME_RAW` (`0x04`).
-- **`FRAME_PAL8` (`0x05`, `v=2`, `profile=sram`)**: Activado automáticamente solo cuando un fotograma de vídeo ruidoso supera `1.400 B` en True-RGB565 (conservando los panoramas limpios 100 % sin pérdidas y actualizando `prev` del codificador al fotograma reconstruido exacto para `0` deriva):
-  - `byte[1]`: `pal_hdr = (0x80 if has_scroll_2d else 0x00) | ((pal_count - 1) & 0x7F)` (`1..128` colores RGB565 de escena)
-  - `bytes[2..3]` opcionales (si `has_scroll_2d`): `<bb` `(dx, dy)` desplazamiento 2D en sitio
-  - `pal_count * 2` bytes: entradas de paleta RGB565 `<u2`
-  - flujo de opcodes (`pos = 0`, `last_color = palette[0]`): `0x00..0x7F` `PAL_INDEX`, `0x80..0xBF` `PAL_SKIP (1..64)`, `0xC0..0xFE` `PAL_RUN (2..64)`, `0xFF + <H` `PAL_LONG_SKIP`.
+- **Opcodes True-RGB565 Sin Pérdidas (`type 0..3`, `cache[64]`, `last = 0`)**: `SKIP` (`00nnnnnn`), `LONG_SKIP` (`0xF0 + <H`), `RUN` (`01nnnnnn`), `INDEX[64]` (`10iiiiii`), `DIFF` (`110xxxxx`), `LIT` (`1110nnnn`), `OP_LUMA` espacial (`0xDC..0xDF`), `OP_TLUMA` temporal (`0xF1..0xF4`), `OP_LZ` hacia atrás (`0xF6..0xF7`) y `OP_TDIFF` de 1 byte (`0xF8..0xFF`), acotados por `FRAME_RAW` (`0x04`, respaldo RGB565LE puro de `width * height * 2` bytes cuando el fotograma es incompresible).
 
-### Cabecera Binaria HTTP TCP `DMDS` Pura (16 Bytes, Little-Endian `<4sBBHHHHH` — Respaldo HTTP Puro Retrocompatible)
+### Cabecera Binaria HTTP TCP `DMDS` Pura (16 Bytes, Little-Endian `<4sBBHHHHH` — Respaldo HTTP Puro)
 
-Servida sin marcapasos (`?purge=true`) como respaldo automático cuando se omite `codec=dmdz2` (mientras que los clientes `ArcadeMatrix_RPi` y `ESP32-S3` precargan el flujo compacto sin pérdidas `?paced=0&codec=dmdz2&profile=psram|psram_hd`), o con marcapasos (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, más `&drop_late=1` opcional) con las cabeceras `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` y `X-DMD-Drop-Late: 1`:
+Servida con `Content-Length` exacto (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true`) cuando se omite `codec=dmdz2` (`X-DMD-Consume-Once: 1`, `X-DMD-Codec: dmds`):
 
 | Offset | Tipo | Campo | Descripción |
 | :--- | :--- | :--- | :--- |
@@ -216,11 +207,11 @@ Servida sin marcapasos (`?purge=true`) como respaldo automático cuando se omite
 | `10..11` | `uint16le` | `total_frames` | Total de fotogramas RGB565LE concatenados (`1..65535`) |
 | `12..13` | `uint16le` | `frame_dur_ms` | Duración nominal por fotograma en ms (`round(1000 / fps)`) |
 | `14..15` | `uint16le` | `reserved` | Reservado (`0`) |
-| `16..EOF` | `uint8[]` | `frames` | Fotogramas RGB565LE puros de `width * height * 2` bytes (`total_frames` nominal; salto de reloj si `paced=1&drop_late=1`) |
+| `16..EOF` | `uint8[]` | `frames` | Fotogramas RGB565LE puros de `width * height * 2` bytes |
 
 ### Cabecera Binaria UDP `DMDF` (10 Bytes, Little-Endian `<4sHBBH` — Modo 2B Pasivo `:4210` y `MQTT+UDP` Opcional)
 
-> Especificación formal completa (tópicos MQTT 3.1.1 + WebSocket `DMDZ` con créditos ACK + datagramas UDP `DMDF`): [`docs/asyncapi.yaml`](asyncapi.yaml) (cargada directamente por `app/asyncapi_spec.py` y servida en `GET /asyncapi.yaml` y `GET /api/v1/asyncapi.yaml`).
+> Especificación formal completa (tópicos MQTT 3.1.1 + HTTP `DMDZ` v2 / `DMDS` + datagramas UDP `DMDF`): [`docs/asyncapi.yaml`](asyncapi.yaml) (cargada directamente por `app/asyncapi_spec.py` y servida en `GET /asyncapi.yaml` y `GET /api/v1/asyncapi.yaml`).
 
 | Offset | Tipo | Campo | Descripción |
 | :--- | :--- | :--- | :--- |

@@ -1,6 +1,6 @@
 asyncapi: 2.6.0
 info:
-  title: DMD Media Showcase Server — MQTT 3.1.1 Control Plane, Credit-Acked WebSocket DMDZ, HTTP DMDS & Passive UDP DMDF Streaming Protocol
+  title: DMD Media Showcase Server — MQTT 3.1.1 Control Plane, Lossless HTTP DMDZ v2 / DMDS & Passive UDP DMDF Streaming Protocol
   version: 1.1.4
   description: |
     Asynchronous Control & Real-Time Binary Frame Streaming specification for **DMD Media Showcase Server**,
@@ -19,24 +19,20 @@ info:
        - Uses `LWT` (Last Will and Testament) on both server and DMD clients for instant disconnect cleanup
          while preserving background `N+1` media transcoding tasks across rotation slot switches.
     2. **Primary Data Plane (`MQTT+TCP` Default — Models 1 & 2A, `supports_local_card: true`)**:
-       - **3-Tier Adaptive Streaming (`profile=sram | psram | psram_hd`)**:
-         - **`profile=sram` (`esp32dev`, 0 KB PSRAM)**: Claims the retained `ready` slot via `{"action": "start_card", "item_id": "..."}`,
-           fetches the binary RGB565 mini-jacket over HTTP (`/api/v1/{domain}/poster/{item_id}.rgb565`) during Card intro, and upgrades
-           Phase 2 to **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram`**
-           (`ws_per_message_deflate=False`). Serves `.dmdz2.sram.stream` combining motion-compensated temporal H.264 denoise with hybrid
-           True-RGB565 (`<= 1,400 B`) and `FRAME_PAL8` (`0x05`, `1..128` RGB565 scene colors + optional 2D scroll + `PAL_INDEX`/`PAL_SKIP`/`PAL_RUN`/`PAL_LONG_SKIP`),
-           bounding **every frame `<= 1,400 B`**, coalescing the `16 B` `DMDZ` header with Frame `0`, and applying `2 ms` inter-chunk pacing (`20–24 FPS`).
-         - **`profile=psram` (`ESP32-S3 <= 128x64`, Octal PSRAM)**: Preloads unpaced True-RGB565 `.dmdz2.stream` up to `1.5 MB` directly
-           into PSRAM during the Card intro via **`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram`**
-           (`0` Wi-Fi traffic during playback, `25–30 FPS`), with automatic live fallback to `WS ?v=2&credits=12&chunk=1400&profile=psram` (`256 KB` PSRAM ring).
-         - **`profile=psram_hd` (`ESP32-S3 256x64+`, Octal PSRAM)**: Preloads up to `3.5 MB` of unpaced True-RGB565 `.dmdz2.stream` into PSRAM
-           (`?purge=false&paced=0&codec=dmdz2&profile=psram_hd`) or streams live via `WS ?v=2&credits=16&chunk=1400&profile=psram_hd` (`768 KB` PSRAM ring, `24–30 FPS` HD).
-         - **`ArcadeMatrix_RPi` (Raspberry Pi / Linux)**: Preloads unpaced raw `DMDS` over `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false|true` (no `codec`).
-       - **Why Credit-Acked WebSocket `DMDZ` (`v2` `dmdz2` / `v1` `dmdz1`)**:
-         - `101 Switching Protocols` disables HTTP proxy/NAT response buffering (`gvproxy` / Rancher Desktop / Docker Desktop / Nginx).
-         - Binary WebSocket frames (`256..1,400` bytes, e.g. `1,360 B` full Wi-Fi MSS) are gated by an explicit `credits` sliding window
-           (`1..16` credits; coalesced `'A'`/`0x41` client ACKs), eliminating LwIP `pcb->ooseq` heap exhaustion while Core 1 drives 8-bit CIE-1931 HUB75 DMA.
-         - If a reverse proxy blocks WebSocket upgrades, clients fall back transparently to paced HTTP TCP (`?purge=true&paced=1&codec=dmdz2&profile=...`).
+       - **Lossless 16-Bit True-RGB565 HTTP `Content-Length` Stream (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)**:
+         - **`esp32dev` (`0 KB` PSRAM)**: Claims the retained `ready` slot via `{"action": "start_card", "item_id": "..."}`,
+           fetches the binary RGB565 mini-jacket over HTTP (`/api/v1/{domain}/poster/{item_id}.rgb565`), downloads lossless
+           `.dmdz2.stream` (`?purge=false&codec=dmdz2`) onto its `25 MHz` SD card (`/cache/showcase_live.dmdz`) in parallel with
+           the Info Card dwell (`4.5–17 s`), closes the TCP socket (`0` Wi-Fi traffic and `0` `lwIP` `pbuf`s during playback),
+           and decodes locally from SD -> `8,448 B` SPSC ring -> Zero-Copy `SRAM1` Canvas (`24–30 FPS`, 8-bit CIE-1931 HUB75).
+         - **`ESP32-S3` (Octal PSRAM)**: Preloads lossless `.dmdz2.stream` (`?purge=false&codec=dmdz2`) directly into PSRAM
+           during the Info Card (`<= 4 MB`, `0` Wi-Fi traffic during playback at `24–30 FPS`), or allocates a `1 MB` PSRAM SPSC
+           ring buffer for oversized `256x64` HD clips (`> 4 MB`) and streams remaining `Content-Length` bytes from TCP into PSRAM
+           as Core 1 decodes.
+         - **`ArcadeMatrix_RPi` (Raspberry Pi / Linux)**: Preloads lossless `.dmdz2.stream` (`?purge=false&codec=dmdz2`) or raw `DMDS`
+           (`.rgb565.stream`) directly into RAM during the Info Card.
+         - **Post-Playback Purge**: Clients purge consumed packages via MQTT `{"action": "stop_stream", "item_id": "...", "purge": true}`
+           or idempotently via HTTP `DELETE /api/v1/{domain}/stream/{item_id}.rgb565.stream` (or pass `purge=true` on `GET`).
     3. **Passive Mode 2B (`UDP-PASSIVE :4210`) & Optional `MQTT+UDP` Data Plane (`udp://{client_ip}:{udp_port}`)**:
        - Automatically clocked by the server for 100% passive `supports_local_card: false` receivers (`UDP-PASSIVE`, `:4210`),
          or triggered explicitly when an optional `transport: "mqtt_udp"` client publishes
@@ -47,8 +43,8 @@ info:
     4. **`N+1` Background Pipelining, On-Demand Queue & Strict Consume-Once**:
        - Publishing `start_card` immediately marks item `N` consumed in `seen_history.json` (unless `mark_seen: false`
          was set by `FrontendSync` on-demand playback), updates the retained `ready` topic to `{"ready": false}`,
-         and starts preparing unseen item `N+1` in the background while preserving item `N`'s `.rgb565.stream` + `.dmdz.stream`
-         files on disk until the WebSocket `DMDZ`, HTTP `DMDS`, or UDP `DMDF` session finishes (`purge=true`).
+         and starts preparing unseen item `N+1` immediately without deferral while preserving item `N`'s `.rgb565.stream` + `.dmdz2.stream`
+         files on disk until `stop_stream` / `DELETE` / `purge=true` completes.
   contact:
     name: ArcadeMatrix Community
     url: https://t.me/+DrSdAO8UMUViNmE0
@@ -60,16 +56,6 @@ servers:
     url: mqtt://{host}:1883
     protocol: mqtt
     description: Zero-config Embedded MQTT 3.1.1 Broker hosted inside `dmd-media-showcase` (or External Mosquitto).
-    variables:
-      host:
-        default: dmdmediashowcase.local
-  wsDmdzStreamer:
-    url: ws://{host}:8890
-    protocol: ws
-    description: >-
-      ZeDMD-style credit-acknowledged `DMDZ` (`v1`/`v2`) WebSocket endpoint (`ws_per_message_deflate=False`) serving
-      adaptive `profile=sram|psram|psram_hd` binary sub-packets (`256..1,400 B`, coalesced `16 B` header + Frame `0`)
-      gated by a `1..16`-credit sliding window for `ESP32` (`esp32dev` 0 PSRAM) and `ESP32-S3` HUB75 matrices.
     variables:
       host:
         default: dmdmediashowcase.local
@@ -156,7 +142,7 @@ channels:
     servers:
       - embeddedMqttBroker
     description: >-
-      Retained client-driven DMD geometry, transport (`mqtt_tcp` default for credit-acked WebSocket `DMDZ` / HTTP `DMDS` `:8890`, or optional `mqtt_udp`),
+      Retained client-driven DMD geometry, transport (`mqtt_tcp` default for lossless HTTP `DMDZ` v2 / `DMDS` `:8890`, or optional `mqtt_udp`),
       LAN IP (`client_ip` / `udp_ip`), optional UDP port, and per-domain filter criteria (`retain=True`).
     parameters:
       dmd_id:
@@ -176,8 +162,8 @@ channels:
     description: >-
       Authoritative retained Consume-Once slot state (`retain=True`). Publishes `{"ready": true, "card": {...}}`
       with a compact collision-free `item_id` (`pkg_<domain>_<12hex>`, `<= 24` chars) when an unseen item and its
-      unified `.rgb565.stream` (`DMDS`) are ready on disk, or `{"ready": false}` while warming `N+1`
-      so rotating DMD engines can yield their turn immediately without stalling.
+      unified `.rgb565.stream` (`DMDS`) + `.dmdz2.stream` (`DMDZ` v2) are ready on disk, or `{"ready": false}` while warming `N+1`
+      so rotating DMD engines can yield their turn cleanly without stalling.
     parameters:
       dmd_id:
         $ref: '#/components/parameters/DmdIdParam'
@@ -197,7 +183,7 @@ channels:
       - embeddedMqttBroker
     description: >-
       Real-time per-domain lifecycle commands published by the DMD (`start_card` for primary `MQTT+TCP` Consume-Once lock + `N+1` prep,
-      plus optional `start_stream` / `stop_stream` for `mqtt_udp` sessions).
+      `stop_stream` for post-playback cache purge, plus optional `start_stream` for `mqtt_udp` sessions).
       The legacy domain-less topic `dmd_showcase/clients/{dmd_id}/events` is also accepted.
     parameters:
       dmd_id:
@@ -247,71 +233,6 @@ channels:
           retain: false
       message:
         $ref: '#/components/messages/StreamStateMessage'
-
-  /api/v1/{domain}/ws/{item_id}.dmdz:
-    servers:
-      - wsDmdzStreamer
-    description: >-
-      ZeDMD-style credit-acknowledged `DMDZ` (`v1`/`v2`) WebSocket stream (`ws_per_message_deflate=False`) for
-      `ESP32` (`esp32dev` 0 PSRAM, `profile=sram`) and `ESP32-S3` (`profile=psram|psram_hd`) HUB75 clients.
-      After `101 Switching Protocols`, the server coalesces the 16-byte `<4sBBHHHHH` `"DMDZ"` header with Frame `0`
-      into the initial binary sub-packet window (`chunk=256..1400`, default `1024`, `1360` full MSS on `profile=sram`),
-      followed by `<H` `payload_len` + `DMDZ` frame ops (`profile=sram` serves `.dmdz2.sram.stream` with `FRAME_PAL8` `0x05`
-      capped `<= 1,400 B/frame` and `2 ms` inter-chunk pacing; `profile=psram|psram_hd` serves lossless `.dmdz2.stream`).
-      The client returns `'A'` (`0x41`) credit ACKs (`1` credit per byte) after draining chunks into its SPSC ring buffer.
-    parameters:
-      domain:
-        $ref: '#/components/parameters/DomainParam'
-      item_id:
-        $ref: '#/components/parameters/ItemIdParam'
-    bindings:
-      ws:
-        method: GET
-        query:
-          type: object
-          properties:
-            purge:
-              type: boolean
-              default: true
-              description: Purge the consumed `.rgb565.stream` and `.dmdz*.stream` files from disk upon completion.
-            client_id:
-              type: string
-              description: Logical DMD client identifier for live telemetry (`e.g. esp32_games_128x32`).
-            v:
-              type: integer
-              enum: [1, 2]
-              default: 1
-              description: "`DMDZ` wire protocol version (`2` recommended for `dmdz2` + `FRAME_SCROLL_2D` + `FRAME_PAL8`)."
-            credits:
-              type: integer
-              minimum: 1
-              maximum: 16
-              default: 2
-              description: "Initial in-flight WebSocket sub-packet credit window (`4` for `esp32dev` `profile=sram`; `12..16` for `ESP32-S3` PSRAM)."
-            chunk:
-              type: integer
-              minimum: 256
-              maximum: 1400
-              default: 1024
-              description: "Maximum binary payload bytes per WebSocket message (`1360` for `profile=sram`, `1400` for `psram`/`psram_hd`)."
-            profile:
-              type: string
-              enum: ["", sram, psram, psram_hd]
-              default: ""
-              description: "Adaptive hardware stream tier (`sram` selects `.dmdz2.sram.stream` `<= 1,400 B/frame` + `2 ms` inter-chunk pacing; `psram`/`psram_hd` select `.dmdz2.stream`)."
-            api_key:
-              type: string
-              description: Optional `SHOWCASE_API_KEY` token when API authentication is enabled.
-    subscribe:
-      summary: Receive coalesced 16-byte `DMDZ` header + Frame `0` followed by `<= chunk` `DMDZ` (`v1`/`v2`) frame sub-packets
-      message:
-        oneOf:
-          - $ref: '#/components/messages/DmdzWsHeaderMessage'
-          - $ref: '#/components/messages/DmdzWsFrameSubpacketMessage'
-    publish:
-      summary: Send 1-byte `'A'` (`0x41`) credit ACK per received binary WebSocket message (coalesced multi-byte `'AA...'` supported)
-      message:
-        $ref: '#/components/messages/DmdzWsCreditAckMessage'
 
   udp/dmdf_frame_chunk:
     servers:
@@ -394,14 +315,14 @@ components:
             type: boolean
             default: false
             description: >-
-              `true` (Model 2A Hybrid, `MQTT+TCP` default) if the ESP32 renders Phase 1 Info Cards locally and streams Phase 2 over credit-acked WebSocket `DMDZ` (`/api/v1/{domain}/ws/{item_id}.dmdz`, with HTTP `?paced=1&codec=dmdz1` fallback);
+              `true` (Model 2A Hybrid, `MQTT+TCP` default) if the ESP32 renders Phase 1 Info Cards locally and downloads/preloads Phase 2 over HTTP `Content-Length` `DMDZ` v2 (`/api/v1/{domain}/stream/{item_id}.rgb565.stream?codec=dmdz2`);
               `false` (Model 2B 100% Passive, `UDP-PASSIVE :4210`) if the server composites the Info Card directly into the RGB565 UDP `DMDF` stream.
           transport:
             type: string
             enum: [mqtt_tcp, mqtt_udp]
             default: mqtt_tcp
             description: >-
-              Data-plane streaming transport for hybrid (`supports_local_card: true`) receivers (`mqtt_tcp` default for credit-acked WebSocket `DMDZ` / HTTP `DMDS` `:8890`,
+              Data-plane streaming transport for hybrid (`supports_local_card: true`) receivers (`mqtt_tcp` default for lossless HTTP `DMDZ` v2 / `DMDS` `:8890`,
               or optional `mqtt_udp` for UDP `DMDF`).
           width:
             type: integer
@@ -514,8 +435,8 @@ components:
             enum: [mqtt_tcp, mqtt_udp]
             default: mqtt_tcp
             description: >-
-              Primary streaming transport (`mqtt_tcp` default: MQTT `:1883` control plane + credit-acked WebSocket `DMDZ` `/api/v1/{domain}/ws/{item_id}.dmdz`
-              on ESP32/ESP32-S3, HTTP `?paced=1&codec=dmdz1` fallback, or unpaced HTTP `DMDS` preload on `ArcadeMatrix_RPi`; `mqtt_udp` optional legacy UDP `DMDF`).
+              Primary streaming transport (`mqtt_tcp` default: MQTT `:1883` control plane + HTTP `Content-Length` lossless `DMDZ` v2
+              `/api/v1/{domain}/stream/{item_id}.rgb565.stream?codec=dmdz2` or raw `DMDS`; `mqtt_udp` optional legacy UDP `DMDF`).
           client_ip:
             type: string
             description: Real LAN IPv4 of the DMD client (bypasses Docker bridge NAT `172.18.0.1`).
@@ -635,9 +556,9 @@ components:
             enum: [start_card, start_stream, stop_stream]
             description: >-
               Primary command field (`event` is accepted as an alias). `MQTT+TCP` clients publish `start_card` to lock Consume-Once
-              and trigger background `N+1` preparation before opening credit-acked lossless WebSocket `DMDZ`
-              (`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id=...`), paced HTTP fallback (`?purge=true&paced=1&codec=dmdz1`),
-              or unpaced HTTP `DMDS` preload (`ArcadeMatrix_RPi`).
+              and trigger immediate background `N+1` preparation before downloading/preloading lossless HTTP `DMDZ` v2
+              (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2`), then publish `stop_stream` (`purge: true`)
+              once local playback completes.
           event:
             type: string
             enum: [start_card, start_stream, stop_stream]
@@ -716,85 +637,15 @@ components:
           domain:
             type: string
 
-    DmdzWsHeaderMessage:
-      name: DmdzWsHeaderMessage
-      title: Binary DMDZ (`v1` / `v2`) Stream Header (16 Bytes, Coalesced with Frame `0`)
-      contentType: application/octet-stream
-      summary: 16-byte Little-Endian `<4sBBHHHHH` `"DMDZ"` container header coalesced at the head of Frame `0` (or standalone when `total_frames == 0`).
-      description: |
-        Prefixed at byte offset `0..15` of the initial binary WebSocket message alongside Frame `0` after `101 Switching Protocols`
-        on `WS /api/v1/{domain}/ws/{item_id}.dmdz`, saving a full round-trip credit ACK before first-pixel display:
-
-        | Byte Offset | C / Struct Type | Field | Constraints & Semantics |
-        | :--- | :--- | :--- | :--- |
-        | `0..3` | `char[4]` (`4s`) | `magic` | ASCII `"DMDZ"` (`0x44 0x4D 0x44 0x5A`) |
-        | `4` | `uint8` (`B`) | `version` | `DMDZ` wire format version (`1` = `dmdz1`, `2` = `dmdz2`) |
-        | `5` | `uint8` (`B`) | `fps` | Nominal playback frame rate (`8..60`, e.g. `20–24` on `sram`, `24–30` on `psram`/`psram_hd`) |
-        | `6..7` | `uint16le` (`H`) | `width` | Panel width in pixels (`128`, `256`, etc.) |
-        | `8..9` | `uint16le` (`H`) | `height` | Panel height in pixels (`32`, `64`, etc.) |
-        | `10..11` | `uint16le` (`H`) | `total_frames` | Total frames in the stream (`1..65535`) |
-        | `12..13` | `uint16le` (`H`) | `frame_dur_ms` | Nominal frame duration in ms (`round(1000 / fps)`) |
-        | `14..15` | `uint16le` (`H`) | `keyframe_interval` | Keyframe cadence (`0` = frame `0` keyframe) |
-      payload:
-        type: string
-        format: binary
-        minLength: 16
-        maxLength: 1400
-        x-binary-header-format: "<4sBBHHHHH"
-
-    DmdzWsFrameSubpacketMessage:
-      name: DmdzWsFrameSubpacketMessage
-      title: Binary DMDZ (`v1` / `v2`) Frame Sub-Packet (`<= chunk` Bytes, `256..1,400`)
-      contentType: application/octet-stream
-      summary: "`<= chunk`-byte binary WebSocket slice of `<H` `payload_len` + `dmdz1` / `dmdz2` (including `FRAME_PAL8` `0x05`) frame operations."
-      description: |
-        Each `DMDZ` frame consists of a 2-byte Little-Endian `<H` `payload_len` followed by `payload_len` bytes:
-        - `byte[0]` (`frame_type`):
-          - `0` (`FRAME_DELTA`): delta against previous frame
-          - `1` (`FRAME_SCROLL`): 1D vertical scroll `int8 dy` via in-place `memmove` + delta
-          - `2` (`FRAME_KEY`): keyframe (`cache[64]` + `last=0`)
-          - `3` (`FRAME_SCROLL_2D`, `v=2`): 2D scroll `<bb` `(dx, dy)` via in-place `memmove` + `v2` ops (`OP_LUMA`, `OP_TLUMA`, `OP_LZ`, `OP_TDIFF`)
-          - `4` (`FRAME_RAW`, `v=2`): uncompressed `width * height * 2` RGB565LE cap
-          - `5` (`FRAME_PAL8`, `v=2`, `profile=sram`): hybrid scene-palette codec (`<= 1,400 B` ceiling):
-            - `byte[1]`: `pal_hdr = (0x80 if has_scroll_2d else 0x00) | ((pal_count - 1) & 0x7F)` (`1..128` RGB565 colors)
-            - optional `bytes[2..3]` (iff `has_scroll_2d`): `<bb` `(dx, dy)` 2D reference scroll
-            - `pal_count * 2` bytes: `<u2` RGB565 scene palette
-            - op stream (`pos=0`, `last_color=palette[0]`): `0x00..0x7F` `PAL_INDEX`, `0x80..0xBF` `PAL_SKIP (1..64)`, `0xC0..0xFE` `PAL_RUN (2..64)`, `0xFF + <H` `PAL_LONG_SKIP`
-
-        Frames exceeding `chunk` bytes (`1,360 B` on `profile=sram`, `1,400 B` on `profile=psram|psram_hd`) are split across sequential
-        WebSocket binary messages with a `2 ms` inter-chunk pace on `profile=sram` (`0 ms` on `psram` / `psram_hd`).
-      payload:
-        type: string
-        format: binary
-        minLength: 1
-        maxLength: 1400
-
-    DmdzWsCreditAckMessage:
-      name: DmdzWsCreditAckMessage
-      title: Client-to-Server 1-Byte Credit ACK (`'A'` / `0x41`)
-      contentType: application/octet-stream
-      summary: 1-byte `'A'` (`0x41`) flow-control credit ACK returned by the DMD client per drained binary WebSocket message.
-      description: |
-        Each byte received from the client replenishes `1` server send credit (in raw RFC 6455 client-to-server wire form,
-        a 7-byte masked binary frame `0x82 0x81 <4B mask> <0x41 ^ mask[0]>`). Returning `1` credit only after `lwip_recv()`
-        drains the message into stack/framebuffer memory guarantees zero TCP receive-window overflow and zero LwIP `ooseq`
-        heap allocations on Classic ESP32 (`0 KB` PSRAM).
-      payload:
-        type: string
-        format: binary
-        minLength: 1
-        maxLength: 16
-
     DmdfUdpDatagram:
       name: DmdfUdpDatagram
       title: Binary DMDF UDP Frame Chunk Datagram
       contentType: application/octet-stream
       summary: 10-byte Little-Endian `<4sHBBH` header + `<= 1408`-byte RGB565LE framebuffer slice (`<= 1418` bytes/UDP packet).
       description: |
-        > **Transport Note**: Models 1 & 2A (`supports_local_card: true`) use **`MQTT+TCP` (`mqtt_tcp`) by default** — streaming
-        > credit-acknowledged lossless `DMDZ` v1 frames over **`WS /api/v1/{domain}/ws/{item_id}.dmdz`** on constrained `ESP32` /
-        > `ESP32-S3` boards, with automatic paced HTTP TCP fallback (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`,
-        > documented in `/openapi.json`) and unpaced raw `DMDS` HTTP preload on `ArcadeMatrix_RPi`.
+        > **Transport Note**: Models 1 & 2A (`supports_local_card: true`) use **`MQTT+TCP` (`mqtt_tcp`) by default** — downloading
+        > lossless `DMDZ` v2 (`.dmdz2.stream`) over plain HTTP `1.1` `Content-Length` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?codec=dmdz2`,
+        > documented in `/openapi.json`) onto SD (`esp32dev`), PSRAM (`ESP32-S3`), or RAM (`ArcadeMatrix_RPi`).
         > The UDP `DMDF` datagram format below powers **Model 2B Passive Receivers (`UDP-PASSIVE :4210`, `supports_local_card: false`)**
         > and optional `mqtt_udp` sessions.
 
@@ -817,8 +668,8 @@ components:
         - Set bit `(1 << chunk_idx)` in a 64-bit `chunk_mask`; commit the frame when `chunk_mask == (1 << total_chunks) - 1`
           (or flush partial non-zero `chunk_mask` if `frame_seq` advances on minor Wi-Fi packet loss).
         - On optional `mqtt_udp` clients, combine MQTT `stream_eof` with a local `2,500 ms` UDP inactivity watchdog
-          (`millis() - lastUdpPacketMs > 2500`) and fall back to paced HTTP TCP `DMDS`
-          (`/api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1`) if VM NAT blocks UDP.
+          (`millis() - lastUdpPacketMs > 2500`) and fall back to HTTP TCP `DMDZ` v2
+          (`/api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&codec=dmdz2`) if VM NAT blocks UDP.
       payload:
         type: string
         format: binary

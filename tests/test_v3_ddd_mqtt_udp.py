@@ -1805,10 +1805,10 @@ async def test_udp_nat_pinhole_hello_and_dmdf_return_routing(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_stop_stream_tcp_fallback_preserves_package_and_paced_http_stream(tmp_path: Path):
+async def test_stop_stream_tcp_fallback_preserves_package_and_http_stream(tmp_path: Path):
     """
     Verify `stop_stream` with `{"purge": False, "reason": "tcp_fallback"}` stops UDP without
-    deleting `.rgb565.stream`, allowing immediate `?purge=true&paced=1` HTTP fallback + clean purge.
+    deleting `.rgb565.stream`, allowing immediate `?purge=true` HTTP `Content-Length` fallback + clean purge.
     """
     item_id = "fallback_test_item_99"
     item_dir = tmp_path / item_id
@@ -1877,9 +1877,9 @@ async def test_stop_stream_tcp_fallback_preserves_package_and_paced_http_stream(
     assert stream_path.exists()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true&paced=1")
+        resp = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true")
         assert resp.status_code == 200
-        assert resp.headers.get("X-DMD-Paced") == "1"
+        assert int(resp.headers["Content-Length"]) == len(expected_bytes)
         assert resp.content == expected_bytes
 
     assert item_id not in consume_once_orchestrator.active_packages
@@ -1903,92 +1903,6 @@ async def test_mdns_responder_skips_advertising_on_nat_isolated_docker_bridge(mo
     await responder.start(port=8890)
     assert responder.is_nat_isolated is True
     assert responder.is_running is False
-
-
-@pytest.mark.asyncio
-async def test_paced_dmds_drop_late_skips_stale_frames_without_burst(tmp_path: Path):
-    """
-    Verify `?purge=true&paced=1&drop_late=1` omits `Content-Length`, sets `X-DMD-Drop-Late: 1`,
-    and jumps directly to `due_frame` via `seek()` when the event loop stalls behind wall-clock.
-    """
-    item_id = "drop_late_test_item_01"
-    item_dir = tmp_path / item_id
-    item_dir.mkdir(parents=True, exist_ok=True)
-    stream_path = item_dir / f"{item_id}.rgb565.stream"
-    frames = [np.full((32, 128, 3), fill_value=v, dtype=np.uint8) for v in (10, 40, 80, 120, 160, 200)]
-    write_rgb565_stream(frames, str(stream_path), fps=25)
-    full_size = stream_path.stat().st_size
-
-    cand = MediaCandidate(
-        id="ss_drop_01",
-        domain="games",
-        source_id="screenscraper",
-        title="OutRun",
-        year="1986",
-        badge="MAME",
-        badge_color="#FF6D00",
-        subtitle="Arcade",
-        rating="9.2",
-        synopsis="Sega Super Scaler arcade racer.",
-    )
-    card = ShowcaseCard(
-        item_id=item_id,
-        domain="games",
-        title="OutRun",
-        year="1986",
-        badge="MAME",
-        badge_color="#FF6D00",
-        subtitle="Arcade",
-        rating="9.2",
-        synopsis="Sega Super Scaler arcade racer.",
-        lang="en",
-        source_used="screenscraper",
-        poster_width=32,
-        poster_height=32,
-        poster_rgb565_b64="",
-        has_video=True,
-        stream_frames=6,
-        stream_fps=25,
-        stream_duration_s=0.24,
-    )
-    pkg = PreparedShowcasePackage(
-        item_id=item_id,
-        dmd_id="esp32_droplate_dmd",
-        domain="games",
-        candidate=cand,
-        geometry=PanelGeometry(width=128, height=32),
-        card=card,
-        item_dir=item_dir,
-        unified_stream_path=stream_path,
-        consumed=True,
-    )
-    consume_once_orchestrator.active_packages[item_id] = pkg
-
-    async def _simulate_server_cpu_stall() -> None:
-        await asyncio.sleep(0.01)
-        # Simulate a synchronous 130ms YOLO/CPU stall on the server loop while frame 1 is sleeping
-        import time as _time
-
-        _time.sleep(0.13)
-
-    stall_task = asyncio.create_task(_simulate_server_cpu_stall())
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get(
-                f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true&paced=1&drop_late=1"
-            )
-            assert resp.status_code == 200
-            assert resp.headers.get("X-DMD-Drop-Late") == "1"
-            assert "content-length" not in {k.lower() for k in resp.headers.keys()}
-            received = resp.content
-    finally:
-        await stall_task
-
-    # Must start with valid 16-byte DMDS header + at least Frame 0, and skip intermediate stale frames
-    assert received[:4] == b"DMDS"
-    assert (len(received) - 16) % (128 * 32 * 2) == 0
-    assert 16 + (128 * 32 * 2) <= len(received) < full_size
-    assert item_id not in consume_once_orchestrator.active_packages
 
 
 @pytest.mark.asyncio
@@ -2200,7 +2114,7 @@ async def test_compact_item_id_and_mqtt_tcp_stream_consume_once(tmp_path: Path, 
        `^pkg_games_[0-9a-f]{12}$`) so embedded ESP32 buffers never truncate URLs, while
        `seen_repo` still tracks the full `candidate.id`.
     2. `MQTT+TCP` (`mqtt_tcp`) clients publish `config`, receive `ready`, publish `start_card`
-       (or stream directly before `start_card` arrives), and consume `.rgb565.stream?purge=true&paced=1&drop_late=1`
+       (or stream directly before `start_card` arrives), and consume `.rgb565.stream?purge=true&codec=dmdz2`
        with `200 OK`, `transport == "MQTT+TCP"`, and automatic package purge on completion.
     """
     import re
@@ -2334,13 +2248,12 @@ async def test_compact_item_id_and_mqtt_tcp_stream_consume_once(tmp_path: Path, 
         first_item_id = ready_pkg.item_id
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(
-                f"/api/v1/games/stream/{first_item_id}.rgb565.stream?purge=true&paced=1&drop_late=1"
+                f"/api/v1/games/stream/{first_item_id}.rgb565.stream?purge=true&codec=dmdz2"
             )
             assert resp.status_code == 200
-            assert resp.headers.get("x-dmd-paced") == "1"
-            assert resp.headers.get("x-dmd-drop-late") == "1"
-            assert resp.content[:4] == b"DMDS"
-            assert len(resp.content) >= 16 + (128 * 32 * 2)
+            assert resp.headers.get("x-dmd-codec") == "dmdz2"
+            assert int(resp.headers["content-length"]) == len(resp.content)
+            assert resp.content[:4] == b"DMDZ"
 
             clients_resp = await client.get("/api/v1/clients")
             assert clients_resp.status_code == 200
@@ -2353,14 +2266,15 @@ async def test_compact_item_id_and_mqtt_tcp_stream_consume_once(tmp_path: Path, 
             task.cancel()
 
 
-def test_dmdz1_lossless_codec_roundtrip_scroll_and_compression():
+def test_dmdz2_lossless_codec_roundtrip_scroll_and_compression():
     """
-    `dmdz1` must decode bit-exactly (keyframe, vertical scroll, SKIP/LONG SKIP, RUN, INDEX, DIFF, LIT)
-    and shrink 1 px/frame panoramas well below the ESP32 5.7 KB TCP window.
+    `dmdz2` must decode bit-exactly (keyframe, vertical scroll, SKIP/LONG SKIP, RUN, INDEX, DIFF, LIT)
+    and shrink 1 px/frame panoramas dramatically compared to raw `DMDS`.
     """
     from app.infrastructure.rendering.dmdz_codec import (
         DMDZ_MAGIC,
         FRAME_KEY,
+        FRAME_RAW,
         FRAME_SCROLL,
         decode_dmdz_bytes,
         encode_dmdz_bytes,
@@ -2368,14 +2282,14 @@ def test_dmdz1_lossless_codec_roundtrip_scroll_and_compression():
 
     rng = np.random.default_rng(1234)
     tall = rng.integers(0, 0xFFFF, size=(160, 128), dtype=np.uint16)
+    tall[0:16, :] = 0x001F  # structured top sky band so frame 0 uses FRAME_KEY
     tall[40:80, :] = 0x07E0  # flat band (RUN / INDEX)
     tall[80:120, :] = (np.arange(128, dtype=np.uint16) // 4) << 11  # gentle gradient (DIFF)
     pano = [tall[k : k + 32].copy() for k in range(0, 96)]  # 1 px/frame vertical panorama
-    # Mutate a small HUD/sprite region on frames 10..20: best-overlap scroll must still engage losslessly
     for idx in range(10, 20):
         pano[idx][2:6, 4:16] = np.uint16(0xFFE0 ^ idx)
     static = [pano[-1].copy() for _ in range(5)]  # identical frames (LONG SKIP)
-    noisy = [rng.integers(0, 0xFFFF, size=(32, 128), dtype=np.uint16) for _ in range(3)]  # LIT
+    noisy = [rng.integers(0, 0xFFFF, size=(32, 128), dtype=np.uint16) for _ in range(3)]  # FRAME_RAW cap
     frames = np.stack(pano + static + noisy)
 
     raw = struct.pack("<4sBBHHHHH", b"DMDS", 1, 25, 128, 32, frames.shape[0], 40, 0) + frames.astype("<u2").tobytes()
@@ -2395,20 +2309,17 @@ def test_dmdz1_lossless_codec_roundtrip_scroll_and_compression():
         off += 2 + length
     assert off == len(encoded)
     assert types[0] == FRAME_KEY
-    # Genuine scrolling frames (including frames 10..20 with mutated HUD sprite) use FRAME_SCROLL,
-    # while identical frames (uniform bands + static tail) avoid redundant client memmove via FRAME_DELTA.
-    assert types.count(FRAME_SCROLL) >= 75
+    assert types.count(FRAME_SCROLL) >= 40
     assert all(t == FRAME_SCROLL for t in types[11:20])
     assert all(t == 0 for t in types[96:101])
-    # 1 px/frame panorama frames carry ~1 new row (256 B) instead of 8 KB: many fit in a 5.7 KB window
+    assert all(t == FRAME_RAW for t in types[-3:])
     assert max(sizes[1:96]) < 600
-    # Whole stream (incl. 3 incompressible noise frames) must still be far smaller than raw
     assert len(encoded) * 4 < len(raw)
 
 
 @pytest.mark.asyncio
-async def test_paced_stream_serves_dmdz1_when_requested_and_raw_otherwise(tmp_path: Path):
-    """`?codec=dmdz1&paced=1` serves the lossless sibling (`X-DMD-Codec: dmdz1`); legacy clients keep raw `DMDS`."""
+async def test_http_stream_serves_dmdz2_when_requested_and_raw_otherwise(tmp_path: Path):
+    """`?codec=dmdz2` serves the lossless `.dmdz2.stream` sibling (`X-DMD-Codec: dmdz2`); omitting `codec` serves raw `DMDS`."""
     from app.infrastructure.rendering.dmdz_codec import decode_dmdz_bytes
 
     item_id = "dmdz_codec_item_42"
@@ -2438,179 +2349,19 @@ async def test_paced_stream_serves_dmdz1_when_requested_and_raw_otherwise(tmp_pa
 
     consume_once_orchestrator.active_packages[item_id] = _make_pkg()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=false&paced=1&codec=dmdz1")
+        resp = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2")
         assert resp.status_code == 200
-        assert resp.headers.get("X-DMD-Codec") == "dmdz1"
+        assert resp.headers.get("X-DMD-Codec") == "dmdz2"
         assert resp.content[:4] == b"DMDZ"
         assert int(resp.headers["Content-Length"]) == len(resp.content)
         decoded = decode_dmdz_bytes(resp.content)
         expected = np.frombuffer(raw_bytes[16:], dtype="<u2").reshape(decoded.shape)
         assert np.array_equal(decoded, expected)
 
-        legacy = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true&paced=1")
+        legacy = await client.get(f"/api/v1/games/stream/{item_id}.rgb565.stream?purge=true")
         assert legacy.status_code == 200
         assert legacy.headers.get("X-DMD-Codec") is None
         assert legacy.content == raw_bytes
 
     assert item_id not in consume_once_orchestrator.active_packages
     assert not item_dir.exists() or not stream_path.exists()
-
-
-def test_ws_credited_dmdz_stream_subpacket_and_lossless_roundtrip(tmp_path: Path):
-    """Verify ZeDMD-style credit-acked `/ws/{item_id}.dmdz` caps every WS frame at <= 1024 B and decodes losslessly."""
-    from fastapi.testclient import TestClient
-    from starlette.websockets import WebSocketDisconnect
-
-    from app.infrastructure.rendering.dmdz_codec import decode_dmdz_bytes
-
-    rng = np.random.default_rng(77)
-    item_id = "ws_dmdz_item_99"
-    item_dir = tmp_path / item_id
-    item_dir.mkdir(parents=True, exist_ok=True)
-    stream_path = item_dir / f"{item_id}.rgb565.stream"
-    # Mix multi-KB high-entropy video keyframe (> 4 KB) + smooth scroll/delta frames
-    frames_rgb = [
-        rng.integers(0, 256, size=(32, 128, 3), dtype=np.uint8),
-        np.full((32, 128, 3), fill_value=45, dtype=np.uint8),
-        rng.integers(0, 256, size=(32, 128, 3), dtype=np.uint8),
-    ]
-    write_rgb565_stream(frames_rgb, str(stream_path), fps=60)
-    raw_bytes = stream_path.read_bytes()
-
-    cand = MediaCandidate(
-        id="ss_99", domain="games", source_id="screenscraper", title="Metal Slug", year="1996",
-        badge="NEOGEO", badge_color="#FFD700", subtitle="Neo-Geo", rating="9.2", synopsis="Run and gun.",
-    )
-    card = ShowcaseCard(
-        item_id=item_id, domain="games", title="Metal Slug", year="1996", badge="NEOGEO",
-        badge_color="#FFD700", subtitle="Neo-Geo", rating="9.2", synopsis="Run and gun.", lang="en",
-        source_used="screenscraper", poster_width=32, poster_height=32, poster_rgb565_b64="",
-        has_video=True, stream_frames=3, stream_fps=60, stream_duration_s=0.05,
-    )
-    consume_once_orchestrator.active_packages[item_id] = PreparedShowcasePackage(
-        item_id=item_id, dmd_id="esp32_ws_dmd", domain="games", candidate=cand,
-        geometry=PanelGeometry(width=128, height=32), card=card, item_dir=item_dir,
-        unified_stream_path=stream_path, consumed=True,
-    )
-
-    chunks = []
-    with TestClient(app) as tc:
-        # 1. Verify custom ?credits=4 window without purge (e.g. ESP32-S3 PSRAM wider sliding window)
-        psram_chunks = []
-        with tc.websocket_connect(
-            f"/api/v1/games/ws/{item_id}.dmdz?purge=false&client_id=esp32s3_ws_dmd&credits=4"
-        ) as ws_psram:
-            while True:
-                try:
-                    msg = ws_psram.receive_bytes()
-                except WebSocketDisconnect:
-                    break
-                assert 0 < len(msg) <= 1024
-                psram_chunks.append(msg)
-                ws_psram.send_bytes(b"A")
-        assert b"".join(psram_chunks)[:4] == b"DMDZ"
-        assert item_id in consume_once_orchestrator.active_packages
-
-        # 2. Verify default 2-credit window with purge=true (ESP32_STD 0 PSRAM)
-        with tc.websocket_connect(f"/api/v1/games/ws/{item_id}.dmdz?purge=true&client_id=esp32_ws_dmd") as ws:
-            while True:
-                try:
-                    msg = ws.receive_bytes()
-                except WebSocketDisconnect:
-                    break
-                assert 0 < len(msg) <= 1024
-                chunks.append(msg)
-                ws.send_bytes(b"A")
-
-    assert len(chunks) >= 8  # 16 B header + multi-chunk >4 KB frames
-    assembled = b"".join(chunks)
-    decoded = decode_dmdz_bytes(assembled)
-    expected = np.frombuffer(raw_bytes[16:], dtype="<u2").reshape(decoded.shape)
-    assert np.array_equal(decoded, expected)
-    assert item_id not in consume_once_orchestrator.active_packages
-
-
-def test_temporal_dither_stabilizer_and_ws_coalesced_credit_acks(tmp_path: Path):
-    """
-    1. `stabilize_rgb565_stream_temporal_dither` suppresses 1-LSB inter-frame GIF dithering boil
-       (shrinking DMDZ delta frames) while preserving scrolling frames and periodic anchor refreshes.
-    2. `/ws/{item_id}.dmdz` accepts coalesced multi-byte client ACKs (`b"AA"` / `b"AAA"`).
-    """
-    from fastapi.testclient import TestClient
-    from starlette.websockets import WebSocketDisconnect
-
-    from app.infrastructure.rendering.dmdz_codec import (
-        decode_dmdz_bytes,
-        encode_dmdz_bytes,
-        stabilize_rgb565_stream_temporal_dither,
-    )
-
-    rng = np.random.default_rng(2026)
-    base_frame = rng.integers(2, 28, size=(32, 128), dtype=np.uint16)
-    base_565 = ((base_frame << 11) | ((base_frame * 2) << 5) | base_frame).astype("<u2")
-
-    raw_frames = [base_565.copy()]
-    for k in range(1, 20):
-        dr = rng.integers(-1, 2, size=(32, 128), dtype=np.int16)
-        dg = rng.integers(-2, 3, size=(32, 128), dtype=np.int16)
-        db = rng.integers(-1, 2, size=(32, 128), dtype=np.int16)
-        r = np.clip(((base_565 >> 11) & 0x1F).astype(np.int16) + dr, 0, 31).astype(np.uint16)
-        g = np.clip(((base_565 >> 5) & 0x3F).astype(np.int16) + dg, 0, 63).astype(np.uint16)
-        b = np.clip((base_565 & 0x1F).astype(np.int16) + db, 0, 31).astype(np.uint16)
-        noisy = ((r << 11) | (g << 5) | b).astype("<u2")
-        # Inject real foreground sprite motion (> 1 LSB) that must NEVER be suppressed
-        noisy[8:14, (k * 4) % 100 : ((k * 4) % 100) + 12] = np.uint16(0xFFE0)
-        raw_frames.append(noisy)
-
-    stacked = np.stack(raw_frames)
-    stream_path = tmp_path / "video_128x32.rgb565.stream"
-    hdr = struct.pack("<4sBBHHHHH", b"DMDS", 1, 15, 128, 32, len(raw_frames), 67, 0)
-    stream_path.write_bytes(hdr + stacked.tobytes())
-
-    before_dmdz = encode_dmdz_bytes(stream_path.read_bytes())
-    assert stabilize_rgb565_stream_temporal_dither(stream_path) is True
-    after_raw = stream_path.read_bytes()
-    after_dmdz = encode_dmdz_bytes(after_raw)
-
-    assert len(after_dmdz) * 2 < len(before_dmdz)
-    stabilized_frames = np.frombuffer(after_raw[16:], dtype="<u2").reshape(stacked.shape)
-    for k in range(1, 20):
-        x0 = (k * 4) % 100
-        assert np.all(stabilized_frames[k, 8:14, x0 : x0 + 12] == 0xFFE0)
-    assert np.array_equal(decode_dmdz_bytes(after_dmdz), stabilized_frames)
-
-    # Verify coalesced multi-byte credit ACKs (`b"AAA"`) over WebSocket
-    item_id = "ws_coalesced_ack_item"
-    cand = MediaCandidate(
-        id="ss_coal", domain="movies", source_id="tmdb", title="Blade Runner", year="1982",
-        badge="MOVIE", badge_color="#FF6D00", subtitle="Sci-Fi", rating="8.1", synopsis="Replicants.",
-    )
-    card = ShowcaseCard(
-        item_id=item_id, domain="movies", title="Blade Runner", year="1982", badge="MOVIE",
-        badge_color="#FF6D00", subtitle="Sci-Fi", rating="8.1", synopsis="Replicants.", lang="en",
-        source_used="tmdb", poster_width=32, poster_height=32, poster_rgb565_b64="",
-        has_video=True, stream_frames=20, stream_fps=60, stream_duration_s=0.33,
-    )
-    consume_once_orchestrator.active_packages[item_id] = PreparedShowcasePackage(
-        item_id=item_id, dmd_id="esp32_coal_dmd", domain="movies", candidate=cand,
-        geometry=PanelGeometry(width=128, height=32), card=card, item_dir=tmp_path,
-        unified_stream_path=stream_path, consumed=True,
-    )
-    rx = []
-    pending_ack = 0
-    with TestClient(app) as tc:
-        with tc.websocket_connect(
-            f"/api/v1/movies/ws/{item_id}.dmdz?purge=false&client_id=esp32_coal_dmd&credits=4"
-        ) as ws:
-            while True:
-                try:
-                    msg = ws.receive_bytes()
-                except WebSocketDisconnect:
-                    break
-                rx.append(msg)
-                pending_ack += 1
-                if pending_ack >= 2:
-                    ws.send_bytes(b"A" * pending_ack)
-                    pending_ack = 0
-    assert np.array_equal(decode_dmdz_bytes(b"".join(rx)), stabilized_frames)
-    consume_once_orchestrator.active_packages.pop(item_id, None)

@@ -1,23 +1,21 @@
 """
-DMDZ v1 & v2: lossless, in-place decodable RGB565 frame codec for memory-constrained DMD clients.
+DMDZ v2 (`dmdz2`): 100% lossless, in-place decodable RGB565 frame codec for DMD LED matrices.
 
-Embedded clients (classic ESP32 without PSRAM) run with a fixed ~5.7 KB TCP receive window, smaller
-than one raw 128x32 RGB565 frame (8 KB). Raw DMDS throughput is therefore capped at `window / RTT`.
-DMDZ shrinks real Showcase streams 3-7x (videos) and 23-64x (panoramas) with zero extra heap on the
-ESP32, so multiple compressed frames fit inside the client's circular RAM jitter buffer.
+Shrinks True-RGB565 Showcase streams 3-7x (videos) and 23-64x (panoramas) with zero pixel loss
+and zero extra framebuffer heap on embedded clients (`esp32dev` SD-card queue, `ESP32-S3` PSRAM
+preload / `1 MB` PSRAM SPSC ring, and `ArcadeMatrix_RPi` RAM preload).
 
 ### Container (Little-Endian)
-- `0..15`: header `<4sBBHHHHH` = `"DMDZ"`, `version` (`1` or `2`), `fps`, `width`, `height`,
+- `0..15`: header `<4sBBHHHHH` = `"DMDZ"`, `version` (`2`), `fps`, `width`, `height`,
   `total_frames`, `frame_dur_ms`, `keyframe_interval` (`0` = only frame 0 is a keyframe).
 - Per frame: `<H` payload length `L`, then `L` bytes:
   - `type == 0` (`FRAME_DELTA`): delta op stream against `prev`.
   - `type == 1` (`FRAME_SCROLL`): `dy` (`int8`) vertical `memmove` + op stream.
   - `type == 2` (`FRAME_KEY`): keyframe op stream (no prior reference required).
-  - `type == 3` (`FRAME_SCROLL_2D`, v2): `dx` (`int8`), `dy` (`int8`) 2D `memmove` + op stream.
-  - `type == 4` (`FRAME_RAW`, v2): raw uncompressed `width * height * 2` little-endian bytes (`L = 1 + 2*N`).
-  - `type == 5` (`FRAME_PAL8`, v2): up to 128-color scene RGB565 palette + optional 2D scroll + skip/run/index ops.
+  - `type == 3` (`FRAME_SCROLL_2D`): `dx` (`int8`), `dy` (`int8`) 2D `memmove` + op stream.
+  - `type == 4` (`FRAME_RAW`): raw uncompressed `width * height * 2` little-endian bytes (`L = 1 + 2*N`).
 
-### 2D scroll reference (`type == 3`, v2)
+### 2D scroll reference (`type == 3`)
 1. Vertical `memmove` (`dy > 0` moves content up: rows `[0, h - dy) <- [dy, h)`; `dy < 0` moves down).
 2. Horizontal `memmove` per row (`dx > 0` moves content left: cols `[0, w - dx) <- [dx, w)`; `dx < 0` moves right).
 
@@ -26,15 +24,15 @@ ESP32, so multiple compressed frames fit inside the client's circular RAM jitter
 - `01nnnnnn` (`0x40..0x7F`) RUN `n + 1`: repeat `last`.
 - `10iiiiii` (`0x80..0xBF`) INDEX: `cache[i]`.
 - `110xxxxx` (`0xC0..0xDA`) DIFF: `x = (dr + 1) * 9 + (dg + 1) * 3 + (db + 1)` in `{-1, 0, 1}` from `last`.
-- `0xDC..0xDF` + `b2` (v2) SPATIAL LUMA from `last`: `dg in [-8..7]`, `dr - floor(dg/2) in [-4..3]`,
+- `0xDC..0xDF` + `b2` SPATIAL LUMA from `last`: `dg in [-8..7]`, `dr - floor(dg/2) in [-4..3]`,
   `db - floor(dg/2) in [-4..3]`; cached.
 - `1110nnnn` (`0xE0..0xEF`) LIT `n + 1` raw pixels (`<H` each), each cached.
 - `11110000` (`0xF0`) LONG SKIP with `<H` count.
-- `0xF1..0xF4` + `b2` (v2) TEMPORAL LUMA from `frame[pos]` (`ref[pos]`): same 10-bit luma-coupled delta
+- `0xF1..0xF4` + `b2` TEMPORAL LUMA from `frame[pos]` (`ref[pos]`): same 10-bit luma-coupled delta
   applied to the reference pixel already sitting in-place at `frame[pos]`; cached.
-- `0xF6..0xF7` + `<H` (v2) PIXEL LZ77 backward copy: `count = ((packed17 >> 11) & 0x3F) + 3` (`3..66` px),
+- `0xF6..0xF7` + `<H` PIXEL LZ77 backward copy: `count = ((packed17 >> 11) & 0x3F) + 3` (`3..66` px),
   `dist = (packed17 & 0x7FF) + 1` (`1..2048` px) copied forward from `pos - dist`; last pixel cached.
-- `0xF8..0xFF` (v2) TEMPORAL DIFF: 8 1-byte neutral/near-neutral `(dr, dg, db)` fades from `frame[pos]`.
+- `0xF8..0xFF` TEMPORAL DIFF: 8 1-byte neutral/near-neutral `(dr, dg, db)` fades from `frame[pos]`.
 """
 from __future__ import annotations
 
@@ -49,28 +47,17 @@ from app.infrastructure.rendering.dmdz_motion import (
     HEADER_FMT,
     MAX_SCROLL_COLS,
     MAX_SCROLL_ROWS,
-    detect_scroll_1d as _detect_scroll,
+    detect_scroll_1d,
     detect_scroll_2d,
     scrolled_reference,
     scrolled_reference_2d,
-    stabilize_rgb565_frames_sram,
-    stabilize_rgb565_stream_temporal_dither,
-)
-from app.infrastructure.rendering.dmdz_pal8 import (
-    FRAME_PAL8,
-    SRAM_DEFAULT_FRAME_CAP,
-    decode_frame_pal8,
-    encode_adaptive_pal8_sram,
-    encode_frame_pal8_payload,
-    quantize_rgb565_palette,
 )
 
 DMDZ_MAGIC = b"DMDZ"
-DMDZ_VERSION = 1
+DMDZ_VERSION = 2
 DMDZ_V2_VERSION = 2
-DMDZ_CODEC_ID = "dmdz1"
+DMDZ_CODEC_ID = "dmdz2"
 DMDZ_V2_CODEC_ID = "dmdz2"
-VALID_STREAM_PROFILES: Tuple[str, ...] = ("sram", "psram", "psram_hd")
 
 FRAME_DELTA = 0
 FRAME_SCROLL = 1
@@ -95,29 +82,12 @@ def _hash(p: int) -> int:
     return (((p >> 11) & 0x1F) * 3 + ((p >> 5) & 0x3F) * 5 + (p & 0x1F) * 7) & 63
 
 
-def normalize_stream_profile(profile: str = "") -> str:
-    """Normalizes hardware stream profile (`'sram' | 'psram' | 'psram_hd'`, or `''` default)."""
-    norm = str(profile or "").strip().lower()
-    return norm if norm in VALID_STREAM_PROFILES else ""
-
-
-def dmdz_sibling_path(raw_stream_path: Path, version: int = 1, profile: str = "") -> Path:
-    """
-    `unified_128x32.rgb565.stream` ->
-    - `version == 1`: `unified_128x32.dmdz.stream`
-    - `version >= 2` and `profile == 'sram'`: `unified_128x32.dmdz2.sram.stream`
-    - `version >= 2` and `profile in ('', 'psram', 'psram_hd')`: `unified_128x32.dmdz2.stream`
-    """
+def dmdz_sibling_path(raw_stream_path: Path) -> Path:
+    """Maps `unified_128x32.rgb565.stream` -> `unified_128x32.dmdz2.stream`."""
     name = raw_stream_path.name
     if name.endswith(".rgb565.stream"):
         name = name[: -len(".rgb565.stream")]
-    if int(version) < 2:
-        suffix = ".dmdz.stream"
-    elif normalize_stream_profile(profile) == "sram":
-        suffix = ".dmdz2.sram.stream"
-    else:
-        suffix = ".dmdz2.stream"
-    return raw_stream_path.with_name(f"{name}{suffix}")
+    return raw_stream_path.with_name(f"{name}.dmdz2.stream")
 
 
 def _append_skip_ops(out: bytearray, run: int) -> None:
@@ -132,104 +102,19 @@ def _append_skip_ops(out: bytearray, run: int) -> None:
         run -= count
 
 
-def encode_frame_ops(
-    cur: Union[Sequence[int], np.ndarray],
-    ref: Optional[Union[Sequence[int], np.ndarray]],
-) -> bytearray:
-    """Encodes one frame's pixel stream (raster order) in DMDZ v1 op format."""
-    cur_arr = np.ascontiguousarray(cur, dtype="<u2").ravel()
-    n = int(cur_arr.size)
-    out = bytearray()
-    if n == 0:
-        return out
-
-    ref_arr: Optional[np.ndarray] = None
-    diff_mv: Optional[memoryview] = None
-    diff_len = 0
-    if ref is not None:
-        ref_arr = np.ascontiguousarray(ref, dtype="<u2").ravel()
-        diff_idx = np.flatnonzero(cur_arr != ref_arr)
-        diff_len = int(diff_idx.size)
-        if diff_len == 0:
-            _append_skip_ops(out, n)
-            return out
-        diff_mv = memoryview(diff_idx)
-
-    cur_mv = memoryview(cur_arr)
-    cache = [0] * 64
-    last = 0
-    lit: List[int] = []
-
-    def flush_lit() -> None:
-        if lit:
-            out.append(0xE0 | (len(lit) - 1))
-            for px in lit:
-                out.append(px & 0xFF)
-                out.append((px >> 8) & 0xFF)
-            lit.clear()
-
-    i = 0
-    d_pos = 0
-    while i < n:
-        if diff_mv is not None:
-            while d_pos < diff_len and diff_mv[d_pos] < i:
-                d_pos += 1
-            if d_pos >= diff_len:
-                flush_lit()
-                _append_skip_ops(out, n - i)
-                return out
-            next_diff = int(diff_mv[d_pos])
-            if next_diff > i:
-                flush_lit()
-                _append_skip_ops(out, next_diff - i)
-                last = cur_mv[next_diff - 1]
-                cache[_hash(last)] = last
-                i = next_diff
-                continue
-            d_pos += 1
-
-        p = cur_mv[i]
-        if p == last:
-            j = i + 1
-            max_j = min(n, i + 64)
-            while j < max_j and cur_mv[j] == last:
-                j += 1
-            flush_lit()
-            out.append(0x40 | (j - i - 1))
-            i = j
-            continue
-        h = _hash(p)
-        if cache[h] == p:
-            flush_lit()
-            out.append(0x80 | h)
-            last = p
-            i += 1
-            continue
-        dr = ((p >> 11) & 0x1F) - ((last >> 11) & 0x1F)
-        dg = ((p >> 5) & 0x3F) - ((last >> 5) & 0x3F)
-        db = (p & 0x1F) - (last & 0x1F)
-        if -1 <= dr <= 1 and -1 <= dg <= 1 and -1 <= db <= 1:
-            flush_lit()
-            out.append(0xC0 | ((dr + 1) * 9 + (dg + 1) * 3 + (db + 1)))
-        else:
-            lit.append(p)
-            if len(lit) == 16:
-                flush_lit()
-        cache[h] = p
-        last = p
-        i += 1
-    flush_lit()
-    return out
-
-
 def encode_frame_ops_v2(
     cur: Union[Sequence[int], np.ndarray],
     ref: Optional[Union[Sequence[int], np.ndarray]],
-) -> bytearray:
+    max_bytes: Optional[int] = None,
+) -> Optional[bytearray]:
     """
-    Encodes one frame's pixel stream (raster order) in DMDZ v2 op format:
-    adds backward Pixel-LZ77 (`0xF6..0xF7`), 1-byte temporal `TDIFF` (`0xF8..0xFF`),
+    Encodes one frame's pixel stream (raster order) in lossless DMDZ v2 op format:
+    backward Pixel-LZ77 (`0xF6..0xF7`), 1-byte temporal `TDIFF` (`0xF8..0xFF`),
     2-byte spatial `OP_LUMA` (`0xDC..0xDF`), and 2-byte temporal `OP_TLUMA` (`0xF1..0xF4`).
+
+    When `max_bytes` is provided (e.g. `2 * n` raw byte cap), aborts early and returns `None`
+    as soon as the op stream exceeds `max_bytes`, avoiding wasted CPU work on high-entropy frames
+    where `FRAME_RAW` wins unconditionally.
     """
     cur_arr = np.ascontiguousarray(cur, dtype="<u2").ravel()
     n = int(cur_arr.size)
@@ -255,12 +140,8 @@ def encode_frame_ops_v2(
     cache = [0] * 64
     last = 0
     lit: List[int] = []
-
-    def record_pair(pos_idx: int) -> None:
-        if 0 <= pos_idx < n - 1:
-            p0 = cur_mv[pos_idx]
-            p1 = cur_mv[pos_idx + 1]
-            pair_slots[((p0 * 40503) ^ (p1 * 257)) & 1023] = pos_idx
+    n_minus_1 = n - 1
+    tdiff_get = _TDIFF_MAP.get
 
     def flush_lit() -> None:
         if lit:
@@ -270,42 +151,35 @@ def encode_frame_ops_v2(
                 out.append((px >> 8) & 0xFF)
             lit.clear()
 
-    def encode_luma_pair(pr: int, pg: int, pb: int, base_p: int, base_op: int) -> Optional[Tuple[int, int]]:
-        dr = pr - ((base_p >> 11) & 0x1F)
-        dg = pg - ((base_p >> 5) & 0x3F)
-        db = pb - (base_p & 0x1F)
-        if -8 <= dg <= 7:
-            dg_rb = dg >> 1
-            dr_dg = dr - dg_rb
-            db_dg = db - dg_rb
-            if -4 <= dr_dg <= 3 and -4 <= db_dg <= 3:
-                u_dg = dg + 8
-                return (
-                    base_op + (u_dg >> 2),
-                    ((u_dg & 0x03) << 6) | ((dr_dg + 4) << 3) | (db_dg + 4),
-                )
-        return None
-
     i = 0
     d_pos = 0
     while i < n:
+        if max_bytes is not None:
+            pending_lit = (1 + (len(lit) << 1)) if lit else 0
+            if len(out) + pending_lit > max_bytes:
+                return None
+
         if diff_mv is not None:
             while d_pos < diff_len and diff_mv[d_pos] < i:
                 d_pos += 1
             if d_pos >= diff_len:
                 flush_lit()
                 _append_skip_ops(out, n - i)
-                return out
+                return None if (max_bytes is not None and len(out) > max_bytes) else out
             next_diff = int(diff_mv[d_pos])
             if next_diff > i:
                 flush_lit()
                 _append_skip_ops(out, next_diff - i)
-                record_pair(i)
-                if next_diff >= 2:
-                    record_pair(next_diff - 2)
-                record_pair(next_diff - 1)
-                last = cur_mv[next_diff - 1]
-                cache[_hash(last)] = last
+                if i < n_minus_1:
+                    pair_slots[((cur_mv[i] * 40503) ^ (cur_mv[i + 1] * 257)) & 1023] = i
+                if next_diff >= 2 and (next_diff - 2) < n_minus_1:
+                    idx2 = next_diff - 2
+                    pair_slots[((cur_mv[idx2] * 40503) ^ (cur_mv[idx2 + 1] * 257)) & 1023] = idx2
+                idx1 = next_diff - 1
+                if idx1 < n_minus_1:
+                    pair_slots[((cur_mv[idx1] * 40503) ^ (cur_mv[idx1 + 1] * 257)) & 1023] = idx1
+                last = cur_mv[idx1]
+                cache[(((last >> 11) & 0x1F) * 3 + ((last >> 5) & 0x3F) * 5 + (last & 0x1F) * 7) & 63] = last
                 i = next_diff
                 continue
             d_pos += 1
@@ -313,13 +187,16 @@ def encode_frame_ops_v2(
         p = cur_mv[i]
         if p == last:
             j = i + 1
-            max_j = min(n, i + 64)
+            max_j = i + 64 if (i + 64) < n else n
             while j < max_j and cur_mv[j] == last:
                 j += 1
             flush_lit()
             out.append(0x40 | (j - i - 1))
-            record_pair(i)
-            record_pair(j - 1)
+            if i < n_minus_1:
+                pair_slots[((p * 40503) ^ (cur_mv[i + 1] * 257)) & 1023] = i
+            jm1 = j - 1
+            if jm1 < n_minus_1:
+                pair_slots[((cur_mv[jm1] * 40503) ^ (cur_mv[jm1 + 1] * 257)) & 1023] = jm1
             i = j
             continue
 
@@ -335,7 +212,7 @@ def encode_frame_ops_v2(
                 and cur_mv[cand + 1] == p1
                 and cur_mv[cand + 2] == cur_mv[i + 2]
             ):
-                max_len = min(66, n - i)
+                max_len = 66 if (i + 66) <= n else (n - i)
                 mlen = 3
                 while mlen < max_len and cur_mv[cand + mlen] == cur_mv[i + mlen]:
                     mlen += 1
@@ -344,39 +221,43 @@ def encode_frame_ops_v2(
                 out.append(0xF6 | ((packed17 >> 16) & 0x01))
                 out.append(packed17 & 0xFF)
                 out.append((packed17 >> 8) & 0xFF)
-                for k in range(i, i + mlen):
-                    record_pair(k)
-                last = cur_mv[i + mlen - 1]
-                cache[_hash(last)] = last
-                i += mlen
+                end_k = i + mlen
+                lim_k = end_k if end_k <= n_minus_1 else n_minus_1
+                for k in range(i, lim_k):
+                    pair_slots[((cur_mv[k] * 40503) ^ (cur_mv[k + 1] * 257)) & 1023] = k
+                last = cur_mv[end_k - 1]
+                cache[(((last >> 11) & 0x1F) * 3 + ((last >> 5) & 0x3F) * 5 + (last & 0x1F) * 7) & 63] = last
+                i = end_k
                 continue
 
-        h = _hash(p)
         pr = (p >> 11) & 0x1F
         pg = (p >> 5) & 0x3F
         pb = p & 0x1F
+        h = (pr * 3 + pg * 5 + pb * 7) & 63
 
         one_byte_op = -1
         if cache[h] == p:
             one_byte_op = 0x80 | h
         else:
-            dr = pr - ((last >> 11) & 0x1F)
-            dg = pg - ((last >> 5) & 0x3F)
-            db = pb - (last & 0x1F)
+            lr = (last >> 11) & 0x1F
+            lg = (last >> 5) & 0x3F
+            lb = last & 0x1F
+            dr = pr - lr
+            dg = pg - lg
+            db = pb - lb
             if -1 <= dr <= 1 and -1 <= dg <= 1 and -1 <= db <= 1:
                 one_byte_op = 0xC0 | ((dr + 1) * 9 + (dg + 1) * 3 + (db + 1))
             elif ref_mv is not None:
                 rp = ref_mv[i]
-                t_idx = _TDIFF_MAP.get(
-                    (pr - ((rp >> 11) & 0x1F), pg - ((rp >> 5) & 0x3F), pb - (rp & 0x1F))
-                )
+                t_idx = tdiff_get((pr - ((rp >> 11) & 0x1F), pg - ((rp >> 5) & 0x3F), pb - (rp & 0x1F)))
                 if t_idx is not None:
                     one_byte_op = 0xF8 | t_idx
 
         if one_byte_op >= 0:
             flush_lit()
             out.append(one_byte_op)
-            record_pair(i)
+            if i < n_minus_1:
+                pair_slots[((p * 40503) ^ (cur_mv[i + 1] * 257)) & 1023] = i
             cache[h] = p
             last = p
             i += 1
@@ -384,178 +265,104 @@ def encode_frame_ops_v2(
 
         # 2-byte LUMA / TLUMA: when `not lit`, `2 B` is ALWAYS `<= LIT` (never pays a split-header penalty)
         if not lit:
-            luma_pair = encode_luma_pair(pr, pg, pb, last, 0xDC)
-            if luma_pair is None and ref_mv is not None:
-                luma_pair = encode_luma_pair(pr, pg, pb, ref_mv[i], 0xF1)
-            if luma_pair is not None:
-                out.append(luma_pair[0])
-                out.append(luma_pair[1])
-                record_pair(i)
-                cache[h] = p
-                last = p
-                i += 1
-                continue
+            dg_s = pg - ((last >> 5) & 0x3F)
+            if -8 <= dg_s <= 7:
+                dg_rb_s = dg_s >> 1
+                dr_dg_s = (pr - ((last >> 11) & 0x1F)) - dg_rb_s
+                db_dg_s = (pb - (last & 0x1F)) - dg_rb_s
+                if -4 <= dr_dg_s <= 3 and -4 <= db_dg_s <= 3:
+                    u_dg_s = dg_s + 8
+                    out.append(0xDC + (u_dg_s >> 2))
+                    out.append(((u_dg_s & 0x03) << 6) | ((dr_dg_s + 4) << 3) | (db_dg_s + 4))
+                    if i < n_minus_1:
+                        pair_slots[((p * 40503) ^ (cur_mv[i + 1] * 257)) & 1023] = i
+                    cache[h] = p
+                    last = p
+                    i += 1
+                    continue
+
+            if ref_mv is not None:
+                rp = ref_mv[i]
+                dg_t = pg - ((rp >> 5) & 0x3F)
+                if -8 <= dg_t <= 7:
+                    dg_rb_t = dg_t >> 1
+                    dr_dg_t = (pr - ((rp >> 11) & 0x1F)) - dg_rb_t
+                    db_dg_t = (pb - (rp & 0x1F)) - dg_rb_t
+                    if -4 <= dr_dg_t <= 3 and -4 <= db_dg_t <= 3:
+                        u_dg_t = dg_t + 8
+                        out.append(0xF1 + (u_dg_t >> 2))
+                        out.append(((u_dg_t & 0x03) << 6) | ((dr_dg_t + 4) << 3) | (db_dg_t + 4))
+                        if i < n_minus_1:
+                            pair_slots[((p * 40503) ^ (cur_mv[i + 1] * 257)) & 1023] = i
+                        cache[h] = p
+                        last = p
+                        i += 1
+                        continue
 
         lit.append(p)
         if len(lit) == 16:
             flush_lit()
-        record_pair(i)
+        if i < n_minus_1:
+            pair_slots[((p * 40503) ^ (cur_mv[i + 1] * 257)) & 1023] = i
         cache[h] = p
         last = p
         i += 1
 
     flush_lit()
-    return out
+    return None if (max_bytes is not None and len(out) > max_bytes) else out
 
 
 def encode_dmdz_frames(
     frames: np.ndarray,
     keyframe_interval: int = 0,
-    version: int = 1,
-    profile: str = "",
-    sram_frame_cap: int = SRAM_DEFAULT_FRAME_CAP,
-    fps: int = 20,
 ) -> List[bytes]:
-    """Encodes `(n, h, w)` uint16 RGB565 frames into DMDZ frame payloads (without length prefix)."""
-    use_v2 = int(version) >= 2
-    is_sram = use_v2 and normalize_stream_profile(profile) == "sram"
-    eff_cap = max(64, int(sram_frame_cap))
-    work_frames = (
-        stabilize_rgb565_frames_sram(frames, fps=fps)
-        if is_sram
-        else np.ascontiguousarray(frames, dtype="<u2")
-    )
-    anchor_interval = max(18, int(fps or 20))
+    """Encodes `(n, h, w)` uint16 RGB565 frames into lossless DMDZ v2 frame payloads (without length prefix)."""
+    work_frames = np.ascontiguousarray(frames, dtype="<u2")
     payloads: List[bytes] = []
     prev: Optional[np.ndarray] = None
-    prev_src: Optional[np.ndarray] = None
 
     for k in range(work_frames.shape[0]):
-        src_cur = work_frames[k]
-        cur = src_cur
+        cur = work_frames[k]
+        raw_bytes_len = int(cur.size) * 2
+        raw_fallback = bytes([FRAME_RAW]) + np.ascontiguousarray(cur, dtype="<u2").tobytes()
         is_key = prev is None or (keyframe_interval > 0 and k % keyframe_interval == 0)
-        if not use_v2:
-            if is_key:
-                payload = bytes([FRAME_KEY]) + bytes(encode_frame_ops(cur, None))
-            else:
-                dy = _detect_scroll(cur, prev)
-                if dy is not None:
-                    ref = scrolled_reference(prev, dy)
-                    payload = bytes([FRAME_SCROLL, dy & 0xFF]) + bytes(encode_frame_ops(cur, ref))
-                else:
-                    payload = bytes([FRAME_DELTA]) + bytes(encode_frame_ops(cur, prev))
-            next_prev = cur
+
+        if is_key:
+            ops = encode_frame_ops_v2(cur, None, max_bytes=raw_bytes_len)
+            payload = (bytes([FRAME_KEY]) + bytes(ops)) if ops is not None else raw_fallback
         else:
-            dx_hint: Optional[Tuple[int, int]] = None
-            tol_hint: Optional[Tuple[int, int]] = None
-            if (
-                is_sram
-                and not is_key
-                and prev is not None
-                and prev_src is not None
-                and (k % anchor_interval) != 0
-                and not np.array_equal(prev, prev_src)
-            ):
-                # Anchor unchanged / scrolled background pixels to reconstructed `prev` after PAL8
-                dx_s, dy_s = detect_scroll_2d(src_cur, prev_src, tol_mode=True, r_tol=2, g_tol=3, b_tol=2)
-                dx_hint = (dx_s, dy_s)
-                tol_hint = (dx_s, dy_s)
-                ref_src = (
-                    scrolled_reference_2d(prev_src, dx_s, dy_s)
-                    if (dx_s != 0 or dy_s != 0)
-                    else prev_src
-                )
-                ref_prev = (
-                    scrolled_reference_2d(prev, dx_s, dy_s) if (dx_s != 0 or dy_s != 0) else prev
-                )
-                adr = np.abs(
-                    ((src_cur >> 11) & 0x1F).astype(np.int16) - ((ref_src >> 11) & 0x1F).astype(np.int16)
-                )
-                adg = np.abs(
-                    ((src_cur >> 5) & 0x3F).astype(np.int16) - ((ref_src >> 5) & 0x3F).astype(np.int16)
-                )
-                adb = np.abs(
-                    (src_cur & 0x1F).astype(np.int16) - (ref_src & 0x1F).astype(np.int16)
-                )
-                hold_mask = (adr <= 2) & (adg <= 3) & (adb <= 2) & ((adr * 2 + adg + adb * 2) <= 9)
-                if np.any(hold_mask):
-                    cur = np.where(hold_mask, ref_prev, src_cur).astype("<u2")
-
-            raw_fallback = bytes([FRAME_RAW]) + np.ascontiguousarray(cur, dtype="<u2").tobytes()
-            skip_v2_try = False
-            if is_sram and not is_key and prev is not None:
-                horiz_eq = int(np.count_nonzero(cur[:, 1:] == cur[:, :-1])) if cur.shape[1] > 1 else 0
-                if dx_hint is None:
-                    dx_hint = detect_scroll_2d(cur, prev, tol_mode=False)
-                ref_est = (
-                    scrolled_reference_2d(prev, dx_hint[0], dx_hint[1])
-                    if (dx_hint[0] != 0 or dx_hint[1] != 0)
-                    else prev
-                )
-                if int(np.count_nonzero(cur != ref_est)) > int(eff_cap * 1.25) and horiz_eq < (cur.size // 2):
-                    skip_v2_try = True
-
-            if skip_v2_try:
-                best_true565 = raw_fallback
-            elif is_key:
-                cand_payload = bytes([FRAME_KEY]) + bytes(encode_frame_ops_v2(cur, None))
-                best_true565 = cand_payload if len(cand_payload) <= len(raw_fallback) else raw_fallback
+            assert prev is not None
+            dx, dy = detect_scroll_2d(cur, prev)
+            if dx == 0 and dy == 0:
+                ops = encode_frame_ops_v2(cur, prev, max_bytes=raw_bytes_len)
+                payload = (bytes([FRAME_DELTA]) + bytes(ops)) if ops is not None else raw_fallback
+            elif dx == 0:
+                ref = scrolled_reference(prev, dy)
+                ops = encode_frame_ops_v2(cur, ref, max_bytes=max(0, raw_bytes_len - 1))
+                payload = (bytes([FRAME_SCROLL, dy & 0xFF]) + bytes(ops)) if ops is not None else raw_fallback
             else:
-                assert prev is not None
-                dx, dy = (
-                    dx_hint
-                    if dx_hint is not None
-                    else detect_scroll_2d(cur, prev, tol_mode=False)
-                )
-                dx_hint = (dx, dy)
-                if dx == 0 and dy == 0:
-                    cand_payload = bytes([FRAME_DELTA]) + bytes(encode_frame_ops_v2(cur, prev))
-                elif dx == 0:
-                    ref = scrolled_reference(prev, dy)
-                    cand_payload = bytes([FRAME_SCROLL, dy & 0xFF]) + bytes(encode_frame_ops_v2(cur, ref))
-                else:
-                    ref = scrolled_reference_2d(prev, dx, dy)
-                    cand_payload = bytes([FRAME_SCROLL_2D, dx & 0xFF, dy & 0xFF]) + bytes(
-                        encode_frame_ops_v2(cur, ref)
-                    )
-                best_true565 = cand_payload if len(cand_payload) <= len(raw_fallback) else raw_fallback
-
-            if not is_sram or len(best_true565) <= eff_cap:
-                payload = best_true565
-                next_prev = cur
-            else:
-                pal_hint = (
-                    tol_hint
-                    if tol_hint is not None
-                    else (dx_hint if (dx_hint is not None and (dx_hint[0] != 0 or dx_hint[1] != 0)) else None)
-                )
-                payload, next_prev = encode_adaptive_pal8_sram(
-                    cur,
-                    prev,
-                    is_key=is_key,
-                    frame_cap=eff_cap,
-                    scroll_hint=pal_hint,
+                ref = scrolled_reference_2d(prev, dx, dy)
+                ops = encode_frame_ops_v2(cur, ref, max_bytes=max(0, raw_bytes_len - 2))
+                payload = (
+                    (bytes([FRAME_SCROLL_2D, dx & 0xFF, dy & 0xFF]) + bytes(ops))
+                    if ops is not None
+                    else raw_fallback
                 )
 
         if len(payload) > 0xFFFF:
             raise ValueError("DMDZ frame payload exceeds 65535 bytes")
         payloads.append(payload)
-        prev = next_prev
-        prev_src = src_cur
+        prev = cur
     return payloads
 
 
 def encode_dmdz_bytes(
     raw: bytes,
     keyframe_interval: int = 0,
-    version: int = 1,
-    profile: str = "",
-    sram_frame_cap: int = SRAM_DEFAULT_FRAME_CAP,
 ) -> bytes:
-    """Converts a raw `DMDS` stream (16-byte header + RGB565 frames) to a `DMDZ` v1 or v2 stream."""
+    """Converts a raw `DMDS` stream (16-byte header + RGB565 frames) to a lossless `DMDZ` v2 stream."""
     if len(raw) < 16 or raw[:4] != DMDS_MAGIC:
         raise ValueError("Not a DMDS stream")
-    eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
     _, _ver, fps, width, height, total, frame_dur_ms, _res = struct.unpack(HEADER_FMT, raw[:16])
     frame_bytes = int(width) * int(height) * 2
     if frame_bytes <= 0:
@@ -563,16 +370,9 @@ def encode_dmdz_bytes(
     avail = (len(raw) - 16) // frame_bytes
     count = min(int(total), avail) if total else avail
     frames = np.frombuffer(raw[16 : 16 + count * frame_bytes], dtype="<u2").reshape(count, height, width)
-    payloads = encode_dmdz_frames(
-        frames,
-        keyframe_interval=keyframe_interval,
-        version=eff_ver,
-        profile=profile,
-        sram_frame_cap=sram_frame_cap,
-        fps=int(fps or 20),
-    )
+    payloads = encode_dmdz_frames(frames, keyframe_interval=keyframe_interval)
     out = bytearray(
-        struct.pack(HEADER_FMT, DMDZ_MAGIC, eff_ver, fps, width, height, count, frame_dur_ms, keyframe_interval)
+        struct.pack(HEADER_FMT, DMDZ_MAGIC, DMDZ_VERSION, fps, width, height, count, frame_dur_ms, keyframe_interval)
     )
     for payload in payloads:
         out += struct.pack("<H", len(payload))
@@ -583,45 +383,34 @@ def encode_dmdz_bytes(
 def encode_dmdz_file(
     raw_stream_path: Path,
     dest_path: Optional[Path] = None,
-    version: int = 1,
-    profile: str = "",
 ) -> Path:
-    """Writes the DMDZ v1 or v2 sibling of a raw DMDS stream atomically and returns its path."""
-    eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
-    norm_prof = normalize_stream_profile(profile)
-    dest = dest_path or dmdz_sibling_path(raw_stream_path, version=eff_ver, profile=norm_prof)
-    data = encode_dmdz_bytes(raw_stream_path.read_bytes(), version=eff_ver, profile=norm_prof)
+    """Writes the lossless `.dmdz2.stream` sibling of a raw `DMDS` stream atomically and returns its path."""
+    dest = dest_path or dmdz_sibling_path(raw_stream_path)
+    data = encode_dmdz_bytes(raw_stream_path.read_bytes())
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(dest)
     return dest
 
 
-def ensure_dmdz_sibling(
-    raw_stream_path: Path,
-    version: int = 1,
-    profile: str = "",
-) -> Optional[Path]:
-    """Returns an up-to-date DMDZ sibling (`v1` or `v2`, optional `profile`), encoding on demand."""
+def ensure_dmdz_sibling(raw_stream_path: Path) -> Optional[Path]:
+    """Returns an up-to-date `.dmdz2.stream` sibling, encoding on demand if missing or stale."""
     try:
-        eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
-        norm_prof = normalize_stream_profile(profile)
-        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver, profile=norm_prof)
+        dest = dmdz_sibling_path(raw_stream_path)
         if dest.exists() and dest.stat().st_mtime >= raw_stream_path.stat().st_mtime:
             return dest
-        return encode_dmdz_file(raw_stream_path, dest, version=eff_ver, profile=norm_prof)
+        return encode_dmdz_file(raw_stream_path, dest)
     except (OSError, ValueError):
         return None
 
 
 def decode_dmdz_bytes(data: bytes) -> np.ndarray:
-    """Reference decoder (mirrors the ESP32 `DmdzStreamDecoder` v1 & v2 byte for byte)."""
+    """Reference decoder (mirrors ESP32 `DmdzStreamDecoder` and RPi `dmd_stream.rs` v2 byte for byte)."""
     if len(data) < 16 or data[:4] != DMDZ_MAGIC:
         raise ValueError("Not a DMDZ stream")
     _, ver, _fps, width, height, total, _dur, _kf = struct.unpack(HEADER_FMT, data[:16])
-    if ver not in (DMDZ_VERSION, DMDZ_V2_VERSION):
+    if ver != DMDZ_VERSION:
         raise ValueError(f"Unsupported DMDZ version {ver}")
-    is_v2 = ver == DMDZ_V2_VERSION
     npx = int(width) * int(height)
     frame = [0] * npx
     frames: List[np.ndarray] = []
@@ -635,16 +424,9 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
         ftype = data[off]
         off += 1
         if ftype == FRAME_RAW:
-            if not is_v2 or (end - off) != npx * 2:
+            if (end - off) != npx * 2:
                 raise ValueError("Invalid DMDZ FRAME_RAW")
             frame = np.frombuffer(data[off:end], dtype="<u2").astype(np.uint16).tolist()
-            off = end
-            frames.append(np.array(frame, dtype=np.uint16).reshape(height, width))
-            continue
-        if ftype == FRAME_PAL8:
-            if not is_v2:
-                raise ValueError("Invalid DMDZ FRAME_PAL8")
-            frame = decode_frame_pal8(data, off, end, frame, int(width), int(height))
             off = end
             frames.append(np.array(frame, dtype=np.uint16).reshape(height, width))
             continue
@@ -656,7 +438,7 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
             arr = np.array(frame, dtype=np.uint16).reshape(height, width)
             frame = scrolled_reference(arr, dy).ravel().tolist()
         elif ftype == FRAME_SCROLL_2D:
-            if not is_v2 or (off + 2) > end:
+            if (off + 2) > end:
                 raise ValueError("Invalid DMDZ FRAME_SCROLL_2D")
             dx, dy = struct.unpack_from("<bb", data, off)
             off += 2
@@ -710,7 +492,7 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
                 cache[_hash(p)] = p
                 last = p
             elif 0xDC <= b <= 0xDF:
-                if not is_v2 or off >= end or pos >= npx:
+                if off >= end or pos >= npx:
                     raise ValueError("DMDZ spatial luma invalid")
                 b2 = data[off]
                 off += 1
@@ -738,7 +520,7 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
                     cache[_hash(p)] = p
                     last = p
             elif 0xF1 <= b <= 0xF4:
-                if not is_v2 or off >= end or pos >= npx:
+                if off >= end or pos >= npx:
                     raise ValueError("DMDZ temporal luma invalid")
                 b2 = data[off]
                 off += 1
@@ -756,7 +538,7 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
                 cache[_hash(p)] = p
                 last = p
             elif b in (0xF6, 0xF7):
-                if not is_v2 or (off + 2) > end:
+                if (off + 2) > end:
                     raise ValueError("DMDZ lz invalid")
                 (lo16,) = struct.unpack_from("<H", data, off)
                 off += 2
@@ -772,7 +554,7 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
                 last = frame[pos - 1]
                 cache[_hash(last)] = last
             elif 0xF8 <= b <= 0xFF:
-                if not is_v2 or pos >= npx:
+                if pos >= npx:
                     raise ValueError("DMDZ temporal diff invalid")
                 dr, dg, db = TDIFF_VECTORS[b & 0x07]
                 ref_p = frame[pos]
