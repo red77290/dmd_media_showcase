@@ -24,6 +24,9 @@ from app.infrastructure.http.dependencies import get_orchestrator
 from app.infrastructure.rendering.dmdz_codec import (
     DMDZ_CODEC_ID,
     DMDZ_MAGIC,
+    DMDZ_V2_CODEC_ID,
+    DMDZ_V2_VERSION,
+    DMDZ_VERSION,
     dmdz_sibling_path,
     ensure_dmdz_sibling,
 )
@@ -45,14 +48,19 @@ DMDZ_WS_INITIAL_CREDITS = 2
 DMDZ_WS_ACK_TIMEOUT_S = 4.0
 
 
-async def _resolve_dmdz_sibling_nonblocking(raw_stream_path: Path) -> Optional[Path]:
+async def _resolve_dmdz_sibling_nonblocking(
+    raw_stream_path: Path,
+    version: int = DMDZ_VERSION,
+) -> Optional[Path]:
     """
-    Return an up-to-date `.dmdz.stream` sibling without blocking `uvicorn`'s main-process GIL:
+    Return an up-to-date `.dmdz.stream` (`v1`) or `.dmdz2.stream` (`v2`) sibling without blocking
+    `uvicorn`'s main-process GIL:
     1. Fast O(1) stat hit when `finalize_unified_stream_worker_task` already pre-encoded it.
     2. Offloads missing/stale encoding to `batch_manager.shared_executor()` (`ProcessPoolExecutor`).
     """
+    eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
     try:
-        dest = dmdz_sibling_path(raw_stream_path)
+        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver)
         if dest.exists() and dest.stat().st_mtime >= raw_stream_path.stat().st_mtime:
             return dest
     except OSError:
@@ -61,15 +69,24 @@ async def _resolve_dmdz_sibling_nonblocking(raw_stream_path: Path) -> Optional[P
     loop = asyncio.get_running_loop()
     exec_pool = batch_manager.shared_executor()
     try:
-        out_str = await loop.run_in_executor(
-            exec_pool,
-            encode_dmdz_sibling_worker_task,
-            str(raw_stream_path),
-            settings.worker_nice_increment,
-        )
+        if eff_ver == DMDZ_VERSION:
+            out_str = await loop.run_in_executor(
+                exec_pool,
+                encode_dmdz_sibling_worker_task,
+                str(raw_stream_path),
+                settings.worker_nice_increment,
+            )
+        else:
+            out_str = await loop.run_in_executor(
+                exec_pool,
+                encode_dmdz_sibling_worker_task,
+                str(raw_stream_path),
+                settings.worker_nice_increment,
+                eff_ver,
+            )
         return Path(out_str) if out_str else None
     except BrokenProcessPool:
-        return ensure_dmdz_sibling(raw_stream_path)
+        return ensure_dmdz_sibling(raw_stream_path, version=eff_ver)
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -282,10 +299,17 @@ async def stream_consume_once_sequence(
 
     stream_path = pkg.unified_stream_path
     file_size = stream_path.stat().st_size
-    if paced and not drop_late and codec.strip().lower() == DMDZ_CODEC_ID and file_size > 16:
-        dmdz_path = await _resolve_dmdz_sibling_nonblocking(stream_path)
+    norm_codec = codec.strip().lower()
+    if not drop_late and norm_codec in (DMDZ_CODEC_ID, DMDZ_V2_CODEC_ID) and file_size > 16:
+        req_ver = DMDZ_V2_VERSION if norm_codec == DMDZ_V2_CODEC_ID else DMDZ_VERSION
+        dmdz_path = await _resolve_dmdz_sibling_nonblocking(stream_path, version=req_ver)
         if dmdz_path is not None:
-            return _paced_dmdz_response(co, pkg, domain, item_id, dmdz_path, purge)
+            if paced:
+                return _paced_dmdz_response(
+                    co, pkg, domain, item_id, dmdz_path, purge, codec_id=norm_codec
+                )
+            stream_path = dmdz_path
+            file_size = dmdz_path.stat().st_size
     if paced and file_size > 16:
         with stream_path.open("rb") as probe_fh:
             hdr = probe_fh.read(16)
@@ -379,14 +403,18 @@ async def stream_consume_once_sequence(
             if purge:
                 await co.purge_consumed_package(item_id)
 
+    unpaced_headers: Dict[str, str] = {
+        "Content-Length": str(file_size),
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "X-DMD-Consume-Once": "1",
+    }
+    if stream_path != pkg.unified_stream_path and norm_codec in (DMDZ_CODEC_ID, DMDZ_V2_CODEC_ID):
+        unpaced_headers["X-DMD-Codec"] = norm_codec
+
     return StreamingResponse(
         _chunked_dmds_generator(),
         media_type="application/octet-stream",
-        headers={
-            "Content-Length": str(file_size),
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "X-DMD-Consume-Once": "1",
-        },
+        headers=unpaced_headers,
     )
 
 
@@ -397,6 +425,7 @@ def _paced_dmdz_response(
     item_id: str,
     dmdz_path: Path,
     purge: bool,
+    codec_id: str = DMDZ_CODEC_ID,
 ) -> Response:
     """
     Serve the lossless `DMDZ` sibling of a unified stream with lead pacing.
@@ -473,7 +502,8 @@ def _paced_dmdz_response(
             fh.close()
             co.state.last_claimed_until.pop(claim_key, None)
             logger.info(
-                "[STREAM] dmdz1 '%s' -> %s: frames=%d/%d dur=%.1fs reanchors=%d max_send_block=%.0fms size=%dB",
+                "[STREAM] %s '%s' -> %s: frames=%d/%d dur=%.1fs reanchors=%d max_send_block=%.0fms size=%dB",
+                codec_id,
                 item_id,
                 pkg.dmd_id,
                 sent,
@@ -493,7 +523,7 @@ def _paced_dmdz_response(
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "X-DMD-Consume-Once": "1",
             "X-DMD-Paced": "1",
-            "X-DMD-Codec": DMDZ_CODEC_ID,
+            "X-DMD-Codec": codec_id,
             "X-Accel-Buffering": "no",
             "Content-Length": str(file_size),
         },
@@ -508,16 +538,18 @@ async def stream_consume_once_dmdz_ws(
     purge: bool = Query(default=True),
     client_id: Optional[str] = Query(default=None),
     credits_window: int = Query(default=DMDZ_WS_INITIAL_CREDITS, alias="credits"),
+    codec_version: int = Query(default=DMDZ_VERSION, alias="v"),
+    chunk_bytes: int = Query(default=DMDZ_SUBPACKET_BYTES, alias="chunk"),
 ) -> None:
     """
-    ZeDMD-style credit-acknowledged lossless `DMDZ` WebSocket stream for constrained ESP32 clients.
+    ZeDMD-style credit-acknowledged lossless `DMDZ` (`v1` / `v2`) WebSocket stream for ESP32 clients.
 
     Why credit-acked WebSocket beats blind HTTP TCP push over NAT/Docker proxies + Wi-Fi:
     - `101 Switching Protocols` disables HTTP response buffering across proxies (`gvproxy`, Nginx).
-    - Every binary message is capped at `<= 1,024` bytes (single Wi-Fi MTU packet) and gated by a
-      2-message sliding credit window (`<= 2,048` bytes max in flight). The ESP32 returns a 1-byte
-      ACK after each message, keeping 100% of RX traffic inside pre-allocated static Wi-Fi RX
-      buffers (`0` dynamic heap allocations and `0` LwIP `ooseq` reassembly deadlocks).
+    - Binary messages fit inside a single Wi-Fi TCP MSS (`1,024 B` default, up to `1,360 B` with
+      `?v=2&credits=4&chunk=1360` = `<= 5,440 B` in flight `<= 5,744 B` classic ESP32 `TCP_WND`).
+    - Coalesced `'A'` credit ACKs keep the sliding window continuously fed with zero dry-pipe RTT
+      stalls and minimal 2.4 GHz half-duplex TX/RX collisions.
     """
     co = get_orchestrator()
     pkg = co.active_packages.get(item_id)
@@ -530,7 +562,11 @@ async def stream_consume_once_dmdz_ws(
         await websocket.close(code=1008)
         return
 
-    dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path)
+    req_ver = DMDZ_V2_VERSION if int(codec_version) >= 2 else DMDZ_VERSION
+    eff_chunk_bytes = max(256, min(1400, int(chunk_bytes)))
+    dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=req_ver)
+    if (dmdz_path is None or not dmdz_path.exists()) and req_ver != DMDZ_VERSION:
+        dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=DMDZ_VERSION)
     if dmdz_path is None or not dmdz_path.exists():
         await websocket.close(code=1011)
         return
@@ -541,7 +577,7 @@ async def stream_consume_once_dmdz_ws(
         await websocket.close(code=1011)
         return
 
-    _, _ver, hdr_fps, _w, _h, total_frames, _dur, _kf = struct.unpack("<4sBBHHHHH", hdr)
+    _, hdr_ver, hdr_fps, _w, _h, total_frames, _dur, _kf = struct.unpack("<4sBBHHHHH", hdr)
     eff_fps = max(4, min(60, int(hdr_fps or pkg.card.stream_fps or 15)))
     file_size = dmdz_path.stat().st_size
     effective_dmd = (client_id or "").strip() or pkg.dmd_id
@@ -615,7 +651,8 @@ async def stream_consume_once_dmdz_ws(
             return
 
         period = 1.0 / float(eff_fps)
-        eff_ws_lead = min(DMDZ_WS_SEND_LEAD_S, max(period, float(credits_window) * period * 0.75))
+        lead_cap_s = 0.08 if (int(hdr_ver) >= 2 and credits_window >= 4) else DMDZ_WS_SEND_LEAD_S
+        eff_ws_lead = min(lead_cap_s, max(period, float(credits_window) * period * 0.75))
         t0 = time.perf_counter()
         for frame_idx in range(int(total_frames)):
             size_raw = fh.read(2)
@@ -640,8 +677,8 @@ async def stream_consume_once_dmdz_ws(
 
             wire_frame = size_raw + payload
             ok_frame = True
-            for off in range(0, len(wire_frame), DMDZ_SUBPACKET_BYTES):
-                if not await _send_credited(wire_frame[off : off + DMDZ_SUBPACKET_BYTES]):
+            for off in range(0, len(wire_frame), eff_chunk_bytes):
+                if not await _send_credited(wire_frame[off : off + eff_chunk_bytes]):
                     ok_frame = False
                     break
             if not ok_frame:
@@ -674,8 +711,10 @@ async def stream_consume_once_dmdz_ws(
         co.state.active_tcp_streams = max(0, co.state.active_tcp_streams - 1)
         fh.close()
         co.state.last_claimed_until.pop(claim_key, None)
+        ws_codec_tag = "ws-dmdz2" if int(hdr_ver) >= 2 else "ws-dmdz1"
         logger.info(
-            "[STREAM] ws-dmdz1 '%s' -> %s (%s): frames=%d/%d dur=%.1fs reanchors=%d size=%dB",
+            "[STREAM] %s '%s' -> %s (%s): frames=%d/%d dur=%.1fs reanchors=%d size=%dB",
+            ws_codec_tag,
             item_id,
             effective_dmd,
             end_reason,

@@ -174,8 +174,20 @@ class ShowcaseRuntimeState:
         key: Tuple[str, DomainType],
         defer_started_at: Optional[float],
     ) -> Tuple[bool, Optional[float]]:
-        """Yield N+2 standby prep to missing N+1 sibling slots or active paced TCP live streams."""
+        """
+        Yield background slot preparation to active real-time TCP/WS video streams so `yt-dlp`,
+        `ffmpeg`, and `AutoAction` never contend with 20-30 FPS packet pacing over Docker NAT:
+        - Empty N+1 sibling slots defer up to `45s` while another slot is actively streaming.
+        - N+2 standby slots defer to missing N+1 sibling slots and up to `65s` during live streams.
+        """
         if key not in self.ready_packages:
+            if self.active_tcp_streams > 0 and len(self.client_configs) > 1:
+                now_mono = time.monotonic()
+                started = now_mono if defer_started_at is None else defer_started_at
+                if (now_mono - started) < 45.0:
+                    await asyncio.sleep(0.15)
+                    return True, started
+                return False, started
             return False, None
         sibling_missing_ready = any(
             other_k != key
@@ -193,7 +205,7 @@ class ShowcaseRuntimeState:
         if self.active_tcp_streams > 0:
             now_mono = time.monotonic()
             started = now_mono if defer_started_at is None else defer_started_at
-            if (now_mono - started) < 25.0:
+            if (now_mono - started) < 65.0:
                 await asyncio.sleep(0.15)
                 return True, started
             return False, started

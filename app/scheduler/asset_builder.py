@@ -40,10 +40,14 @@ from app.infrastructure.rendering.video_pipeline import build_video_assets_worke
 _download_bytes = default_http_download_bytes
 
 
-def encode_dmdz_sibling_worker_task(raw_stream_path_str: str, nice_inc: int = 10) -> Optional[str]:
+def encode_dmdz_sibling_worker_task(
+    raw_stream_path_str: str,
+    nice_inc: int = 10,
+    version: int = 1,
+) -> Optional[str]:
     """Pickleable `ProcessPoolExecutor` entrypoint isolating DMDZ encoding away from `uvicorn`'s GIL."""
     _apply_worker_nice(nice_inc, 1)
-    dest = ensure_dmdz_sibling(Path(raw_stream_path_str))
+    dest = ensure_dmdz_sibling(Path(raw_stream_path_str), version=version)
     return str(dest) if dest is not None else None
 
 

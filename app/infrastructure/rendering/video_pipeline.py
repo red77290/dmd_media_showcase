@@ -72,8 +72,8 @@ _SHOWCASE_LED_COLOR_PROFILES: Dict[str, Dict[str, float]] = {
         "brightness_lo": -0.08,
         "brightness_hi": 0.08,
         "brightness_scale": 0.70,
-        "sharpen_lum": 0.75,
-        "sharpen_chr": 0.25,
+        "sharpen_lum": 0.55,
+        "sharpen_chr": 0.20,
         "dark_contrast_hi": 1.22,
         "dark_contrast_lo": 1.08,
     },
@@ -94,8 +94,8 @@ _SHOWCASE_LED_COLOR_PROFILES: Dict[str, Dict[str, float]] = {
         "brightness_lo": -0.10,
         "brightness_hi": 0.10,
         "brightness_scale": 0.80,
-        "sharpen_lum": 1.00,
-        "sharpen_chr": 0.30,
+        "sharpen_lum": 0.55,
+        "sharpen_chr": 0.20,
         "dark_contrast_hi": 1.30,
         "dark_contrast_lo": 1.15,
     },
@@ -591,7 +591,7 @@ def build_video_assets_worker_task(
                 scene_type=scene_hint,
                 color_params=cal_color,
                 ffmpeg_threads=ffmpeg_threads,
-                out_gif_path=gif_out_path,
+                out_gif_path=None if gif_out_path.exists() else gif_out_path,
             )
             if direct_frames > 0:
                 final_frames = direct_frames

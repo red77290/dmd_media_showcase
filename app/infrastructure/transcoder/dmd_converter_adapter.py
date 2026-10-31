@@ -160,7 +160,9 @@ def finalize_unified_stream_sync(
             parsed_hdr = read_rgb565_stream_header(raw_hdr)
             if int(parsed_hdr.get("fps") or 0) > 0:
                 actual_fps = int(parsed_hdr["fps"])
-        dmdz_ok = ensure_dmdz_sibling(out_stream_path) is not None
+        dmdz_v1_ok = ensure_dmdz_sibling(out_stream_path, version=1) is not None
+        dmdz_v2_ok = ensure_dmdz_sibling(out_stream_path, version=2) is not None
+        dmdz_ok = dmdz_v1_ok and dmdz_v2_ok
     return total_frames, total_dur_s, chapters, actual_fps, dmdz_ok
 
 
