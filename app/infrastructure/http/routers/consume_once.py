@@ -200,12 +200,14 @@ async def stream_consume_once_sequence(
     Serve the unified lossless 16-bit True-RGB565 binary sequence
     (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`) over plain HTTP `1.1` with
     deterministic `Content-Length`:
-    - **`esp32dev` (`0 KB` PSRAM)**: Downloads `?purge=false&codec=dmdz2` onto its `25 MHz` SD card
-      (`/cache/showcase_live.dmdz`) during the Info Card dwell, closes TCP (`0` Wi-Fi traffic during
-      playback), and decodes locally from SD into its Zero-Copy `SRAM1` Canvas.
-    - **`ESP32-S3` (Octal PSRAM)**: Preloads `?purge=false&codec=dmdz2` (`<= 4 MB`) directly into PSRAM
-      during the Info Card (`0` Wi-Fi traffic during playback), or streams oversized `256x64` HD clips
-      into a `1 MB` PSRAM SPSC ring buffer.
+    - **`esp32dev` (`0 KB` PSRAM)**: Stages `?purge=false&codec=dmdz2` onto its `25 MHz` SD card
+      (`/cache/showcase_live.dmdz`, opened with `O_TRUNC`) during the Info Card dwell, closes TCP (`0` Wi-Fi
+      traffic during playback), decodes locally from SD via an `8,448–9,216 B` SPSC ring into its Zero-Copy
+      `SRAM1` Canvas, holds the final frame in `StreamEndHold`, and deletes `/cache/showcase_live.dmdz` via
+      `sd.remove` on exit/abort.
+    - **`ESP32-S3` (Octal PSRAM, `0` SD card I/O)**: Preloads `?purge=false&codec=dmdz2` (`<= 4 MB`) directly
+      into PSRAM during the Info Card (`0` Wi-Fi traffic during playback), or streams oversized `256x64` HD
+      clips into a `1 MB` PSRAM SPSC ring buffer — operating identically even with no SD card inserted.
     - **`ArcadeMatrix_RPi` (Linux RAM)**: Preloads `?purge=false&codec=dmdz2` (or raw `DMDS` when `codec`
       is omitted) directly into RAM during the Info Card.
 

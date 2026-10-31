@@ -16,8 +16,8 @@
 > 3. **Exact `esp32dev` (`0 KB` PSRAM) Memory Audit (`>= 20 KB` Free Wi-Fi/LwIP Headroom & Full 8-Bit CIE-1931 HUB75 Preserved)**: On non-PSRAM `esp32dev` (`128x32` with full **8-bit HUB75 CIE-1931** color depth), **`36.0 KB` free 8-bit internal DRAM + `8.0 KB` `SRAM1` `CanvasBufferedSurface` = `44.2 KB` total**. Downloading `.dmdz2.stream` to `/cache/showcase_live.dmdz` on the `25 MHz` SD card during the Info Card (`4.5–17 s`), closing the TCP socket (`0` `lwIP` `pbuf`s during playback!), and decoding **zero-copy in-place on Core 1 via `ScopedCanvasGuard`** from an **`8,448 B` (`> 8,195 B` max `FRAME_RAW`) SPSC ring** leaves **`>= 20 KB` of free internal DRAM** permanently for `esp_wifi` / `lwIP` RX buffers with zero Wi-Fi jitter.
 > 4. **Single Server-Side Pre-Encoded `.dmdz2.stream` & 2 Clean Client Execution Paths (`esp32dev` SD Queue vs `ESP32-S3` 100% PSRAM)**:
 >    - **Server-Side (`dmd_gif_converter` `v8.0.13` + `DMDZ` v2)**: Restores the original hand-tuned HUB75 LED contrast, saturation, gamma, and luma/chroma sharpening (`STREAM_PIPELINE_VERSION = "led_boost_dmdz_v2"`) and pre-encodes **only one** 100% lossless 16-bit True-RGB565 `.dmdz2.stream` sibling (`FRAME_DELTA`, `FRAME_SCROLL`, `FRAME_KEY`, `FRAME_SCROLL_2D`, `FRAME_RAW` — `0` palette quantization, `0` temporal dither blur, `0` background slot deferrals).
->    - **`esp32dev` (`0` PSRAM — `25 MHz` SD Queue)**: Core 0 downloads `.dmdz2.stream` (`?purge=false&codec=dmdz2`) into `/cache/showcase_live.dmdz` during Card dwell (in `2 KB` `SdLockGuard` chunks), closes the TCP socket once complete (`0` Wi-Fi traffic during playback; or alternates `4 KB` TCP->SD / `2 KB` SD->SPSC on giant clips), feeds `1,024 B` SD blocks into an `8,448 B` SPSC ring, and purges via MQTT `stop_stream` or `DELETE /api/v1/{domain}/stream/{item_id}.rgb565.stream` (cleanly holding Card-only if no SD card is mounted).
->    - **`ESP32-S3` (`8 MB` Octal PSRAM — 100% PSRAM, `0` SD Card)**: Matches `ArcadeMatrix_RPi` and `GifEngine` — preloads `.dmdz2.stream` (`<= min(4 MB, freePsram - 1.5 MB)`) directly into PSRAM during Phase 1 Card (+ up to `1,200 ms` finish budget), closes the TCP socket (`0` Wi-Fi during `24–30 FPS` playback), or allocates a **`1 MB` PSRAM SPSC ring** (`MALLOC_CAP_SPIRAM`) pre-filled during Card from the already-open HTTP socket for giant `256x64` HD clips (`> 4 MB` up to `16+ MB`).
+>    - **`esp32dev` (`0` PSRAM — Self-Cleaning `25 MHz` SD Staging)**: Core 0 opens `/cache/showcase_live.dmdz` (`MediaShowcaseBase`) or `/cache/showcase_sync.dmdz` (`FrontendSyncEngine`) with `O_TRUNC` (`ScopedSdCacheFile`), downloads `.dmdz2.stream` (`?purge=false&codec=dmdz2`) during Card dwell (in `2 KB` `SdLockGuard` chunks), closes the TCP socket once complete (`0` Wi-Fi traffic during playback; or alternates `4 KB` TCP->SD / `2 KB` SD->SPSC on giant clips), feeds `1,024 B` SD blocks into an `8,448–9,216 B` SPSC ring with lock-free consumer top-up signaling (`shouldRefillSpscRing()` + `5,000 ms` progress watchdog), holds the final video frame in `Phase::StreamEndHold` (`0` posterless Card flash), deterministically deletes (`sd.remove`) the `.dmdz` file on completion, error, `WebUiYield`, or rotation abort (`0` residual SD files), and purges on the server via `DELETE /api/v1/{domain}/stream/{item_id}.rgb565.stream` (cleanly holding Card-only if no SD card is mounted).
+>    - **`ESP32-S3` (`8 MB` Octal PSRAM — 100% PSRAM, Strictly `0` SD Card I/O)**: Never touches the microSD card (operates identically even with no SD card inserted), matching `ArcadeMatrix_RPi` and `GifEngine` — preloads `.dmdz2.stream` (`<= min(4 MB, freePsram - 1.5 MB)`) directly into PSRAM during Phase 1 Card (+ up to `1,200 ms` finish budget), closes the TCP socket (`0` Wi-Fi during `24–30 FPS` playback, freed on exit), or allocates a **`1 MB` PSRAM SPSC ring** (`MALLOC_CAP_SPIRAM`) pre-filled during Card from the already-open HTTP socket for giant `256x64` HD clips (`> 4 MB` up to `16+ MB`).
 > 5. **Zero-`TIME_WAIT` Raw LwIP Sockets (`SO_LINGER {1, 0}`) & Compact Collision-Free `item_id`s (`<= 24` chars)**: Scoped MQTT `:1883` and `:8890` stream sockets close with `SO_LINGER {1, 0}` (`0` 120s `TIME_WAIT` PCB accumulation), and every prepared package uses `pkg_<domain>_<12hex>` (`<= 24` chars).
 
 ---
@@ -100,12 +100,10 @@ To guarantee rock-solid **60 FPS** (`16.67 ms` frame cadence), ESP32 integration
 
 Three zero-mutex patterns safely bridge Core 0 (`HTTP DMDZ` / `SD DMDZ` / `UDP DMDF`) and Core 1 (`60 FPS HUB75`):
 
-1. **Zero-Copy `ScopedCanvasGuard` + Lock-Free SPSC Byte Ring (`ArcadeMatrix` Production `esp32dev` SD Queue & `ESP32-S3` `1 MB` HD Ring)**:
-   - Core 0 streams sequential `.dmdz2.stream` bytes (from `/cache/showcase_live.dmdz` on `esp32dev` into an `8,448 B` internal DRAM SPSC ring, or from HTTP TCP into a `1 MB` PSRAM SPSC ring on `ESP32-S3` HD clips; `<= 4 MB` `ESP32-S3` clips read directly from a contiguous PSRAM preload buffer).
-   - Core 1 paces frame presentation monotonically (`20–30 FPS`) and runs pure lossless `DMDZ` v2 `DmdzStreamDecoder` **in-place inside `CanvasBufferedSurface` (`SRAM1`)** under `ScopedCanvasGuard`, saving `8,192 B` of internal DRAM on `esp32dev`.
-2. **Tear-Free Even/Odd `frameSeq` + Dekker `renderBlitSeq` Guard (Standalone Single-File Reference in Section 4.A)**:
-   - For standalone custom firmwares without `CanvasBufferedSurface` or an SD card, Core 0 decodes plain-HTTP `DMDZ` v2 frames into a single `g_frame565` buffer bracketed by `ODD`/`EVEN` `g_frameSeq` + Core 1 `g_renderBlitSeq`.
-3. **Ping-Pong Double-Buffered `frame565[2]` (`std::atomic<uint8_t> frontIdx` — Model 2B UDP `DMDF`)**:
+1. **Zero-Copy `ScopedCanvasGuard` + Lock-Free SPSC Byte Ring (`ArcadeMatrix` Production & Standalone Reference in Section 4.A)**:
+   - Core 0 streams sequential `.dmdz2.stream` bytes (from self-cleaning `/cache/showcase_live.dmdz` opened with `O_TRUNC` + `sd.remove` on `esp32dev` into an `8,448–9,216 B` internal DRAM SPSC ring with consumer top-up signaling `shouldRefillSpscRing()`, or from HTTP TCP into a `1 MB` PSRAM SPSC ring on `ESP32-S3` HD clips; `<= 4 MB` `ESP32-S3` clips read directly from a contiguous PSRAM preload buffer with `0` SD card I/O).
+   - Core 1 paces frame presentation monotonically (`20–30 FPS`), runs pure lossless `DMDZ` v2 `DmdzStreamDecoder` **in-place inside `CanvasBufferedSurface` (`SRAM1`) / `offscreenCanvas565`**, saving `8,192 B` of internal DRAM on `esp32dev`, and freezes the final video frame in `StreamEndHold` across HTTP `DELETE` purge and rotation switches.
+2. **Ping-Pong Double-Buffered `frame565[2]` (`std::atomic<uint8_t> frontIdx` — Model 2B UDP `DMDF` in Section 4.B)**:
    - Core 0 reassembles `DMDF` chunks into `frame565[backIdx]` via 64-bit `chunkMask` and atomically publishes `frontIdx` only when all chunks arrive.
 
 ### Exact `esp32dev` (`0 KB` PSRAM) Memory Audit & Client Streaming Matrix
@@ -248,48 +246,59 @@ stateDiagram-v2
 3. **`PHASE 1 — CLAIM, BINARY HTTP .rgb565 POSTER, PARALLEL DOWNLOAD & N+1 PIPELINING`**:
    - Claiming item `N` (`pkg_<domain>_<12hex>`) via `start_card` immediately closes MQTT with `SO_LINGER {1, 0}`, fetches the binary `GET /api/v1/{domain}/poster/{item_id}.rgb565` mini-jacket on Core 0 (freed right after `StreamBlank`), and triggers immediate server-side **`N+1` background preparation** (encoding a single lossless `.dmdz2.stream` sibling with zero slot deferral). Simultaneously during Card scroll, Core 0 downloads `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2` onto `/cache/showcase_live.dmdz` (`esp32dev`) or into Octal PSRAM (`ESP32-S3`)!
 4. **`PHASE 2 — LOSSLESS DMDZ v2 PLAYBACK OR PASSIVE UDP DMDF`**:
-   - **`esp32dev` (`0` PSRAM — `25 MHz` SD Queue)**: Closes the HTTP TCP socket as soon as `Content-Length` finishes downloading (`0` `lwIP` `pbuf`s during playback; or alternates `4 KB` TCP->SD / `2 KB` SD->SPSC on giant clips), feeds `1,024 B` SD blocks into the `8,448 B` SPSC ring (`>= 20 KB` DRAM left free for `esp_wifi`/`lwIP`), decodes lossless True-RGB565 zero-copy in-place on Core 1 (`ScopedCanvasGuard`, `20–25 FPS`), and purges via MQTT `stop_stream` or `DELETE /api/v1/{domain}/stream/{item_id}.rgb565.stream`.
-   - **`ESP32-S3` (`8 MB` Octal PSRAM — 100% PSRAM)**: Plays directly from PSRAM preload (`<= 4 MB`) at `24–30 FPS` with **`0` Wi-Fi traffic and `0` SD card access**, or streams giant `256x64` HD clips (`> 4 MB`) through a **`1 MB` PSRAM SPSC ring** pre-filled during Card, then purges via MQTT `stop_stream` or HTTP `DELETE`.
+   - **`esp32dev` (`0` PSRAM — Self-Cleaning `25 MHz` SD Staging)**: Opens `/cache/showcase_live.dmdz` with `O_TRUNC`, closes the HTTP TCP socket as soon as `Content-Length` finishes downloading (`0` `lwIP` `pbuf`s during playback; or alternates `4 KB` TCP->SD / `2 KB` SD->SPSC on giant clips), feeds `1,024 B` SD blocks into the `8,448–9,216 B` SPSC ring with lock-free consumer top-up signaling (`shouldRefillSpscRing()` + `5,000 ms` progress watchdog, `>= 20 KB` DRAM left free for `esp_wifi`/`lwIP`), decodes lossless True-RGB565 zero-copy in-place on Core 1 (`ScopedCanvasGuard`, `20–25 FPS`), holds the last frame cleanly in `Phase::StreamEndHold`, unlinks `/cache/showcase_live.dmdz` via `sd.remove`, and purges on the server via `DELETE /api/v1/{domain}/stream/{item_id}.rgb565.stream`.
+   - **`ESP32-S3` (`8 MB` Octal PSRAM — 100% PSRAM, `0` SD Card I/O)**: Never touches the microSD card — plays directly from PSRAM preload (`<= 4 MB`) at `24–30 FPS` with **`0` Wi-Fi traffic and `0` SD card access**, or streams giant `256x64` HD clips (`> 4 MB`) through a **`1 MB` PSRAM SPSC ring** pre-filled during Card, then frees PSRAM and purges via HTTP `DELETE`.
    - **Model 2B (`UDP-PASSIVE :4210`)**: `FfmpegUdpClockStreamer` clocks `DMDF` UDP slices (`<= 1408 B`) to `:4210` (`2,500 ms` UDP silence watchdog).
 5. **`DEACTIVATION, WEBUI_SYNC PREEMPTION & REBOOT RECOVERY`**:
-   - **Clean Quiescent Deactivation (`< 250 ms`)**: Clearing `m_wantActive` wakes `SO_RCVTIMEO` within `<= 250 ms`, closes any active socket with `SO_LINGER {1, 0}` (`0` `TIME_WAIT` PCBs), drains `ScopedCanvasGuard` / SPSC state cleanly, and joins `ShowcaseWkr` (`0` heap fragmentation), including during `WEBUI_SYNC` SPA bursts.
+   - **Clean Quiescent Deactivation (`< 250 ms`)**: Clearing `m_wantActive` wakes `SO_RCVTIMEO` within `<= 250 ms`, closes any active socket with `SO_LINGER {1, 0}` (`0` `TIME_WAIT` PCBs), unlinks any staged `.dmdz` SD cache file via `ScopedSdCacheFile::closeAndRemove()` (`0` residual SD files), drains `ScopedCanvasGuard` / SPSC state cleanly, and joins `ShowcaseWkr` (`0` heap fragmentation), including during `WEBUI_SYNC` SPA bursts.
 
 ---
 
 ## 4. Production C++ ESP32 Reference Implementations (`MQTT+TCP` Default & Passive UDP `DMDF`)
 
-### A. Models 1 & 2A — Standalone Zero-Heap Raw MQTT + Plain-HTTP `Content-Length` Lossless `DMDZ` v2 Streamer
+### A. Models 1 & 2A — Dual-Target (`esp32dev` `25 MHz` Self-Cleaning SD + `ESP32-S3` 100% PSRAM) Raw MQTT & Lossless `DMDZ` v2 Streamer
 
-This standalone C++17 reference demonstrates the zero-heap **`Raw LwIP Scoped MQTT (:1883) + Plain-HTTP 1.1 Content-Length Lossless DMDZ v2 (:8890, codec=dmdz2)`** wire protocol for custom **Model 1** and **Model 2A** receivers (for full multi-engine `esp32dev` `25 MHz` SD queue + `8,448 B` SPSC ring + Zero-Copy `ScopedCanvasGuard` and `ESP32-S3` 100% PSRAM preload / `1 MB` PSRAM HD ring, see [`ShowcaseStreamPlayer.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/showcase/ShowcaseStreamPlayer.cpp)):
+This standalone C++17 reference demonstrates the complete zero-heap **`Raw LwIP Scoped MQTT (:1883) + Plain-HTTP 1.1 Content-Length Lossless DMDZ v2 (:8890, codec=dmdz2)`** pipeline for **both** hardware classes (matching production [`ShowcaseStreamPlayer.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/showcase/ShowcaseStreamPlayer.cpp)):
 
-1. **Zero-Heap Raw LwIP MQTT Claim (`0` Sockets & `0` `TIME_WAIT` During Card Scroll)**: Core 0 connects to `:1883` over `lwip_socket`, publishes retained `config` (Model 1) or `hello` (`supports_local_card: true`, Model 2A), extracts the retained `ready` card (`pkg_<domain>_<12hex>`), publishes `start_card`, and closes with **`SO_LINGER {1, 0}`**.
-2. **Pure Lossless 16-Bit True-RGB565 `DMDZ` v2 Decoder over Plain HTTP `1.1`**: Requests `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&codec=dmdz2`, tracks exact `Content-Length` bytes over TCP (`SO_LINGER {1, 0}`), and decodes lossless `DMDZ` v2 (`hdr[4] == 2U`) True-RGB565 frames (`FRAME_DELTA`, `FRAME_SCROLL`, `FRAME_KEY`, `FRAME_SCROLL_2D`, `FRAME_RAW`) in-place.
+1. **Step 1 — Zero-Heap Raw LwIP MQTT Claim (`0` Sockets & `0` `TIME_WAIT` During Card Scroll)**: Core 0 connects to `:1883` over `lwip_socket`, publishes retained `config` (Model 1) or `hello` (`supports_local_card: true`, Model 2A), extracts the retained `ready` card (`pkg_<domain>_<12hex>`), publishes `start_card`, and closes immediately with **`SO_LINGER {1, 0}`**.
+2. **Step 2 — Shared Lossless `DMDZ` v2 Decoder, Top-Up-Signaled SPSC Byte Ring & Self-Cleaning RAII SD File**:
+   - `DmdzStreamDecoder`: 100% lossless 16-bit True-RGB565 `DMDZ` v2 (`hdr[4] == 2U`) in-place state-machine decoder (`FRAME_DELTA`, `FRAME_SCROLL`, `FRAME_KEY`, `FRAME_SCROLL_2D`, `FRAME_RAW`).
+   - `DmdzSpscByteRing`: Lock-free Core 0 -> Core 1 byte ring with explicit consumer top-up signaling (`requestConsumerTopUp()` + `shouldRefill(batchMin)`), preventing `8,195 B` `FRAME_RAW` deadlocks inside an `8,448 B` ring when free space (`847 B`) is smaller than the `1,024 B` SD refill quantum.
+   - `ScopedSdCacheFile` (`esp32dev` only): Opens `/cache/showcase_live.dmdz` with `O_TRUNC` and guarantees `SD.remove()` on completion, error, or rotation preemption (`0` residual files on microSD).
+3. **Step 3 — Dual-Target Core 0 Runner (`ESP32-S3` `100% PSRAM` / `0` SD vs `esp32dev` `25 MHz` SD Staging)**:
+   - **`ESP32-S3` (`psramFound() == true`, Strictly `0` microSD I/O)**: Preloads clips `<= min(4 MB, freePsram - 1.5 MB)` into Octal PSRAM and closes TCP before Frame 0 (`0` Wi-Fi traffic during playback), or falls back on the already-open HTTP socket to a **`1 MB` PSRAM SPSC ring** for giant `256x64` HD clips (`> 4 MB`), then purges via HTTP `DELETE`.
+   - **`esp32dev` (`!psramFound()`, `0 KB` PSRAM)**: Stages `.dmdz2.stream` onto `/cache/showcase_live.dmdz` (`25 MHz` SPI SD), closes TCP before Frame 0 (`0` Wi-Fi traffic & `>= 20 KB` free internal DRAM), streams `1,024 B` SD blocks into an **`8,448 B` DRAM SPSC ring** (`5,000 ms` progress watchdog), auto-unlinks `/cache/showcase_live.dmdz`, and purges via HTTP `DELETE`.
+4. **Step 4 — Core 1 60 Hz Zero-Copy In-Place Presenter & `StreamEndHold`**: Decodes lossless `DMDZ` v2 **directly in-place inside `offscreenCanvas565`** (`0` second `8 KB` `frame565` buffer, `0` heap, `0` mutex) and freezes the final video frame (`StreamEndHold`) cleanly across server `DELETE` cleanup and engine transitions.
 
 ```cpp
 #include <Arduino.h>
+#include <SD.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
-#include <lwip/sockets.h>
+#include <esp_timer.h>
+#include <fcntl.h>
 #include <lwip/netdb.h>
+#include <lwip/sockets.h>
+#include <unistd.h>
 #include <atomic>
 #include <cstring>
 
-static constexpr uint16_t PANEL_W     = 128;
-static constexpr uint16_t PANEL_H     = 32;
-static constexpr size_t   FRAME_BYTES = static_cast<size_t>(PANEL_W) * PANEL_H * 2U; // 8,192 B
+static constexpr uint16_t PANEL_W                     = 128;
+static constexpr uint16_t PANEL_H                     = 32;
+static constexpr size_t   SRAM_SPSC_RING_BYTES        = 8448U;    // > 8,195 B max 128x32 FRAME_RAW
+static constexpr size_t   PSRAM_MAX_PRELOAD_BYTES     = 4194304U; // 4.0 MB contiguous PSRAM preload ceiling
+static constexpr size_t   PSRAM_MIN_RESERVE_BYTES     = 1572864U; // Keep >= 1.5 MB PSRAM free for system
+static constexpr size_t   PSRAM_HD_SPSC_RING_BYTES    = 1048576U; // 1.0 MB PSRAM SPSC ring for > 4 MB 256x64 HD
+static constexpr const char* kLiveSdStagePath         = "/cache/showcase_live.dmdz";
 
-// Persistent scratch buffer (~1.46 KB); on ESP32_STD (0 PSRAM), g_frame565 (8 KB) is allocated
-// strictly during Phase 2 streaming (LIFO) so Phase 1 and engine rotations never fragment heap!
-static uint16_t* g_frame565       = nullptr;
-static bool      g_hasPsram       = false;
-static uint8_t   g_ioScratch[1472]{};
-static char      g_itemId[28]{}; // Compact "pkg_<domain>_<12hex>" (<= 24 chars)
+enum class StreamExecMode : uint8_t { Idle = 0, SpscRing = 1, PsramPreload = 2 };
 
-// Lock-free synchronization between Core 0 (stream decoder) and Core 1 (60 Hz HUB75)
-static std::atomic<uint32_t> g_frameSeq{0};         // EVEN = coherent frame ready, ODD = Core 0 writing
-static std::atomic<uint32_t> g_consumedFrameSeq{0}; // Last EVEN frameSeq blitted by Core 1
-static std::atomic<uint32_t> g_renderBlitSeq{0};    // Dekker seq_cst guard (ODD while Core 1 reads g_frame565)
+static uint8_t               g_ioScratch[2048]{};
+static char                  g_itemId[28]{}; // Compact "pkg_<domain>_<12hex>" (<= 24 chars)
 static std::atomic<bool>     g_wantActive{true};
+static std::atomic<uint8_t>  g_execMode{static_cast<uint8_t>(StreamExecMode::Idle)};
+static std::atomic<bool>     g_streamFinished{false};
+static std::atomic<uint32_t> g_presentedFrames{0};
 
 // Immediately reclaim LwIP TCP PCB without accumulating 120s TIME_WAIT sockets across rotations
 static void closeSocketZeroTimeWait(int& sock) {
@@ -372,7 +381,7 @@ bool claimReadyCardZeroHeapMqtt(const char* host, const char* dmdId, const char*
     char lwtTopic[96];
     snprintf(lwtTopic, sizeof(lwtTopic), "dmd_showcase/clients/%s/status", dmdId);
     static constexpr const char* kLwtMsg = "{\"online\":false}";
-    const uint16_t idLen = static_cast<uint16_t>(strlen(dmdId));
+    const uint16_t idLen  = static_cast<uint16_t>(strlen(dmdId));
     const uint16_t lwTLen = static_cast<uint16_t>(strlen(lwtTopic));
     const uint16_t lwMLen = static_cast<uint16_t>(strlen(kLwtMsg));
     size_t pos = 0;
@@ -389,7 +398,6 @@ bool claimReadyCardZeroHeapMqtt(const char* host, const char* dmdId, const char*
         return false;
     }
 
-    // Publish retained hello (Model 2A) or config (Model 1), then SUBSCRIBE to {domain}/ready
     const IPAddress ip = WiFi.localIP();
     char topic[128], msg[256];
     if (isModel2A) {
@@ -409,14 +417,13 @@ bool claimReadyCardZeroHeapMqtt(const char* host, const char* dmdId, const char*
 
     snprintf(topic, sizeof(topic), "dmd_showcase/clients/%s/%s/ready", dmdId, domain);
     const uint16_t subTLen = static_cast<uint16_t>(strlen(topic));
-    g_ioScratch[0] = 0x00; g_ioScratch[1] = 0x01; // Packet ID = 1
+    g_ioScratch[0] = 0x00; g_ioScratch[1] = 0x01;
     g_ioScratch[2] = static_cast<uint8_t>(subTLen >> 8);
     g_ioScratch[3] = static_cast<uint8_t>(subTLen & 0xFFU);
     memcpy(g_ioScratch + 4, topic, subTLen);
-    g_ioScratch[4 + subTLen] = 0x00; // QoS 0
+    g_ioScratch[4 + subTLen] = 0x00;
     sendMqttPacket(sock, 0x82U, g_ioScratch, 5U + subTLen);
 
-    // Wait up to 600 ms for retained PUBLISH containing "ready":true + compact item_id
     bool claimed = false;
     size_t rxUsed = 0;
     const uint32_t waitStart = millis();
@@ -457,7 +464,7 @@ bool claimReadyCardZeroHeapMqtt(const char* host, const char* dmdId, const char*
 }
 
 // -----------------------------------------------------------------------------------------
-// STEP 2 (CORE 0): ZERO-HEAP LOSSLESS `DMDZ` v2 DECODER & PLAIN-HTTP `Content-Length` STREAM
+// STEP 2: LOSSLESS `DMDZ` v2 DECODER, TOP-UP SPSC BYTE RING & SELF-CLEANING SD CACHE GUARD
 // -----------------------------------------------------------------------------------------
 struct DmdzStreamDecoder {
     uint16_t cache[64]{};
@@ -527,31 +534,31 @@ struct DmdzStreamDecoder {
                 fb[pos++] = static_cast<uint16_t>(lo | (static_cast<uint16_t>(b) << 8));
                 state = (pos == numPx) ? 2 : 9;
             } else if (state == 2) { // Lossless 16-bit True-RGB565 DMDZ v2 opcode stream
-                if (b < 0x40U) { // SKIP (n + 1)
+                if (b < 0x40U) {
                     const uint32_t n = static_cast<uint32_t>(b) + 1U;
                     if (pos + n > numPx) { err = true; return false; }
                     pos += n; last = fb[pos - 1U]; cache[hashPx(last)] = last;
-                } else if (b < 0x80U) { // RUN (n + 1)
+                } else if (b < 0x80U) {
                     const uint32_t n = static_cast<uint32_t>(b & 0x3FU) + 1U;
                     if (pos + n > numPx) { err = true; return false; }
                     for (uint32_t k = 0; k < n; ++k) fb[pos++] = last;
-                } else if (b < 0xC0U) { // INDEX[64]
+                } else if (b < 0xC0U) {
                     if (pos >= numPx) { err = true; return false; }
                     last = cache[b & 0x3FU]; fb[pos++] = last;
-                } else if (b <= 0xDAU) { // DIFF
+                } else if (b <= 0xDAU) {
                     const uint8_t x = static_cast<uint8_t>(b & 0x1FU);
                     if (pos >= numPx) { err = true; return false; }
                     last = addRgb(last, static_cast<int>(x / 9U) - 1, static_cast<int>((x / 3U) % 3U) - 1, static_cast<int>(x % 3U) - 1);
                     fb[pos++] = last; cache[hashPx(last)] = last;
-                } else if (b >= 0xDCU && b <= 0xDFU) { b0 = b; state = 11; } // OP_LUMA
-                else if (b >= 0xE0U && b <= 0xEFU) { // LIT (n + 1)
+                } else if (b >= 0xDCU && b <= 0xDFU) { b0 = b; state = 11; }
+                else if (b >= 0xE0U && b <= 0xEFU) {
                     litRem = static_cast<uint8_t>((b & 0x0FU) + 1U);
                     if (pos + litRem > numPx) { err = true; return false; }
                     state = 3;
-                } else if (b == 0xF0U) { state = 5; } // LONG_SKIP
-                else if (b >= 0xF1U && b <= 0xF4U) { b0 = b; state = 11; } // OP_TLUMA
-                else if (b == 0xF6U || b == 0xF7U) { b0 = b; state = 12; } // OP_LZ
-                else if (b >= 0xF8U && pos < numPx) { // OP_TDIFF
+                } else if (b == 0xF0U) { state = 5; }
+                else if (b >= 0xF1U && b <= 0xF4U) { b0 = b; state = 11; }
+                else if (b == 0xF6U || b == 0xF7U) { b0 = b; state = 12; }
+                else if (b >= 0xF8U && pos < numPx) {
                     const int8_t* v = kTdiff[b & 0x07U];
                     last = addRgb(fb[pos], v[0], v[1], v[2]);
                     fb[pos++] = last; cache[hashPx(last)] = last;
@@ -588,34 +595,102 @@ struct DmdzStreamDecoder {
     bool finishFrame() const { return !err && rem == 0U && state == 2U && pos == numPx; }
 };
 
-// Step-C-only LIFO g_frame565 guard on ESP32_STD (persistent PSRAM on ESP32-S3)
-struct StepCFrameBufferGuard {
-    bool ok = false;
-    StepCFrameBufferGuard() {
-        g_hasPsram = psramFound();
-        if (!g_frame565) {
-            g_frame565 = static_cast<uint16_t*>(heap_caps_malloc(
-                FRAME_BYTES, (g_hasPsram ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL) | MALLOC_CAP_8BIT));
-        }
-        if (g_frame565) { memset(g_frame565, 0, FRAME_BYTES); ok = true; }
+struct DmdzSpscByteRing {
+    uint8_t*            buf = nullptr;
+    size_t              cap = 0U; // Usable bytes = cap - 1
+    std::atomic<size_t> head{0U};
+    std::atomic<size_t> tail{0U};
+    std::atomic<bool>   eof{false};
+    std::atomic<bool>   consumerNeedsTopUp{false};
+
+    void attach(uint8_t* storage, size_t storageBytes) {
+        buf = storage; cap = storageBytes;
+        head.store(0U, std::memory_order_relaxed);
+        tail.store(0U, std::memory_order_relaxed);
+        eof.store(false, std::memory_order_relaxed);
+        consumerNeedsTopUp.store(false, std::memory_order_relaxed);
     }
-    ~StepCFrameBufferGuard() {
-        if (!g_hasPsram && g_frame565) {
-            g_frameSeq.store(1U, std::memory_order_seq_cst); // Block new Core 1 blits
-            while ((g_renderBlitSeq.load(std::memory_order_seq_cst) & 1U) != 0U) {
-                vTaskDelay(pdMS_TO_TICKS(1)); // Wait for any in-flight Core 1 memcpy (~15 us)
-            }
-            uint16_t* p = g_frame565;
-            g_frame565 = nullptr;
-            heap_caps_free(p); // LIFO release after socket closes -> 0 heap fragmentation!
-            g_frameSeq.store(0U, std::memory_order_seq_cst);
+    size_t availableToRead() const {
+        const size_t h = head.load(std::memory_order_acquire);
+        const size_t t = tail.load(std::memory_order_acquire);
+        return (h >= t) ? (h - t) : (cap - t + h);
+    }
+    size_t availableToWrite() const { return (cap > 1U) ? ((cap - 1U) - availableToRead()) : 0U; }
+
+    // Prevents 0 FPS deadlock when an 8,195 B FRAME_RAW needs < 1,024 B tail top-up inside an 8,448 B ring!
+    bool shouldRefill(size_t batchMinFree) const {
+        const size_t freeB = availableToWrite();
+        return freeB > 0U && (freeB >= batchMinFree || consumerNeedsTopUp.load(std::memory_order_acquire));
+    }
+    size_t write(const uint8_t* src, size_t len) {
+        const size_t canWrite = (len < availableToWrite()) ? len : availableToWrite();
+        size_t h = head.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < canWrite; ++i) {
+            buf[h] = src[i];
+            if (++h == cap) h = 0U;
         }
+        if (canWrite > 0U) consumerNeedsTopUp.store(false, std::memory_order_release);
+        head.store(h, std::memory_order_release);
+        return canWrite;
+    }
+    size_t peek(uint8_t* dst, size_t len) const {
+        const size_t avail = availableToRead();
+        const size_t n = (len < avail) ? len : avail;
+        size_t t = tail.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i) {
+            dst[i] = buf[t];
+            if (++t == cap) t = 0U;
+        }
+        return n;
+    }
+    void consume(size_t len) {
+        size_t t = tail.load(std::memory_order_relaxed);
+        t = (t + len) % cap;
+        tail.store(t, std::memory_order_release);
     }
 };
 
-static int connectHttpDmdz2Stream(
-    const IPAddress& srvIp, const char* host, uint16_t port, const char* domain,
-    const char* itemId, const char* dmdId, size_t& outBodyOff, size_t& outUsed, size_t& outContentLen
+// Self-cleaning RAII SD staging guard for esp32dev (O_TRUNC on open + SD.remove on every exit/abort)
+struct ScopedSdCacheFile {
+    File        f{};
+    const char* path = nullptr;
+
+    bool openTruncate(const char* p) {
+        path = p;
+        SD.mkdir("/cache");
+        if (SD.exists(path)) SD.remove(path); // Equivalent to O_TRUNC clean start
+        f = SD.open(path, FILE_WRITE);
+        return static_cast<bool>(f);
+    }
+    bool reopenRead() {
+        if (f) f.close();
+        f = SD.open(path, FILE_READ);
+        return static_cast<bool>(f);
+    }
+    void closeAndRemove() {
+        if (f) f.close();
+        if (path && SD.exists(path)) SD.remove(path); // 0 residual .dmdz files on SD card!
+        path = nullptr;
+    }
+    ~ScopedSdCacheFile() { closeAndRemove(); }
+};
+
+static DmdzStreamDecoder    g_decoder{};
+static DmdzSpscByteRing     g_spscRing{};
+static const uint8_t*       g_psramPreloadPtr   = nullptr;
+static std::atomic<size_t>  g_psramPreloadBytes{0U};
+static uint16_t             g_streamTotalFrames = 0U;
+static uint32_t             g_frameIntervalUs   = 50000U;
+static size_t               g_c1PreloadOff      = 16U;
+static uint16_t             g_c1FrameIdx        = 0U;
+static uint32_t             g_c1NextDueUs       = 0U;
+
+// -----------------------------------------------------------------------------------------
+// STEP 3 (CORE 0): DUAL-TARGET RUNNER (`ESP32-S3` 100% PSRAM / 0 SD vs `esp32dev` 25 MHz SD)
+// -----------------------------------------------------------------------------------------
+static int openHttpStreamOrDelete(
+    const IPAddress& srvIp, const char* host, uint16_t port, const char* method,
+    const char* pathAndQuery, size_t& outBodyOff, size_t& outUsed, size_t& outContentLen
 ) {
     int sock = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) return -1;
@@ -633,9 +708,7 @@ static int connectHttpDmdz2Stream(
     }
 
     const int reqLen = snprintf(reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
-        "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&codec=dmdz2&client_id=%s HTTP/1.1\r\n"
-        "Host: %s:%u\r\nConnection: close\r\n\r\n",
-        domain, itemId, dmdId, host, port);
+        "%s %s HTTP/1.1\r\nHost: %s:%u\r\nConnection: close\r\n\r\n", method, pathAndQuery, host, port);
     if (!sendAllBounded(sock, g_ioScratch, static_cast<size_t>(reqLen))) {
         closeSocketZeroTimeWait(sock);
         return -1;
@@ -646,8 +719,7 @@ static int connectHttpDmdz2Stream(
         const int r = lwip_recv(sock, g_ioScratch + outUsed, sizeof(g_ioScratch) - 1U - outUsed, 0);
         if (r <= 0) {
             if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
-            closeSocketZeroTimeWait(sock);
-            return -1;
+            break;
         }
         outUsed += static_cast<size_t>(r);
         g_ioScratch[outUsed] = '\0';
@@ -663,138 +735,295 @@ static int connectHttpDmdz2Stream(
             break;
         }
     }
-    if (outBodyOff == 0U || memmem(g_ioScratch, outBodyOff, " 200 ", 5) == nullptr) {
-        closeSocketZeroTimeWait(sock);
-        return -1;
-    }
     return sock;
+}
+
+static void purgeServerStreamZeroTimeWait(const IPAddress& srvIp, const char* host, uint16_t port, const char* domain, const char* itemId, const char* dmdId) {
+    char delPath[160];
+    snprintf(delPath, sizeof(delPath), "/api/v1/%s/stream/%s.rgb565.stream?client_id=%s", domain, itemId, dmdId);
+    size_t bOff = 0, used = 0, cLen = 0;
+    int delSock = openHttpStreamOrDelete(srvIp, host, port, "DELETE", delPath, bOff, used, cLen);
+    closeSocketZeroTimeWait(delSock);
 }
 
 bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, const char* itemId, const char* dmdId) {
     IPAddress srvIp;
     if (!WiFi.hostByName(host, srvIp)) return false;
 
-    StepCFrameBufferGuard fbGuard; // Allocates 8 KB g_frame565 only during Phase 2 on ESP32_STD!
-    if (!fbGuard.ok) return false;
-
+    char getPath[192];
+    snprintf(getPath, sizeof(getPath), "/api/v1/%s/stream/%s.rgb565.stream?purge=false&codec=dmdz2&client_id=%s", domain, itemId, dmdId);
     size_t bodyOff = 0, rxUsed = 0, contentLen = 0;
-    int sock = connectHttpDmdz2Stream(srvIp, host, port, domain, itemId, dmdId, bodyOff, rxUsed, contentLen);
-    if (sock < 0) return false;
+    int sock = openHttpStreamOrDelete(srvIp, host, port, "GET", getPath, bodyOff, rxUsed, contentLen);
+    if (sock < 0 || bodyOff == 0U || memmem(g_ioScratch, bodyOff, " 200 ", 5) == nullptr || contentLen < 18U) {
+        closeSocketZeroTimeWait(sock);
+        return false;
+    }
 
-    size_t rawLeft = rxUsed - bodyOff, rawOff = bodyOff, totalRead = 0;
-
-    auto pullStreamBytes = [&](uint8_t* dst, size_t want) -> int {
-        if (contentLen > 0U && totalRead + want > contentLen) return -1;
+    size_t rawLeft = rxUsed - bodyOff, rawOff = bodyOff, totalNetRead = 0;
+    auto pullNetBytes = [&](uint8_t* dst, size_t want) -> int {
         size_t got = 0;
         uint32_t lastProgressMs = millis();
-        while (got < want && g_wantActive.load(std::memory_order_relaxed)) {
+        while (got < want && totalNetRead < contentLen && g_wantActive.load(std::memory_order_relaxed)) {
             if (rawLeft == 0U) {
-                const int r = lwip_recv(sock, g_ioScratch, 1408U, 0);
+                const int r = lwip_recv(sock, g_ioScratch, sizeof(g_ioScratch), 0);
                 if (r > 0) { rawLeft = static_cast<size_t>(r); rawOff = 0; lastProgressMs = millis(); }
-                else if (r == 0) return 0;
+                else if (r == 0) break;
                 else {
                     if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;
                     if ((millis() - lastProgressMs) > 3500U) return -1;
                     continue;
                 }
             }
-            const size_t take = (rawLeft < (want - got)) ? rawLeft : (want - got);
+            const size_t remContent = contentLen - totalNetRead;
+            size_t take = (rawLeft < (want - got)) ? rawLeft : (want - got);
+            if (take > remContent) take = remContent;
             memcpy(dst + got, g_ioScratch + rawOff, take);
-            rawOff += take; rawLeft -= take; got += take; totalRead += take;
+            rawOff += take; rawLeft -= take; got += take; totalNetRead += take;
         }
-        return (got == want) ? static_cast<int>(got) : -1;
+        return static_cast<int>(got);
     };
 
-    // Parse 16-byte Little-Endian <4sBBHHHHH> lossless DMDZ v2 (or raw DMDS) container header
     uint8_t hdr[16]{};
-    if (pullStreamBytes(hdr, 16U) != 16) { closeSocketZeroTimeWait(sock); return false; }
-    const bool isDmdz = (memcmp(hdr, "DMDZ", 4) == 0 && hdr[4] == 2U);
-    const bool isDmds = (!isDmdz && memcmp(hdr, "DMDS", 4) == 0);
-    const uint8_t  fps         = (hdr[5] > 0U) ? hdr[5] : 15U;
+    if (pullNetBytes(hdr, 16U) != 16 || memcmp(hdr, "DMDZ", 4) != 0 || hdr[4] != 2U) {
+        closeSocketZeroTimeWait(sock);
+        return false;
+    }
+    const uint8_t  fps         = (hdr[5] > 0U) ? hdr[5] : 20U;
     const uint16_t w           = static_cast<uint16_t>(hdr[6]  | (hdr[7]  << 8));
     const uint16_t h           = static_cast<uint16_t>(hdr[8]  | (hdr[9]  << 8));
     const uint16_t totalFrames = static_cast<uint16_t>(hdr[10] | (hdr[11] << 8));
     const uint16_t frameDurMs  = static_cast<uint16_t>(hdr[12] | (hdr[13] << 8));
-    if ((!isDmdz && !isDmds) || w != PANEL_W || h != PANEL_H || totalFrames == 0U) {
+    if (w != PANEL_W || h != PANEL_H || totalFrames == 0U) {
         closeSocketZeroTimeWait(sock);
         return false;
     }
 
-    DmdzStreamDecoder dmdzDec{};
-    dmdzDec.init(w, h);
-    const uint32_t periodMs = (frameDurMs > 0U) ? frameDurMs : (1000U / fps);
-    uint32_t nextPresentMs = millis();
+    g_decoder.init(w, h);
+    g_streamTotalFrames = totalFrames;
+    g_frameIntervalUs   = (frameDurMs > 0U) ? (static_cast<uint32_t>(frameDurMs) * 1000U) : (1000000U / fps);
+    g_c1PreloadOff      = 16U;
+    g_c1FrameIdx        = 0U;
+    g_c1NextDueUs       = 0U;
+    g_presentedFrames.store(0U, std::memory_order_release);
+    g_streamFinished.store(false, std::memory_order_release);
 
-    for (uint16_t f = 0; f < totalFrames && g_wantActive.load(std::memory_order_relaxed); ++f) {
-        uint8_t lenRaw[2]{};
-        uint16_t payloadLen = 0;
-        if (isDmdz) {
-            if (pullStreamBytes(lenRaw, 2U) != 2) break;
-            payloadLen = static_cast<uint16_t>(lenRaw[0] | (lenRaw[1] << 8));
-            if (!dmdzDec.beginFrame(payloadLen)) break;
-        }
+    const bool hasPsram = psramFound();
 
-        // Let Core 1 finish blitting the prior EVEN frame (<= 18 ms) before modifying g_frame565
-        const uint32_t curSeq = g_frameSeq.load(std::memory_order_acquire);
-        if (curSeq > 0U && g_consumedFrameSeq.load(std::memory_order_acquire) != curSeq) {
-            const uint32_t guardStart = millis();
-            while (g_wantActive.load(std::memory_order_relaxed) &&
-                   g_consumedFrameSeq.load(std::memory_order_acquire) != curSeq &&
-                   (millis() - guardStart) < 18U) {
-                vTaskDelay(pdMS_TO_TICKS(1));
+    // =====================================================================================
+    // PATH A — ESP32-S3 (Octal PSRAM): 100% PSRAM Preload (<= 4 MB) or 1 MB PSRAM SPSC Ring
+    // Strictly ZERO microSD card I/O (operates identically even with no SD card inserted!)
+    // =====================================================================================
+    if (hasPsram) {
+        const size_t freePsram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        const size_t maxPreload = (freePsram > PSRAM_MIN_RESERVE_BYTES)
+            ? ((freePsram - PSRAM_MIN_RESERVE_BYTES < PSRAM_MAX_PRELOAD_BYTES)
+                ? (freePsram - PSRAM_MIN_RESERVE_BYTES) : PSRAM_MAX_PRELOAD_BYTES)
+            : 0U;
+
+        if (contentLen <= maxPreload) {
+            uint8_t* preload = static_cast<uint8_t*>(heap_caps_malloc(contentLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (!preload) { closeSocketZeroTimeWait(sock); return false; }
+            memcpy(preload, hdr, 16U);
+            while (totalNetRead < contentLen && g_wantActive.load(std::memory_order_relaxed)) {
+                const size_t step = (contentLen - totalNetRead < 4096U) ? (contentLen - totalNetRead) : 4096U;
+                if (pullNetBytes(preload + totalNetRead, step) <= 0) break;
             }
-        }
+            closeSocketZeroTimeWait(sock); // <--- 0 Wi-Fi traffic during entire Phase 2 playback!
 
-        g_frameSeq.fetch_add(1U, std::memory_order_acq_rel); // ODD (write in progress)
-        bool frameOk = false;
-        if (isDmdz) {
-            uint16_t rem = payloadLen;
-            uint8_t chunk[512];
-            frameOk = true;
-            while (rem > 0U) {
-                const size_t step = (rem < sizeof(chunk)) ? rem : sizeof(chunk);
-                if (pullStreamBytes(chunk, step) != static_cast<int>(step) ||
-                    !dmdzDec.feed(chunk, step, g_frame565)) {
-                    frameOk = false;
-                    break;
+            if (totalNetRead == contentLen) {
+                g_psramPreloadPtr = preload;
+                g_psramPreloadBytes.store(contentLen, std::memory_order_release);
+                g_execMode.store(static_cast<uint8_t>(StreamExecMode::PsramPreload), std::memory_order_release);
+                while (g_wantActive.load(std::memory_order_relaxed) && !g_streamFinished.load(std::memory_order_acquire)) {
+                    vTaskDelay(pdMS_TO_TICKS(5));
                 }
-                rem = static_cast<uint16_t>(rem - step);
             }
-            frameOk = frameOk && dmdzDec.finishFrame();
-        } else {
-            frameOk = (pullStreamBytes(reinterpret_cast<uint8_t*>(g_frame565), FRAME_BYTES) == static_cast<int>(FRAME_BYTES));
+            g_execMode.store(static_cast<uint8_t>(StreamExecMode::Idle), std::memory_order_release);
+            g_psramPreloadPtr = nullptr;
+            heap_caps_free(preload);
+            purgeServerStreamZeroTimeWait(srvIp, host, port, domain, itemId, dmdId);
+            return g_streamFinished.load(std::memory_order_acquire);
         }
-        g_frameSeq.fetch_add(1U, std::memory_order_release); // EVEN (coherent frame ready!)
-        if (!frameOk) break;
 
-        // Smooth client presentation cadence (re-anchoring if network jitter delayed a frame)
-        nextPresentMs += periodMs;
-        const int32_t waitMs = static_cast<int32_t>(nextPresentMs - millis());
-        if (waitMs > 1) vTaskDelay(pdMS_TO_TICKS(static_cast<uint32_t>(waitMs)));
-        else if (waitMs < -static_cast<int32_t>(periodMs)) nextPresentMs = millis();
-        else taskYIELD();
+        // Giant > 4 MB 256x64 HD clip: stream through a 1 MB PSRAM SPSC ring from the SAME open HTTP socket
+        uint8_t* ringMem = static_cast<uint8_t*>(heap_caps_malloc(PSRAM_HD_SPSC_RING_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!ringMem) { closeSocketZeroTimeWait(sock); return false; }
+        g_spscRing.attach(ringMem, PSRAM_HD_SPSC_RING_BYTES);
+        g_execMode.store(static_cast<uint8_t>(StreamExecMode::SpscRing), std::memory_order_release);
+
+        uint8_t netChunk[4096];
+        while (totalNetRead < contentLen && g_wantActive.load(std::memory_order_relaxed) && !g_streamFinished.load(std::memory_order_acquire)) {
+            if (g_spscRing.shouldRefill(sizeof(netChunk))) {
+                const size_t want = (g_spscRing.availableToWrite() < sizeof(netChunk)) ? g_spscRing.availableToWrite() : sizeof(netChunk);
+                const int got = pullNetBytes(netChunk, want);
+                if (got <= 0) break;
+                g_spscRing.write(netChunk, static_cast<size_t>(got));
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(2));
+            }
+        }
+        g_spscRing.eof.store(true, std::memory_order_release);
+        closeSocketZeroTimeWait(sock);
+        while (g_wantActive.load(std::memory_order_relaxed) && !g_streamFinished.load(std::memory_order_acquire)) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        g_execMode.store(static_cast<uint8_t>(StreamExecMode::Idle), std::memory_order_release);
+        heap_caps_free(ringMem);
+        purgeServerStreamZeroTimeWait(srvIp, host, port, domain, itemId, dmdId);
+        return g_streamFinished.load(std::memory_order_acquire);
     }
 
-    closeSocketZeroTimeWait(sock); // SO_LINGER {1,0} -> 0 TIME_WAIT PCBs & triggers server purge!
-    return true; // StepCFrameBufferGuard destructor frees g_frame565 cleanly after socket closes
+    // =====================================================================================
+    // PATH B — esp32dev (0 PSRAM): Self-Cleaning 25 MHz SD Staging + 8,448 B DRAM SPSC Ring
+    // Closes TCP before Frame 0 (0 lwIP pbufs during playback, >= 20 KB free internal DRAM)
+    // =====================================================================================
+    ScopedSdCacheFile sdStage; // RAII: O_TRUNC on open + automatic SD.remove() on every exit!
+    if (!sdStage.openTruncate(kLiveSdStagePath)) {
+        closeSocketZeroTimeWait(sock);
+        return false;
+    }
+    sdStage.f.write(hdr, 16U);
+    uint8_t stageChunk[2048];
+    while (totalNetRead < contentLen && g_wantActive.load(std::memory_order_relaxed)) {
+        const size_t step = (contentLen - totalNetRead < sizeof(stageChunk)) ? (contentLen - totalNetRead) : sizeof(stageChunk);
+        const int got = pullNetBytes(stageChunk, step);
+        if (got <= 0 || sdStage.f.write(stageChunk, static_cast<size_t>(got)) != static_cast<size_t>(got)) break;
+    }
+    closeSocketZeroTimeWait(sock); // <--- TCP closed BEFORE SPSC allocation & playback (0 Wi-Fi RX jitter!)
+
+    if (totalNetRead != contentLen || !sdStage.reopenRead() || !sdStage.f.seek(16U)) {
+        return false; // ScopedSdCacheFile destructor auto-unlinks /cache/showcase_live.dmdz
+    }
+
+    uint8_t* sramRing = static_cast<uint8_t*>(heap_caps_malloc(SRAM_SPSC_RING_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!sramRing) return false;
+    g_spscRing.attach(sramRing, SRAM_SPSC_RING_BYTES);
+
+    uint8_t sdBlock[1024];
+    size_t sdRemaining = contentLen - 16U;
+    while (sdRemaining > 0U && g_spscRing.availableToWrite() >= sizeof(sdBlock)) {
+        const size_t toRead = (sdRemaining < sizeof(sdBlock)) ? sdRemaining : sizeof(sdBlock);
+        const size_t n = sdStage.f.read(sdBlock, toRead);
+        if (n == 0U) break;
+        g_spscRing.write(sdBlock, n);
+        sdRemaining -= n;
+    }
+    if (sdRemaining == 0U) g_spscRing.eof.store(true, std::memory_order_release);
+
+    g_execMode.store(static_cast<uint8_t>(StreamExecMode::SpscRing), std::memory_order_release);
+    uint32_t lastPresented = 0U;
+    uint32_t lastProgressMs = millis();
+
+    while (g_wantActive.load(std::memory_order_relaxed) && !g_streamFinished.load(std::memory_order_acquire)) {
+        const uint32_t curPresented = g_presentedFrames.load(std::memory_order_relaxed);
+        if (curPresented != lastPresented) {
+            lastPresented = curPresented;
+            lastProgressMs = millis();
+        } else if ((millis() - lastProgressMs) > 5000U) {
+            break; // 5,000 ms Core 1 progress watchdog prevents any 0 FPS stall until turn end!
+        }
+
+        if (sdRemaining > 0U && g_spscRing.shouldRefill(sizeof(sdBlock))) {
+            const size_t maxFit = g_spscRing.availableToWrite();
+            const size_t want   = (maxFit < sizeof(sdBlock)) ? maxFit : sizeof(sdBlock);
+            const size_t toRead = (sdRemaining < want) ? sdRemaining : want;
+            const size_t n      = sdStage.f.read(sdBlock, toRead);
+            if (n == 0U) { sdRemaining = 0U; g_spscRing.eof.store(true, std::memory_order_release); }
+            else {
+                g_spscRing.write(sdBlock, n);
+                sdRemaining -= n;
+                if (sdRemaining == 0U) g_spscRing.eof.store(true, std::memory_order_release);
+            }
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+    }
+
+    g_execMode.store(static_cast<uint8_t>(StreamExecMode::Idle), std::memory_order_release);
+    heap_caps_free(sramRing);
+    sdStage.closeAndRemove(); // Explicitly unlinks /cache/showcase_live.dmdz before HTTP DELETE
+    purgeServerStreamZeroTimeWait(srvIp, host, port, domain, itemId, dmdId);
+    return g_streamFinished.load(std::memory_order_acquire);
 }
 
 // -----------------------------------------------------------------------------------------
-// STEP 3 (CORE 1): ZERO-ALLOCATION 60 HZ `canvas_single` SEQLOCK-GUARDED COMMIT
+// STEP 4 (CORE 1): ZERO-COPY IN-PLACE 60 HZ PRESENTER + `StreamEndHold` (0 HEAP / 0 MUTEX)
 // -----------------------------------------------------------------------------------------
-void renderStreamFrameOnCore1(uint16_t* offscreenCanvas565, uint32_t& lastRenderedSeq) {
-    g_renderBlitSeq.fetch_add(1U, std::memory_order_seq_cst); // ODD: Core 1 reading g_frame565
-    const uint32_t fSeq = g_frameSeq.load(std::memory_order_seq_cst);
-    const uint16_t* src = g_frame565;
-    if (src && (fSeq & 1U) == 0U && fSeq != 0U && fSeq != lastRenderedSeq) {
-        memcpy(offscreenCanvas565, src, FRAME_BYTES);
-        if (g_frameSeq.load(std::memory_order_acquire) == fSeq) {
-            lastRenderedSeq = fSeq;
-            g_consumedFrameSeq.store(fSeq, std::memory_order_release);
-            // Burst offscreenCanvas565 to Single HUB75 DMA Buffer via blitCanvas565()
+bool renderStreamFrameOnCore1(uint16_t* offscreenCanvas565) {
+    const auto mode = static_cast<StreamExecMode>(g_execMode.load(std::memory_order_acquire));
+    if (mode == StreamExecMode::Idle || g_streamFinished.load(std::memory_order_relaxed)) {
+        return false; // StreamEndHold: keep last decoded video frame cleanly on HUB75 (0 redraw / 0 empty Card flash)
+    }
+
+    const uint32_t nowUs = static_cast<uint32_t>(esp_timer_get_time());
+    if (g_c1NextDueUs != 0U && static_cast<int32_t>(nowUs - g_c1NextDueUs) < 0) {
+        return false; // Frame not due yet
+    }
+
+    if (mode == StreamExecMode::PsramPreload) {
+        const size_t totalBytes = g_psramPreloadBytes.load(std::memory_order_acquire);
+        if (!g_psramPreloadPtr || g_c1PreloadOff + 2U > totalBytes) {
+            g_streamFinished.store(true, std::memory_order_release);
+            return false;
+        }
+        const uint16_t payloadLen = static_cast<uint16_t>(
+            g_psramPreloadPtr[g_c1PreloadOff] | (g_psramPreloadPtr[g_c1PreloadOff + 1U] << 8));
+        if (g_c1PreloadOff + 2U + payloadLen > totalBytes ||
+            !g_decoder.beginFrame(payloadLen) ||
+            !g_decoder.feed(g_psramPreloadPtr + g_c1PreloadOff + 2U, payloadLen, offscreenCanvas565) ||
+            !g_decoder.finishFrame()) {
+            g_streamFinished.store(true, std::memory_order_release);
+            return false;
+        }
+        g_c1PreloadOff += 2U + payloadLen;
+    } else { // StreamExecMode::SpscRing (esp32dev 8,448 B DRAM ring OR ESP32-S3 1 MB PSRAM HD ring)
+        uint8_t lenHdr[2]{};
+        const size_t avail = g_spscRing.availableToRead();
+        if (avail < 2U) {
+            if (g_spscRing.eof.load(std::memory_order_acquire)) g_streamFinished.store(true, std::memory_order_release);
+            else g_spscRing.consumerNeedsTopUp.store(true, std::memory_order_release);
+            return false;
+        }
+        g_spscRing.peek(lenHdr, 2U);
+        const uint16_t payloadLen = static_cast<uint16_t>(lenHdr[0] | (lenHdr[1] << 8));
+        if (avail < static_cast<size_t>(2U) + payloadLen) {
+            if (g_spscRing.eof.load(std::memory_order_acquire)) g_streamFinished.store(true, std::memory_order_release);
+            else g_spscRing.consumerNeedsTopUp.store(true, std::memory_order_release); // Wake sub-1KB tail refill!
+            return false;
+        }
+        g_spscRing.consume(2U);
+        if (!g_decoder.beginFrame(payloadLen)) {
+            g_streamFinished.store(true, std::memory_order_release);
+            return false;
+        }
+        uint8_t scratch[256];
+        uint16_t rem = payloadLen;
+        while (rem > 0U) {
+            const size_t step = (rem < sizeof(scratch)) ? rem : sizeof(scratch);
+            g_spscRing.peek(scratch, step);
+            g_spscRing.consume(step);
+            if (!g_decoder.feed(scratch, step, offscreenCanvas565)) {
+                g_streamFinished.store(true, std::memory_order_release);
+                return false;
+            }
+            rem = static_cast<uint16_t>(rem - step);
+        }
+        if (!g_decoder.finishFrame()) {
+            g_streamFinished.store(true, std::memory_order_release);
+            return false;
         }
     }
-    g_renderBlitSeq.fetch_add(1U, std::memory_order_seq_cst); // EVEN: Core 1 idle
+
+    g_c1NextDueUs = (g_c1NextDueUs == 0U) ? (nowUs + g_frameIntervalUs) : (g_c1NextDueUs + g_frameIntervalUs);
+    if (static_cast<int32_t>(nowUs - g_c1NextDueUs) > static_cast<int32_t>(g_frameIntervalUs)) {
+        g_c1NextDueUs = nowUs;
+    }
+    g_presentedFrames.fetch_add(1U, std::memory_order_relaxed);
+    if (++g_c1FrameIdx >= g_streamTotalFrames) {
+        g_streamFinished.store(true, std::memory_order_release); // Enters StreamEndHold on last video frame
+    }
+    // Caller now bursts offscreenCanvas565 to Single HUB75 DMA Buffer via blitCanvas565()
+    return true;
 }
 ```
 
@@ -1292,14 +1521,14 @@ void loop() {
 
 ### C. Optional Model 2A Persistent Live Command Callback (`dmd_showcase/clients/{dmd_id}/command`)
 
-When a dedicated Model 2A display (`ESP32-S3` or dedicated `ESP32_STD` without local WebUI) keeps an MQTT control listener open for sub-50 ms remote `Skip` / `Pause` / `Play Now` preemption while streaming over WebSocket `DMDZ` / HTTP TCP fallback:
+When a dedicated Model 2A display (`ESP32-S3` or dedicated `ESP32_STD` without local WebUI) keeps an MQTT control listener open for sub-50 ms remote `Skip` / `Pause` / `Play Now` preemption while streaming over plain HTTP `1.1` lossless `DMDZ` v2:
 
 ```cpp
 void onHybridCommandMessage(const char* topic, const char* jsonPayload) {
     if (strstr(topic, "/command") == nullptr) return;
     // action: "play_card" | "skip" | "pause" | "resume" | "stop"
     if (strstr(jsonPayload, "\"skip\"") || strstr(jsonPayload, "\"stop\"")) {
-        // Exits streamShowcasePhase2() -> closes WS DMDZ / TCP socket (SO_LINGER {1,0}) & purges item!
+        // Exits streamShowcasePhase2() -> closes HTTP TCP socket (SO_LINGER {1,0}), unlinks SD cache & purges item!
         g_wantActive.store(false, std::memory_order_release);
     } else if (strstr(jsonPayload, "\"pause\"")) {
         g_paused.store(true, std::memory_order_release);
@@ -1438,7 +1667,7 @@ When your arcade cabinet or HTPC runs **Batocera**, **RetroBat**, **LaunchBox / 
    - `FrontendSync` (on both `ArcadeMatrix` ESP32 and `ArcadeMatrix_RPi`) sends `POST /api/v1/clients/{dmd_id}/queue/async` with `mode: "play_now"` and **`mark_seen: false`**, returning `202 Accepted` in `< 3 ms` while `DomainSourceChainService` resolves arcade shortnames (e.g. `sf2x` on `cps2`) and transcodes in the background.
    - **Why `mark_seen: false` is essential**: Launching your favorite Neo-Geo, CPS-2, or Mega Drive game 20 times in a week **never pollutes `./data/seen_history.json`**, preserving strict Consume-Once discovery during idle attract mode!
 2. **In-Game Stream Transport (`ShowcaseStreamPlayer` + `DmdzStreamClient`, `purge=false`) & Game Exit**:
-   - On `ArcadeMatrix` ESP32, `FrontendSyncEngine` + `InGameShowcaseEngine` (`allowsOverlay() == false`) share 100% of the same `engines::showcase::ShowcaseStreamPlayer`, `net::DmdzStreamClient`, and `net::RawMqttSocket` layer as the autonomous Showcase engines (`0` duplicated streaming code and `0 B` private RGB565 buffer on unrotated `esp32dev` via Core 1 Zero-Copy `ScopedCanvasGuard`): once `/queue` reports `ready`, it downloads `GET /api/v1/games/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2` into `/cache/showcase_live.dmdz` (`esp32dev` `25 MHz` SD queue + `8,448 B` SPSC ring) or into Octal PSRAM (`ESP32-S3` `<= 4 MB` preload or `1 MB` PSRAM SPSC ring for `256x64` HD) with **Late Preemption** (`waitFirstFrameBeforeLive = true`), keeping `purge=false` so `once` / `loop` / `alternating` In-Game cycle modes replay cleanly before reclaiming the queue item via zero-`TIME_WAIT` `DELETE /api/v1/clients/{sync_id}/queue/{queue_id}` (`SO_LINGER {1, 0}`).
+   - On `ArcadeMatrix` ESP32, `FrontendSyncEngine` + `InGameShowcaseEngine` (`allowsOverlay() == false`) share 100% of the same `engines::showcase::ShowcaseStreamPlayer`, `net::DmdzStreamClient`, and `net::RawMqttSocket` layer as the autonomous Showcase engines (`0` duplicated streaming code and `0 B` private RGB565 buffer on unrotated `esp32dev` via Core 1 Zero-Copy `ScopedCanvasGuard`): once `/queue` reports `ready`, it downloads `GET /api/v1/games/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2` into self-cleaning `/cache/showcase_sync.dmdz` (`esp32dev` `25 MHz` SD staging opened with `O_TRUNC` + `8,448–9,216 B` SPSC ring + automatic `sd.remove` unlink on exit) or into Octal PSRAM (`ESP32-S3` `0` SD card, `<= 4 MB` preload or `1 MB` PSRAM SPSC ring for `256x64` HD) with **Late Preemption** (`waitFirstFrameBeforeLive = true`), keeping `purge=false` so `once` / `loop` / `alternating` In-Game cycle modes replay cleanly before reclaiming the queue item via zero-`TIME_WAIT` `DELETE /api/v1/clients/{sync_id}/queue/{queue_id}` (`SO_LINGER {1, 0}`).
    - On passive receivers (`Model 2B`), when returning to the frontend menu or idle attract mode, `FrontendSync` posts `{"action": "skip"}` to `/api/v1/clients/{dmd_id}/control`, immediately resuming the pre-warmed `N+1` Showcase rotation.
 
 ```bash

@@ -506,7 +506,7 @@ class DmdProfilePayload(BaseModel):
     config_source: Literal["client", "server"] = "server"
     supports_local_card: bool = Field(
         default=True,
-        description="True (Mode 2A): DMD renders 60 FPS text Info Card locally + streams UDP video. False (Mode 2B): Server renders Info Card directly into RGB565 UDP stream.",
+        description="True (Mode 2A): DMD renders 60 FPS text Info Card locally + streams lossless HTTP DMDZ v2 / DMDS video (or optional legacy MQTT+UDP). False (Mode 2B): Server renders Info Card directly into passive RGB565 UDP DMDF stream.",
     )
     always_stream_udp: bool = Field(
         default=False,

@@ -2,7 +2,7 @@
 Application Service: `PassivePlaylistDirectorService` (`app/application/passive_director_service.py`).
 
 Drives Server-Managed DMD profiles (`config_source='server'`):
-- Mode 2A (`supports_local_card=True`): Hybrid 60 FPS local Info Card over MQTT + UDP `DMDF` video.
+- Mode 2A (`supports_local_card=True`): Hybrid 60 FPS local Info Card over MQTT + lossless HTTP `DMDZ` v2 / `DMDS` video (or optional legacy UDP `DMDF`).
 - Mode 2B (`supports_local_card=False`): 100% Passive UDP framebuffer receiver (Card + Panoramas + Video).
 - Live client playback controls (`skip`, `pause`, `resume`, `stop`).
 """

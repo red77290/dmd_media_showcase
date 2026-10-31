@@ -21,14 +21,15 @@ info:
     2. **Primary Data Plane (`MQTT+TCP` Default — Models 1 & 2A, `supports_local_card: true`)**:
        - **Lossless 16-Bit True-RGB565 HTTP `Content-Length` Stream (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)**:
          - **`esp32dev` (`0 KB` PSRAM)**: Claims the retained `ready` slot via `{"action": "start_card", "item_id": "..."}`,
-           fetches the binary RGB565 mini-jacket over HTTP (`/api/v1/{domain}/poster/{item_id}.rgb565`), downloads lossless
-           `.dmdz2.stream` (`?purge=false&codec=dmdz2`) onto its `25 MHz` SD card (`/cache/showcase_live.dmdz`) in parallel with
-           the Info Card dwell (`4.5–17 s`), closes the TCP socket (`0` Wi-Fi traffic and `0` `lwIP` `pbuf`s during playback),
-           and decodes locally from SD -> `8,448 B` SPSC ring -> Zero-Copy `SRAM1` Canvas (`24–30 FPS`, 8-bit CIE-1931 HUB75).
-         - **`ESP32-S3` (Octal PSRAM)**: Preloads lossless `.dmdz2.stream` (`?purge=false&codec=dmdz2`) directly into PSRAM
-           during the Info Card (`<= 4 MB`, `0` Wi-Fi traffic during playback at `24–30 FPS`), or allocates a `1 MB` PSRAM SPSC
+           fetches the binary RGB565 mini-jacket over HTTP (`/api/v1/{domain}/poster/{item_id}.rgb565`), stages lossless
+           `.dmdz2.stream` (`?purge=false&codec=dmdz2`) onto its `25 MHz` SD card (`/cache/showcase_live.dmdz`, opened with `O_TRUNC`)
+           in parallel with the Info Card dwell (`4.5–17 s`), closes the TCP socket (`0` Wi-Fi traffic and `0` `lwIP` `pbuf`s during playback),
+           decodes locally from SD -> `8,448–9,216 B` SPSC ring (`shouldRefillSpscRing()`) -> Zero-Copy `SRAM1` Canvas (`24–30 FPS`, 8-bit CIE-1931 HUB75),
+           holds the final frame in `StreamEndHold`, and deterministically deletes `/cache/showcase_live.dmdz` via `sd.remove` on exit/abort.
+         - **`ESP32-S3` (Octal PSRAM, strictly `0` SD card I/O)**: Preloads lossless `.dmdz2.stream` (`?purge=false&codec=dmdz2`) directly into PSRAM
+           during the Info Card (`<= 4 MB`, `0` Wi-Fi traffic during playback at `24–30 FPS`, freed on exit), or allocates a `1 MB` PSRAM SPSC
            ring buffer for oversized `256x64` HD clips (`> 4 MB`) and streams remaining `Content-Length` bytes from TCP into PSRAM
-           as Core 1 decodes.
+           as Core 1 decodes — operating identically even with no SD card inserted.
          - **`ArcadeMatrix_RPi` (Raspberry Pi / Linux)**: Preloads lossless `.dmdz2.stream` (`?purge=false&codec=dmdz2`) or raw `DMDS`
            (`.rgb565.stream`) directly into RAM during the Info Card.
          - **Post-Playback Purge**: Clients purge consumed packages via MQTT `{"action": "stop_stream", "item_id": "...", "purge": true}`
