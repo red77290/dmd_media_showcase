@@ -9,8 +9,10 @@ and worker pool telemetry metrics.
 from __future__ import annotations
 
 import asyncio
-import logging
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
+import logging
+import multiprocessing
+import signal
 from typing import Dict, Generic, List, Optional, Set, Tuple, TypeVar
 
 from app.config import settings
@@ -18,6 +20,15 @@ from app.config import settings
 logger = logging.getLogger("dmd_showcase.pool")
 
 TJob = TypeVar("TJob")
+
+
+def _init_worker_process() -> None:
+    """Reset child process signal handlers so uvicorn SIGTERM/SIGINT never deadlock worker exit."""
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    except Exception:
+        pass
 
 
 class BoundedWorkerExecutorMixin(Generic[TJob]):
@@ -45,10 +56,36 @@ class BoundedWorkerExecutorMixin(Generic[TJob]):
     def _create_executor(use_proc: bool, max_w: int) -> Executor:
         if use_proc:
             try:
-                return ProcessPoolExecutor(max_workers=max_w)
+                mp_ctx = multiprocessing.get_context("spawn")
+                return ProcessPoolExecutor(
+                    max_workers=max_w,
+                    mp_context=mp_ctx,
+                    initializer=_init_worker_process,
+                )
             except Exception:
                 return ThreadPoolExecutor(max_workers=max_w)
         return ThreadPoolExecutor(max_workers=max_w)
+
+    def recover_broken_executor(self) -> Optional[Executor]:
+        """Replace a broken `ProcessPoolExecutor` (e.g. after an external worker SIGKILL/OOM) live."""
+        old_exec = self._executor
+        self._executor = None
+        if old_exec is not None:
+            try:
+                old_exec.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        if not self._running or self._loop is None or self._loop.is_closed():
+            return None
+        use_proc, max_w = self._executor_spec
+        eff_w = max(1, max_w or self._target_workers or 1)
+        self._executor = self._create_executor(use_proc, eff_w)
+        logger.warning(
+            "[POOL] Recovered broken worker executor -> spawned fresh pool (workers=%d, process_pool=%s)",
+            eff_w,
+            use_proc,
+        )
+        return self._executor
 
     def start(self) -> None:
         loop = asyncio.get_running_loop()

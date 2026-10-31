@@ -428,6 +428,9 @@ class SlotPreparationService:
                         fmap = await self.transcoder.transcode_candidate(
                             cand_found, criteria, geometry, idir
                         )
+                    except BaseException:
+                        shutil.rmtree(idir, ignore_errors=True)
+                        raise
                     finally:
                         self.state.preparing_sources.pop(key, None)
                     return cand_found, iid, idir, fmap

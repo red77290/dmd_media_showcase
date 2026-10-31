@@ -9,6 +9,7 @@ high-priority on-demand asset preparation, and TTL session eviction on top of
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures.process import BrokenProcessPool
 import hashlib
 import inspect
 import logging
@@ -420,6 +421,8 @@ class SessionBatchManager(BoundedWorkerExecutorMixin[QueuedVideoJob]):
                         elapsed,
                     )
             except Exception as exc:
+                if isinstance(exc, BrokenProcessPool):
+                    self.recover_broken_executor()
                 job.item.has_video = False
                 job.item.video_ready = True
                 logger.error("[WORKER #%d] Failed video job %s: %s", worker_id, job.item.id, exc)

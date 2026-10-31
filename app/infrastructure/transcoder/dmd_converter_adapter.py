@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from concurrent.futures.process import BrokenProcessPool
 import logging
-import struct
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+import struct
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dmd_gif_converter import read_rgb565_stream_header
 
@@ -45,70 +46,81 @@ def merge_rgb565_streams_with_chapters(
     while recording frame-accurate chapter offsets (`start_frame`, `frames`, `duration_s`).
     """
     frame_bytes = width * height * 2
-    payload_chunks: List[bytes] = []
+    chunk_bytes = max(frame_bytes, 64 * frame_bytes)
     chapters: List[Dict[str, object]] = []
     total_frames = 0
     target_fps = max(1, min(60, int(fps))) if int(fps or 0) > 0 else 0
 
-    for ch_id, ch_label, sp in labeled_streams:
-        if not sp or not sp.exists():
-            continue
-        raw = sp.read_bytes()
-        if len(raw) <= 16:
-            continue
-        hdr = read_rgb565_stream_header(raw[:16])
-        if hdr["width"] != width or hdr["height"] != height:
-            continue
-        hdr_fps = int(hdr.get("fps") or 0)
-        if target_fps <= 0:
-            target_fps = max(1, min(60, hdr_fps if hdr_fps > 0 else 15))
-        seg_fps = max(1, min(60, hdr_fps if hdr_fps > 0 else target_fps))
-        body = raw[16:]
-        n_frames = len(body) // frame_bytes
-        if n_frames > 0:
-            if abs(seg_fps - target_fps) <= 1:
-                seg_chunk = body[: n_frames * frame_bytes]
-                out_frames = n_frames
-            else:
-                out_frames = max(1, int(round(n_frames * float(target_fps) / float(seg_fps))))
-                mv = memoryview(body)
-                resampled = bytearray(out_frames * frame_bytes)
-                for out_i in range(out_frames):
-                    src_i = min(n_frames - 1, (out_i * seg_fps) // target_fps)
-                    src_off = src_i * frame_bytes
-                    dst_off = out_i * frame_bytes
-                    resampled[dst_off : dst_off + frame_bytes] = mv[src_off : src_off + frame_bytes]
-                seg_chunk = bytes(resampled)
-            chapters.append(
-                {
-                    "id": ch_id,
-                    "label": ch_label,
-                    "start_frame": total_frames,
-                    "frames": out_frames,
-                    "duration_s": round(out_frames / float(target_fps), 2),
-                }
-            )
-            payload_chunks.append(seg_chunk)
-            total_frames += out_frames
-
-    eff_fps = max(1, min(60, target_fps if target_fps > 0 else max(1, int(fps or 15))))
-    frame_dur_ms = max(16, int(round(1000.0 / eff_fps)))
-    header = struct.pack(
-        "<4sBBHHHHH",
-        b"DMDS",
-        1,
-        eff_fps,
-        width,
-        height,
-        min(65535, total_frames),
-        frame_dur_ms,
-        0,
-    )
     out_stream_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_stream_path.open("wb") as f:
-        f.write(header)
-        for chunk in payload_chunks:
-            f.write(chunk)
+    with out_stream_path.open("wb") as out_f:
+        out_f.write(b"\x00" * 16)
+        for ch_id, ch_label, sp in labeled_streams:
+            if not sp or not sp.exists():
+                continue
+            file_size = sp.stat().st_size
+            if file_size <= 16:
+                continue
+            with sp.open("rb") as seg_f:
+                raw_hdr = seg_f.read(16)
+                if len(raw_hdr) < 16:
+                    continue
+                hdr = read_rgb565_stream_header(raw_hdr)
+                if hdr["width"] != width or hdr["height"] != height:
+                    continue
+                hdr_fps = int(hdr.get("fps") or 0)
+                if target_fps <= 0:
+                    target_fps = max(1, min(60, hdr_fps if hdr_fps > 0 else 15))
+                seg_fps = max(1, min(60, hdr_fps if hdr_fps > 0 else target_fps))
+                n_frames = (file_size - 16) // frame_bytes
+                if n_frames <= 0:
+                    continue
+                if abs(seg_fps - target_fps) <= 1:
+                    remaining = n_frames * frame_bytes
+                    while remaining > 0:
+                        buf = seg_f.read(min(chunk_bytes, remaining))
+                        if not buf:
+                            break
+                        out_f.write(buf)
+                        remaining -= len(buf)
+                    out_frames = n_frames - (remaining // frame_bytes)
+                else:
+                    body = seg_f.read(n_frames * frame_bytes)
+                    eff_n = len(body) // frame_bytes
+                    if eff_n <= 0:
+                        continue
+                    out_frames = max(1, int(round(eff_n * float(target_fps) / float(seg_fps))))
+                    mv = memoryview(body)
+                    for out_i in range(out_frames):
+                        src_i = min(eff_n - 1, (out_i * seg_fps) // target_fps)
+                        src_off = src_i * frame_bytes
+                        out_f.write(mv[src_off : src_off + frame_bytes])
+                if out_frames > 0:
+                    chapters.append(
+                        {
+                            "id": ch_id,
+                            "label": ch_label,
+                            "start_frame": total_frames,
+                            "frames": out_frames,
+                            "duration_s": round(out_frames / float(target_fps), 2),
+                        }
+                    )
+                    total_frames += out_frames
+
+        eff_fps = max(1, min(60, target_fps if target_fps > 0 else max(1, int(fps or 15))))
+        frame_dur_ms = max(16, int(round(1000.0 / eff_fps)))
+        header = struct.pack(
+            "<4sBBHHHHH",
+            b"DMDS",
+            1,
+            eff_fps,
+            width,
+            height,
+            min(65535, total_frames),
+            frame_dur_ms,
+            0,
+        )
+        out_f.seek(0)
+        out_f.write(header)
 
     duration_s = round(total_frames / float(eff_fps), 2) if total_frames > 0 else 0.0
     return total_frames, duration_s, chapters
@@ -164,6 +176,21 @@ def finalize_unified_stream_sync(
     return total_frames, total_dur_s, chapters, actual_fps, dmdz_ok
 
 
+async def _run_in_worker_pool(
+    loop: asyncio.AbstractEventLoop,
+    batch_manager: Any,
+    fn: Callable[..., Any],
+    *args: Any,
+) -> Any:
+    """Execute `fn(*args)` in the shared pool, recovering automatically once on `BrokenProcessPool`."""
+    exec_pool = batch_manager.shared_executor()
+    try:
+        return await loop.run_in_executor(exec_pool, fn, *args)
+    except BrokenProcessPool:
+        fresh_pool = batch_manager.recover_broken_executor()
+        return await loop.run_in_executor(fresh_pool, fn, *args)
+
+
 class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
     """
     Adapter bridging `MediaCandidate` entities to `dmd_gif_converter`.
@@ -181,8 +208,6 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         loop = asyncio.get_running_loop()
         from app.scheduler.worker_pool import batch_manager
 
-        exec_pool = batch_manager.shared_executor()
-
         eff_fps = max(6, min(int(settings.video_max_fps_limit), int(criteria.video_fps)))
         eff_max_dur = max(
             1.5,
@@ -190,8 +215,9 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         )
 
         eff_pan_dur = float(criteria.panorama_duration_s or settings.panorama_duration_s or 4.0)
-        files_map = await loop.run_in_executor(
-            exec_pool,
+        files_map = await _run_in_worker_pool(
+            loop,
+            batch_manager,
             build_static_assets_sync,
             str(out_dir),
             candidate.title,
@@ -212,14 +238,16 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
             criteria.jacket_panorama,
             criteria.marquee_panorama,
             eff_pan_dur,
+            False,
         )
 
         has_video = False
         video_stream_name = ""
         video_gif_name = ""
         if criteria.include_video and (candidate.video_url or candidate.youtube_url):
-            vid_res = await loop.run_in_executor(
-                exec_pool,
+            vid_res = await _run_in_worker_pool(
+                loop,
+                batch_manager,
                 build_video_assets_worker_task,
                 str(out_dir),
                 candidate.title,
@@ -238,6 +266,7 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
                 settings.ytdlp_max_filesize_mb,
                 candidate.domain,
                 str((candidate.extra_meta or {}).get("canonical_genre") or candidate.subtitle or ""),
+                False,
             )
             has_video = bool(vid_res.get("has_video", False))
             if has_video:
@@ -253,8 +282,9 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
         # Optional Phase 1 server-rendered Info Card stream for Mode 2B passive UDP receivers & Studio
         card_stream_name = ""
         if criteria.render_card_in_stream and criteria.include_card_intro:
-            card_stream_name = await loop.run_in_executor(
-                exec_pool,
+            card_stream_name = await _run_in_worker_pool(
+                loop,
+                batch_manager,
                 build_card_stream_sync,
                 str(out_dir),
                 geometry.width,
@@ -324,8 +354,9 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
             chapters,
             actual_fps,
             dmdz_ok,
-        ) = await loop.run_in_executor(
-            exec_pool,
+        ) = await _run_in_worker_pool(
+            loop,
+            batch_manager,
             finalize_unified_stream_worker_task,
             labeled_stream_specs,
             str(unified_stream_path),

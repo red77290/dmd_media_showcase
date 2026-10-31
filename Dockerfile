@@ -33,7 +33,7 @@ COPY docs/asyncapi.yaml ./docs/asyncapi.yaml
 COPY scripts/compile_prod_vault.py ./scripts/compile_prod_vault.py
 
 # Resolved commit SHA of dmd_gif_converter@latest (injected by CI to invalidate layer cache on new releases)
-ARG DMD_GIF_CONVERTER_REV=latest
+ARG DMD_GIF_CONVERTER_REV=257d8dcce3d1fd77d50f1cbf214fe37b49ebefc4
 
 RUN --mount=type=secret,id=VAULT_MASTER_SECRET,required=false \
     --mount=type=secret,id=TMDB_API_KEY,required=false \
@@ -57,6 +57,6 @@ RUN --mount=type=secret,id=VAULT_MASTER_SECRET,required=false \
 EXPOSE 8890 1883 5353/udp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8890/api/v1/health || exit 1
+    CMD curl -fsS --max-time 4 http://127.0.0.1:8890/api/v1/health || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8890", "--proxy-headers", "--forwarded-allow-ips", "*"]

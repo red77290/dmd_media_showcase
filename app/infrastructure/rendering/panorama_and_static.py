@@ -99,6 +99,7 @@ def convert_image_to_panorama_gif_and_stream(
     duration_s: float = 4.0,
     color_boost: bool = True,
     scroll_direction: str = "auto",
+    export_gif: bool = True,
 ) -> Optional[Tuple[str, str, str]]:
     """
     Convert a static image (jacket, marquee, or snapshot) into:
@@ -204,22 +205,24 @@ def convert_image_to_panorama_gif_and_stream(
         if not frames_rgb:
             return None
 
-        gif_out_path = out_dir / f"{stem}_{width}x{height}.gif"
         stream_out_path = out_dir / f"{stem}_{width}x{height}.rgb565.stream"
-
         write_rgb565_stream(frames_rgb, stream_out_path, fps=eff_fps)
 
-        pil_frames = [Image.fromarray(f, mode="RGB") for f in frames_rgb]
-        frame_dur_ms = max(20, int(round(1000.0 / float(eff_fps))))
-        pil_frames[0].save(
-            gif_out_path,
-            format="GIF",
-            save_all=True,
-            append_images=pil_frames[1:],
-            duration=frame_dur_ms,
-            loop=0,
-            disposal=2,
-        )
+        gif_name = ""
+        if export_gif:
+            gif_out_path = out_dir / f"{stem}_{width}x{height}.gif"
+            pil_frames = [Image.fromarray(f, mode="RGB") for f in frames_rgb]
+            frame_dur_ms = max(20, int(round(1000.0 / float(eff_fps))))
+            pil_frames[0].save(
+                gif_out_path,
+                format="GIF",
+                save_all=True,
+                append_images=pil_frames[1:],
+                duration=frame_dur_ms,
+                loop=0,
+                disposal=2,
+            )
+            gif_name = gif_out_path.name
 
         logger.info(
             "[CONVERTER] Built direct 16-bit panorama '%s' (%dx%d, axis=%s, step=%dpx, %d frames @ %dfps)",
@@ -231,7 +234,7 @@ def convert_image_to_panorama_gif_and_stream(
             len(frames_rgb),
             eff_fps,
         )
-        return gif_out_path.name, stream_out_path.name, static_rgb565_path.name
+        return gif_name, stream_out_path.name, static_rgb565_path.name
     except Exception as exc:
         src_img_path.unlink(missing_ok=True)
         logger.info("[CONVERTER] Panorama conversion error for %s: %s", stem, exc)
@@ -258,6 +261,7 @@ def build_static_assets_sync(
     jacket_panorama: bool = True,
     marquee_panorama: bool = False,
     panorama_duration_s: float = 4.0,
+    export_gifs: bool = True,
 ) -> Dict[str, object]:
     """
     Build Mini-Jacket (`poster_{poster_w}x{poster_h}.png`/`.rgb565`), Static Marquee, and
@@ -358,10 +362,12 @@ def build_static_assets_sync(
                 fps=pan_fps,
                 duration_s=pan_dur,
                 color_boost=color_boost_bool,
+                export_gif=export_gifs,
             )
             if j_res:
                 jacket_gif_name, jacket_stream_name, j_static_rgb = j_res
-                panorama_gifs.append(jacket_gif_name)
+                if jacket_gif_name:
+                    panorama_gifs.append(jacket_gif_name)
                 panorama_streams.append(jacket_stream_name)
                 snapshots_rgb565.append(j_static_rgb)
 
@@ -377,10 +383,12 @@ def build_static_assets_sync(
                 fps=pan_fps,
                 duration_s=pan_dur,
                 color_boost=color_boost_bool,
+                export_gif=export_gifs,
             )
             if m_res:
                 marquee_gif_name, marquee_stream_name, m_static_rgb = m_res
-                panorama_gifs.append(marquee_gif_name)
+                if marquee_gif_name:
+                    panorama_gifs.append(marquee_gif_name)
                 panorama_streams.append(marquee_stream_name)
                 snapshots_rgb565.append(m_static_rgb)
 
@@ -409,12 +417,14 @@ def build_static_assets_sync(
                 fps=pan_fps,
                 duration_s=pan_dur,
                 color_boost=color_boost_bool,
+                export_gif=export_gifs,
             )
             if pan_res:
                 gif_f, stream_f, static_rgb_f = pan_res
-                snapshot_gif_names.append(gif_f)
+                if gif_f:
+                    snapshot_gif_names.append(gif_f)
+                    panorama_gifs.append(gif_f)
                 snapshot_stream_names.append(stream_f)
-                panorama_gifs.append(gif_f)
                 panorama_streams.append(stream_f)
                 snapshots_rgb565.append(static_rgb_f)
 

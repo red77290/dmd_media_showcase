@@ -40,7 +40,7 @@ def slice_hd_remote_video_ffmpeg(
     video_url: Optional[str],
     out_mp4: Path,
     max_duration_s: float = 10.0,
-    start_offset_s: float = 10.0,
+    start_offset_s: float = 0.0,
     ffmpeg_threads: int = 1,
 ) -> bool:
     """
@@ -194,7 +194,7 @@ def extract_hd_youtube_clip_ytdlp(
     clip_dur = max(2.0, min(120.0, float(max_duration_s)))
     eff_mb = max(10, min(250, int(max_filesize_mb)))
     fallback_mb = max(10, int(round(eff_mb * 0.75)))
-    sec_start = 8
+    sec_start = 0
     sec_end = int(sec_start + round(clip_dur))
     ffmpeg_bin = get_ffmpeg_binary()
     ytdlp_prefix: Optional[List[str]] = resolve_ytdlp_command()

@@ -250,6 +250,9 @@ class ShowcaseRuntimeState:
                 lambda: transcoder.transcode_candidate(cand, criteria, geometry, item_dir),
                 should_count_completion=lambda _res: True,
             )
+        except BaseException:
+            shutil.rmtree(item_dir, ignore_errors=True)
+            raise
         finally:
             self.preparing_sources.pop(slot_key, None)
         if not item_dir.exists():

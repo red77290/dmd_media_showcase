@@ -62,13 +62,14 @@ def build_video_assets_worker_task(
     ytdlp_max_filesize_mb: int = 60,
     domain: str = "",
     genre_hint: str = "",
+    export_gif: bool = True,
 ) -> Dict[str, object]:
     """
     Top-level worker function executed in `ProcessPoolExecutor` / `ThreadPoolExecutor`:
-    1. Slices remote `.webm`/`.m4v`/Archive.org/AnimeThemes/iTunes streams over HTTP via FFmpeg.
-    2. Otherwise downloads `video_url` directly, or extracts `youtube_url` via `yt-dlp --force-ipv4`.
-    3. Transcodes directly to lossless 16-bit True-RGB565 `.rgb565.stream` + `.gif` via `dmd_gif_converter`
-       with full HUB75 LED color boost and unsharp compensation.
+    1. Slices the leading `[0 .. max_duration_s]` prefix of remote `.webm`/`.m4v`/Archive.org/AnimeThemes/iTunes streams over HTTP via FFmpeg.
+    2. Otherwise downloads `video_url` directly, or extracts the leading `youtube_url` prefix via `yt-dlp --force-ipv4`.
+    3. Transcodes directly to lossless 16-bit True-RGB565 `.rgb565.stream` (and optional `.gif`) via `dmd_gif_converter`
+       with zero AI-Moment / quality-scoring overhead, full HUB75 LED color boost, and unsharp compensation.
     4. Returns `has_video=False` cleanly if no real video exists (never generates synthetic placeholders).
     """
     apply_worker_nice(nice_inc, ffmpeg_threads=ffmpeg_threads)
@@ -86,21 +87,11 @@ def build_video_assets_worker_task(
             or "mzstatic.com" in video_url
             or "archive.org/download/" in video_url
         ):
-            if "archive.org/download/" in video_url:
-                offset_s = 4.0
-            elif (
-                "itunes.apple.com" in video_url
-                or "mzstatic.com" in video_url
-                or video_url.endswith(".m4v")
-            ):
-                offset_s = 8.0
-            else:
-                offset_s = 12.0
             have_real_video = slice_hd_remote_video_ffmpeg(
                 video_url=video_url,
                 out_mp4=src_video_path,
                 max_duration_s=max_duration_s,
-                start_offset_s=offset_s,
+                start_offset_s=0.0,
                 ffmpeg_threads=ffmpeg_threads,
             )
         if not have_real_video:
@@ -154,9 +145,18 @@ def build_video_assets_worker_task(
     )
 
     scene_hint = resolve_domain_scene_type_hint(domain=domain, genre_hint=genre_hint)
+    cfg_fields = getattr(DmdClipConfig, "__dataclass_fields__", {})
     clip_ctx_kwargs: Dict[str, object] = {}
-    if scene_hint and "scene_type" in getattr(DmdClipConfig, "__dataclass_fields__", {}):
+    if scene_hint and "scene_type" in cfg_fields:
         clip_ctx_kwargs["scene_type"] = scene_hint
+    if "skip_intro_pct" in cfg_fields:
+        clip_ctx_kwargs["skip_intro_pct"] = 0.0
+    if "skip_outro_pct" in cfg_fields:
+        clip_ctx_kwargs["skip_outro_pct"] = 0.0
+    if "from_start" in cfg_fields:
+        clip_ctx_kwargs["from_start"] = True
+    if "evaluate_quality" in cfg_fields:
+        clip_ctx_kwargs["evaluate_quality"] = False
 
     clip_cfg = DmdClipConfig(
         width=width,
@@ -164,7 +164,7 @@ def build_video_assets_worker_task(
         fps=fps,
         max_duration_s=max_duration_s,
         mode=preset_mode,
-        use_ai_moments=True,
+        use_ai_moments=False,
         use_auto_action=use_auto_action,
         use_smart_color_boost=use_smart_color_boost,
         scroll_enabled=scroll_on_video,
@@ -179,7 +179,7 @@ def build_video_assets_worker_task(
             input_video=src_video_path,
             output_dir=out_dir,
             config=clip_cfg,
-            export_gif=True,
+            export_gif=bool(export_gif),
             export_rgb565_stream=True,
             stem=stem,
         )
@@ -188,14 +188,13 @@ def build_video_assets_worker_task(
         final_duration_s = float(res.duration_s)
 
         logger.info(
-            "[CONVERTER] Encoded real video for '%s' -> %dx%d @ %dfps | frames=%d (%.1fs) | score=%d | took %.2fs",
+            "[CONVERTER] Encoded real video for '%s' -> %dx%d @ %dfps | frames=%d (%.1fs) | took %.2fs",
             title,
             width,
             height,
             final_fps,
             final_frames,
             final_duration_s,
-            res.quality_score,
             time.monotonic() - t0,
         )
         return {
@@ -204,7 +203,7 @@ def build_video_assets_worker_task(
             "fps": final_fps,
             "duration_s": final_duration_s,
             "quality_score": res.quality_score,
-            "gif_file": f"{stem}.gif",
+            "gif_file": f"{stem}.gif" if export_gif else "",
             "stream_file": f"{stem}.rgb565.stream",
         }
     except Exception as exc:

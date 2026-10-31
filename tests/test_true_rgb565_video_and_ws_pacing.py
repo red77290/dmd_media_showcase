@@ -363,3 +363,201 @@ async def test_transcode_candidate_and_http_resolver_isolate_dmdz_encoding_from_
         assert executor_targets == [], "Up-to-date DMDZ v2 sibling must resolve via O(1) stat with zero executor hop"
     finally:
         fake_pool.shutdown(wait=True)
+
+
+def test_showcase_fast_prefix_zero_scoring_zero_ai_moments_and_skip_gif(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verify Showcase video extraction takes the leading `[0 .. max_duration_s]` trailer prefix
+    (`*0-30` in `yt-dlp` and `start_offset_s=0.0` in FFmpeg HTTP slicing) with `use_ai_moments=False`,
+    `from_start=True`, `evaluate_quality=False`, and `export_gif=False` when requested.
+    """
+    from types import SimpleNamespace
+
+    from app.infrastructure.scrapers import youtube_resolver
+
+    captured_ytdlp_cmds: List[List[str]] = []
+
+    def _fake_subproc_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        captured_ytdlp_cmds.append(list(cmd))
+        out_idx = cmd.index("-o") + 1
+        Path(cmd[out_idx]).write_bytes(b"\x00" * 16384)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(youtube_resolver, "resolve_ytdlp_command", lambda: ["yt-dlp"])
+    monkeypatch.setattr(youtube_resolver.subprocess, "run", _fake_subproc_run)
+
+    yt_mp4 = tmp_path / "yt_30s.mp4"
+    assert youtube_resolver.extract_hd_youtube_clip_ytdlp(
+        "https://www.youtube.com/watch?v=demo123",
+        yt_mp4,
+        max_duration_s=30.0,
+    )
+    assert len(captured_ytdlp_cmds) == 1
+    sec_idx = captured_ytdlp_cmds[0].index("--download-sections") + 1
+    assert captured_ytdlp_cmds[0][sec_idx] == "*0-30"
+
+    slice_offsets: List[float] = []
+    proc_calls: List[dict] = []
+
+    def _fake_slice_ffmpeg(**kwargs):  # type: ignore[no-untyped-def]
+        slice_offsets.append(float(kwargs["start_offset_s"]))
+        Path(kwargs["out_mp4"]).write_bytes(b"\x00" * 16384)
+        return True
+
+    class _SpyProcessor:
+        def process_video_trailer(self, **kwargs):  # type: ignore[no-untyped-def]
+            proc_calls.append(kwargs)
+            return SimpleNamespace(frame_count=450, fps=15, duration_s=30.0, quality_score=85)
+
+    monkeypatch.setattr(video_pipeline, "slice_hd_remote_video_ffmpeg", _fake_slice_ffmpeg)
+    monkeypatch.setattr(video_pipeline, "DmdMediaProcessor", _SpyProcessor)
+
+    res = video_pipeline.build_video_assets_worker_task(
+        item_dir=str(tmp_path / "fast_slot"),
+        title="Sonic the Hedgehog 2",
+        badge="MD",
+        palette=(0, 120, 255),
+        video_url="https://archive.org/download/sonic2/preview.mp4",
+        width=128,
+        height=32,
+        fps=15,
+        max_duration_s=30.0,
+        export_gif=False,
+    )
+    assert res["has_video"] is True
+    assert res["gif_file"] == ""
+    assert res["stream_file"] == "video_128x32.rgb565.stream"
+    assert slice_offsets == [0.0]
+    assert len(proc_calls) == 1
+    assert proc_calls[0]["export_gif"] is False
+    cfg = proc_calls[0]["config"]
+    assert cfg.use_ai_moments is False
+    if hasattr(cfg, "from_start"):
+        assert cfg.from_start is True
+    if hasattr(cfg, "evaluate_quality"):
+        assert cfg.evaluate_quality is False
+    if hasattr(cfg, "skip_intro_pct"):
+        assert cfg.skip_intro_pct == 0.0
+        assert cfg.skip_outro_pct == 0.0
+
+
+@pytest.mark.asyncio
+async def test_spawn_worker_pool_and_broken_process_pool_recovery() -> None:
+    """
+    Verify `BoundedWorkerExecutorMixin._create_executor(True, 1)` uses the `spawn` start method
+    with `_init_worker_process`, and `_run_in_worker_pool` transparently recovers from `BrokenProcessPool`.
+    """
+    import asyncio
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    from app.infrastructure.transcoder.dmd_converter_adapter import _run_in_worker_pool
+    from app.scheduler.executor_lifecycle import BoundedWorkerExecutorMixin, _init_worker_process
+
+    ex = BoundedWorkerExecutorMixin._create_executor(True, 1)
+    try:
+        if isinstance(ex, ProcessPoolExecutor):
+            mp_ctx = getattr(ex, "_mp_context", None)
+            assert mp_ctx is not None and mp_ctx.get_start_method() == "spawn"
+            assert getattr(ex, "_initializer", None) is _init_worker_process
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+    replacement_pool = ThreadPoolExecutor(max_workers=1)
+    recover_calls: List[int] = []
+
+    class _FakeBrokenPool:
+        pass
+
+    class _FakeBatchManager:
+        def __init__(self) -> None:
+            self._broken = True
+
+        def shared_executor(self):  # type: ignore[no-untyped-def]
+            return _FakeBrokenPool() if self._broken else replacement_pool
+
+        def recover_broken_executor(self):  # type: ignore[no-untyped-def]
+            self._broken = False
+            recover_calls.append(1)
+            return replacement_pool
+
+    loop = asyncio.get_running_loop()
+    orig_rie = loop.run_in_executor
+
+    async def _patched_rie(executor, fn, *args):  # type: ignore[no-untyped-def]
+        if isinstance(executor, _FakeBrokenPool):
+            raise BrokenProcessPool("simulated OOM worker crash")
+        return await orig_rie(executor, fn, *args)
+
+    bm = _FakeBatchManager()
+    try:
+        loop.run_in_executor = _patched_rie  # type: ignore[method-assign]
+        val = await _run_in_worker_pool(loop, bm, lambda x, y: x + y, 19, 23)
+        assert val == 42
+        assert recover_calls == [1]
+    finally:
+        loop.run_in_executor = orig_rie  # type: ignore[method-assign]
+        replacement_pool.shutdown(wait=True)
+
+
+def test_assemble_prepared_package_prunes_intermediate_streams_and_gifs(tmp_path: Path) -> None:
+    """
+    Verify `assemble_prepared_package` unlinks redundant segment `.rgb565.stream` and `.gif` files
+    while preserving `unified_*.rgb565.stream`, `.dmdz2.stream`, and static `.rgb565` card files.
+    """
+    from app.application.criteria_parser import assemble_prepared_package
+
+    pkg_dir = tmp_path / "consume_once" / "dmd_1" / "games" / "pkg_1"
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    unified = pkg_dir / "unified_128x32.rgb565.stream"
+    dmdz = pkg_dir / "unified_128x32.dmdz2.stream"
+    poster = pkg_dir / "poster_32x32.rgb565"
+    seg_jacket = pkg_dir / "pan_jacket_128x32.rgb565.stream"
+    seg_video = pkg_dir / "video_128x32.rgb565.stream"
+    seg_sidecar = pkg_dir / "video_128x32.rgb565.stream.json"
+    seg_gif = pkg_dir / "video_128x32.gif"
+
+    for p in (unified, dmdz, poster, seg_jacket, seg_video, seg_sidecar, seg_gif):
+        p.write_bytes(b"DMDS" + b"\x00" * 32)
+
+    cand = MediaCandidate(
+        id="ss_1",
+        domain="games",
+        source_id="screenscraper",
+        title="Streets of Rage 2",
+        year="1992",
+        badge="MD",
+        badge_color="#0088FF",
+        subtitle="Beat 'em up",
+        rating="9.2",
+        synopsis="Classic.",
+    )
+    pkg = assemble_prepared_package(
+        item_id="pkg_1",
+        domain="games",
+        dmd_id="dmd_1",
+        cand=cand,
+        geometry=PanelGeometry(width=128, height=32),
+        criteria=FilterCriteria(domain="games"),
+        item_dir=pkg_dir,
+        files_map={
+            "unified_stream_path": str(unified),
+            "poster_rgb565": poster.name,
+            "has_panoramas": True,
+            "has_video": True,
+            "stream_frames": 120,
+            "stream_fps": 15,
+            "stream_duration_s": 8.0,
+        },
+    )
+    assert pkg.unified_stream_path == unified
+    assert unified.exists()
+    assert dmdz.exists()
+    assert poster.exists()
+    assert not seg_jacket.exists()
+    assert not seg_video.exists()
+    assert not seg_sidecar.exists()
+    assert not seg_gif.exists()

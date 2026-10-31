@@ -8,7 +8,7 @@ into canonical `FilterCriteria` Value Objects and assembling `PreparedShowcasePa
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.config import settings
 from app.domain.entities import (
@@ -178,6 +178,21 @@ def parse_domain_criteria(
     )
 
 
+def prune_consume_once_intermediates(item_dir: Path, unified_path: Optional[Path]) -> None:
+    """
+    Unlink redundant intermediate segment `.rgb565.stream` and `.gif` files inside a Consume-Once
+    package directory once `unified_*.rgb565.stream` (and its `.dmdz2.stream` sibling) is assembled.
+    """
+    if unified_path is None or not unified_path.is_file() or not item_dir.is_dir():
+        return
+    keep_name = unified_path.name
+    for entry in item_dir.iterdir():
+        if not entry.is_file() or entry.name == keep_name:
+            continue
+        if entry.name.endswith((".rgb565.stream", ".rgb565.stream.json", ".gif", ".gif.json")):
+            entry.unlink(missing_ok=True)
+
+
 def assemble_prepared_package(
     *,
     item_id: str,
@@ -217,6 +232,8 @@ def assemble_prepared_package(
     unified_path = Path(unified_path_str) if unified_path_str else None
     if unified_path is not None and not unified_path.exists():
         unified_path = None
+    if unified_path is not None:
+        prune_consume_once_intermediates(item_dir, unified_path)
 
     return PreparedShowcasePackage(
         item_id=item_id,
