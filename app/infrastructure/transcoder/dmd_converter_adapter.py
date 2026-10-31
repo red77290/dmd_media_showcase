@@ -162,7 +162,12 @@ def finalize_unified_stream_sync(
                 actual_fps = int(parsed_hdr["fps"])
         dmdz_v1_ok = ensure_dmdz_sibling(out_stream_path, version=1) is not None
         dmdz_v2_ok = ensure_dmdz_sibling(out_stream_path, version=2) is not None
-        dmdz_ok = dmdz_v1_ok and dmdz_v2_ok
+        dmdz_sram_ok = (
+            ensure_dmdz_sibling(out_stream_path, version=2, profile="sram") is not None
+            if (width * height) <= 8192
+            else True
+        )
+        dmdz_ok = dmdz_v1_ok and dmdz_v2_ok and dmdz_sram_ok
     return total_frames, total_dur_s, chapters, actual_fps, dmdz_ok
 
 

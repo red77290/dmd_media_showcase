@@ -297,7 +297,11 @@ async def test_ffmpeg_udp_clock_streamer_dmdf_packets(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_consume_once_http_and_admin_endpoints(tmp_path: Path, monkeypatch):
     """Verify `/api/v1/{domain}/config`, `/next`, `/stream/...` Consume-Once & immediate disk purge, plus `/admin`."""
+    from app.config import settings
+
     monkeypatch.setenv("DMD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache")
+    monkeypatch.setattr(settings, "use_process_pool", False)
     sample_png = _make_png_bytes()
     monkeypatch.setattr(
         "app.scheduler.asset_builder._download_bytes",

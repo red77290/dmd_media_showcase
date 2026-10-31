@@ -170,16 +170,51 @@ def detect_scroll_2d(
             )
         )
 
-    # Stage 1: full 1D axes (`dx` with `dy=0`, `dy` with `dx=0`) + coarse 2D grid
+    # Stage 1: full 1D axes (`dx` with `dy=0`, `dy` with `dx=0`) + coarse 2D grid.
+    # In `tol_mode` on >= 24x48 frames, score strided interior in Stage 1 before full-resolution Stage 2 refinement.
+    use_stride = bool(tol_mode and h >= 24 and w >= 48)
+    sx = 4 if (use_stride and w >= 64) else 2
+
+    def _score_coarse(dx: int, dy: int) -> int:
+        if not use_stride:
+            return _score_interior(dx, dy)
+        if dx == 0 and dy == 0:
+            assert cr is not None and cg is not None and cb is not None
+            assert pr is not None and pg is not None and pb is not None
+            return int(
+                np.count_nonzero(
+                    (np.abs(cr[::2, ::sx] - pr[::2, ::sx]) <= r_tol)
+                    & (np.abs(cg[::2, ::sx] - pg[::2, ::sx]) <= g_tol)
+                    & (np.abs(cb[::2, ::sx] - pb[::2, ::sx]) <= b_tol)
+                )
+            )
+        y0_c = 0 if dy >= 0 else -dy
+        y1_c = (h - dy) if dy >= 0 else h
+        y0_p = dy if dy >= 0 else 0
+        y1_p = h if dy >= 0 else (h + dy)
+        x0_c = 0 if dx >= 0 else -dx
+        x1_c = (w - dx) if dx >= 0 else w
+        x0_p = dx if dx >= 0 else 0
+        x1_p = w if dx >= 0 else (w + dx)
+        assert cr is not None and cg is not None and cb is not None
+        assert pr is not None and pg is not None and pb is not None
+        return int(
+            np.count_nonzero(
+                (np.abs(cr[y0_c:y1_c:2, x0_c:x1_c:sx] - pr[y0_p:y1_p:2, x0_p:x1_p:sx]) <= r_tol)
+                & (np.abs(cg[y0_c:y1_c:2, x0_c:x1_c:sx] - pg[y0_p:y1_p:2, x0_p:x1_p:sx]) <= g_tol)
+                & (np.abs(cb[y0_c:y1_c:2, x0_c:x1_c:sx] - pb[y0_p:y1_p:2, x0_p:x1_p:sx]) <= b_tol)
+            )
+        )
+
     coarse_best = (0, 0)
-    coarse_score = base
+    coarse_score = _score_coarse(0, 0)
     tested = {(0, 0)}
 
     for dx in range(-max_dx, max_dx + 1):
         if dx == 0:
             continue
         tested.add((dx, 0))
-        sc = _score_interior(dx, 0)
+        sc = _score_coarse(dx, 0)
         if sc > coarse_score:
             coarse_score = sc
             coarse_best = (dx, 0)
@@ -188,7 +223,7 @@ def detect_scroll_2d(
         if dy == 0:
             continue
         tested.add((0, dy))
-        sc = _score_interior(0, dy)
+        sc = _score_coarse(0, dy)
         if sc > coarse_score:
             coarse_score = sc
             coarse_best = (0, dy)
@@ -200,24 +235,27 @@ def detect_scroll_2d(
             if dy == 0 or (dx, dy) in tested:
                 continue
             tested.add((dx, dy))
-            sc = _score_interior(dx, dy)
+            sc = _score_coarse(dx, dy)
             if sc > coarse_score:
                 coarse_score = sc
                 coarse_best = (dx, dy)
 
-    # Stage 2: local +/-1 refinement around the coarse winner
+    # Stage 2: full-resolution +/-1 refinement around the coarse winner
     cx, cy = coarse_best
+    best_full = (cx, cy)
+    best_full_score = _score_interior(cx, cy) if (cx != 0 or cy != 0) else base
+    refined_tested = {(0, 0), (cx, cy)}
     for dx in range(max(-max_dx, cx - 1), min(max_dx, cx + 1) + 1):
         for dy in range(max(-max_dy, cy - 1), min(max_dy, cy + 1) + 1):
-            if (dx, dy) in tested:
+            if (dx, dy) in refined_tested:
                 continue
-            tested.add((dx, dy))
+            refined_tested.add((dx, dy))
             sc = _score_interior(dx, dy)
-            if sc > coarse_score:
-                coarse_score = sc
-                coarse_best = (dx, dy)
+            if sc > best_full_score:
+                best_full_score = sc
+                best_full = (dx, dy)
 
-    bx, by = coarse_best
+    bx, by = best_full
     if bx == 0 and by == 0:
         return (0, 0)
 
@@ -226,7 +264,7 @@ def detect_scroll_2d(
         full_matches = int(np.count_nonzero(cur == scrolled_reference_2d(prev, bx, by)))
         return (bx, by) if full_matches > (base + min_gain) else (0, 0)
 
-    return (bx, by) if coarse_score > (base + min_gain) else (0, 0)
+    return (bx, by) if best_full_score > (base + min_gain) else (0, 0)
 
 
 def stabilize_rgb565_stream_temporal_dither(
@@ -308,4 +346,90 @@ def stabilize_rgb565_stream_temporal_dither(
     tmp.write_bytes(payload)
     tmp.replace(raw_stream_path)
     return True
+
+
+def stabilize_rgb565_frames_sram(
+    frames: np.ndarray,
+    fps: int = 20,
+    r_tol: int = 2,
+    g_tol: int = 3,
+    b_tol: int = 2,
+) -> np.ndarray:
+    """
+    In-memory H.264 inter-frame mosquito-noise stabilizer for `profile="sram"` (`esp32dev` 0 PSRAM).
+
+    Leaves `.rgb565.stream` and `.dmdz2.stream` untouched on disk for `psram` / `psram_hd` / `RPi`,
+    preserves clean exact-scrolling `1D` / `2D` panoramas bit-for-bit, and anchors sub-threshold
+    H.264 luma/chroma boil (`|dr| <= r_tol`, `|dg| <= g_tol`, `|db| <= b_tol`, weighted L1 `<= 7`)
+    against the motion-compensated previous frame with periodic refresh (`max(18, fps)`).
+    """
+    arr = np.ascontiguousarray(frames, dtype="<u2")
+    if arr.ndim != 3 or arr.shape[0] < 2:
+        return arr
+    count, height, width = int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2])
+    if height <= 0 or width <= 0:
+        return arr
+
+    # Detect whether Frame 0->1 is already a clean exact panorama or static hold so Frame 0 stays bit-exact.
+    f0, f1 = arr[0], arr[1]
+    dx01, dy01 = detect_scroll_2d(f1, f0, tol_mode=False)
+    ref01 = scrolled_reference_2d(f0, dx01, dy01) if (dx01 != 0 or dy01 != 0) else f0
+    f0_is_clean_pano = (int(np.count_nonzero(f1 == ref01)) * 10) >= (height * width * 8)
+
+    def _canon_dark_g(frm: np.ndarray) -> np.ndarray:
+        canon_g6 = _CIE8_CANON_G6[(frm >> 5) & 0x3F]
+        return ((frm & np.uint16(0xF81F)) | (canon_g6 << np.uint16(5))).astype("<u2")
+
+    anchor_interval = max(18, int(fps or 20))
+    prev = f0.copy() if f0_is_clean_pano else _canon_dark_g(f0)
+    out_frames: List[np.ndarray] = [prev]
+
+    for k in range(1, count):
+        cur_raw = arr[k]
+        if np.array_equal(cur_raw, prev):
+            out_frames.append(prev.copy())
+            continue
+
+        # Fast-path clean 1D / 2D artwork panoramas so they remain 100% lossless True-RGB565
+        dy_1d = detect_scroll_1d(cur_raw, prev)
+        if dy_1d is not None:
+            ref_1d = scrolled_reference(prev, dy_1d)
+            if (int(np.count_nonzero(cur_raw == ref_1d)) * 10) >= (height * width * 8):
+                prev = cur_raw.copy()
+                out_frames.append(prev)
+                continue
+        elif f0_is_clean_pano:
+            dx_ex, dy_ex = detect_scroll_2d(cur_raw, prev, tol_mode=False)
+            if dx_ex != 0 or dy_ex != 0:
+                ref_ex = scrolled_reference_2d(prev, dx_ex, dy_ex)
+                if (int(np.count_nonzero(cur_raw == ref_ex)) * 10) >= (height * width * 8):
+                    prev = cur_raw.copy()
+                    out_frames.append(prev)
+                    continue
+
+        cur = _canon_dark_g(cur_raw)
+        if (k % anchor_interval) == 0:
+            prev = cur
+            out_frames.append(prev)
+            continue
+
+        dx, dy = detect_scroll_2d(cur, prev, tol_mode=True, r_tol=r_tol, g_tol=g_tol, b_tol=b_tol)
+        ref = scrolled_reference_2d(prev, dx, dy) if (dx != 0 or dy != 0) else prev
+
+        adr = np.abs(((cur >> 11) & 0x1F).astype(np.int16) - ((ref >> 11) & 0x1F).astype(np.int16))
+        adg = np.abs(((cur >> 5) & 0x3F).astype(np.int16) - ((ref >> 5) & 0x3F).astype(np.int16))
+        adb = np.abs((cur & 0x1F).astype(np.int16) - (ref & 0x1F).astype(np.int16))
+        jitter = (
+            (adr <= r_tol)
+            & (adg <= g_tol)
+            & (adb <= b_tol)
+            & ((adr * 2 + adg + adb * 2) <= 10)
+            & (cur != ref)
+        )
+        recon = np.where(jitter, ref, cur).astype("<u2") if np.any(jitter) else cur
+        prev = recon
+        out_frames.append(recon)
+
+    return np.stack(out_frames).astype("<u2")
+
 

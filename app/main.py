@@ -172,9 +172,9 @@ app = FastAPI(
         "### Architecture Highlights\n"
         "- **Configurable Multi-Source Scraper Chains (`source_policies`)**: Ordered Primary/Secondary/Fallback chains per domain (`IGDB v4`, `ScreenScraper`, `ArcadeItalia`, `Libretro/Wikidata`, `TMDB`, `iTunes`, `TheTVDB v4`, `TVMaze`, `Jikan/AnimeThemes`, `AniList`) with automatic cross-source asset enrichment (`enrich_missing` -> composite `source_used` such as `igdb+arcadeitalia`).\n"
         "- **Strict Consume-Once (`seen_history.json`)**: Zero title repetition and immediate post-stream disk purge.\n"
-        "- **Multi-Tier Streaming Transport**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n"
-        "  1. **Credit-Acknowledged Lossless `DMDZ` v1 WebSocket (`WS /api/v1/{domain}/ws/{item_id}.dmdz`)** — primary data plane for `ESP32` (`ESP32_STD` 0 PSRAM) & `ESP32-S3` (`<= 1,024 B` sub-packets, `2`-credit sliding window `<= 2,048 B` in flight, 1-byte `'A'` client ACK),\n"
-        "  2. **HTTP TCP `DMDZ` / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)** — automatic `?paced=1&codec=dmdz1` fallback and unpaced raw `DMDS` preload for `ArcadeMatrix_RPi`,\n"
+        "- **3-Tier Adaptive Streaming Transport (`profile=sram | psram | psram_hd`)**: Real-time MQTT (`:1883`, `retain=True` + `LWT`) paired with:\n"
+        "  1. **Credit-Acknowledged `DMDZ` v2 WebSocket (`WS /api/v1/{domain}/ws/{item_id}.dmdz`)** — primary data plane for `esp32dev` (`profile=sram`: hybrid True-RGB565 + `FRAME_PAL8` `0x05` capped `<= 1,400 B/frame`, `credits=4&chunk=1360`, coalesced `16 B` header + Frame `0`, `2 ms` inter-chunk pacing) and live fallback for `ESP32-S3` (`profile=psram|psram_hd`, `credits=12..16&chunk=1400`),\n"
+        "  2. **HTTP TCP `DMDZ` / `DMDS` (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream`)** — unpaced PSRAM bulk preload (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`, `0` Wi-Fi traffic during playback at `24–30 FPS`), paced `?paced=1&codec=dmdz2|dmdz1` fallback, and unpaced raw `DMDS` preload for `ArcadeMatrix_RPi`,\n"
         "  3. **Passive UDP `DMDF` (`:4210`, `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
     ),
     version=__version__,

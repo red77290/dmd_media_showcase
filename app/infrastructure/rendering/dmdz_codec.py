@@ -15,6 +15,7 @@ ESP32, so multiple compressed frames fit inside the client's circular RAM jitter
   - `type == 2` (`FRAME_KEY`): keyframe op stream (no prior reference required).
   - `type == 3` (`FRAME_SCROLL_2D`, v2): `dx` (`int8`), `dy` (`int8`) 2D `memmove` + op stream.
   - `type == 4` (`FRAME_RAW`, v2): raw uncompressed `width * height * 2` little-endian bytes (`L = 1 + 2*N`).
+  - `type == 5` (`FRAME_PAL8`, v2): up to 128-color scene RGB565 palette + optional 2D scroll + skip/run/index ops.
 
 ### 2D scroll reference (`type == 3`, v2)
 1. Vertical `memmove` (`dy > 0` moves content up: rows `[0, h - dy) <- [dy, h)`; `dy < 0` moves down).
@@ -52,7 +53,16 @@ from app.infrastructure.rendering.dmdz_motion import (
     detect_scroll_2d,
     scrolled_reference,
     scrolled_reference_2d,
+    stabilize_rgb565_frames_sram,
     stabilize_rgb565_stream_temporal_dither,
+)
+from app.infrastructure.rendering.dmdz_pal8 import (
+    FRAME_PAL8,
+    SRAM_DEFAULT_FRAME_CAP,
+    decode_frame_pal8,
+    encode_adaptive_pal8_sram,
+    encode_frame_pal8_payload,
+    quantize_rgb565_palette,
 )
 
 DMDZ_MAGIC = b"DMDZ"
@@ -60,6 +70,7 @@ DMDZ_VERSION = 1
 DMDZ_V2_VERSION = 2
 DMDZ_CODEC_ID = "dmdz1"
 DMDZ_V2_CODEC_ID = "dmdz2"
+VALID_STREAM_PROFILES: Tuple[str, ...] = ("sram", "psram", "psram_hd")
 
 FRAME_DELTA = 0
 FRAME_SCROLL = 1
@@ -84,16 +95,28 @@ def _hash(p: int) -> int:
     return (((p >> 11) & 0x1F) * 3 + ((p >> 5) & 0x3F) * 5 + (p & 0x1F) * 7) & 63
 
 
-def dmdz_sibling_path(raw_stream_path: Path, version: int = 1) -> Path:
+def normalize_stream_profile(profile: str = "") -> str:
+    """Normalizes hardware stream profile (`'sram' | 'psram' | 'psram_hd'`, or `''` default)."""
+    norm = str(profile or "").strip().lower()
+    return norm if norm in VALID_STREAM_PROFILES else ""
+
+
+def dmdz_sibling_path(raw_stream_path: Path, version: int = 1, profile: str = "") -> Path:
     """
     `unified_128x32.rgb565.stream` ->
     - `version == 1`: `unified_128x32.dmdz.stream`
-    - `version == 2`: `unified_128x32.dmdz2.stream`
+    - `version >= 2` and `profile == 'sram'`: `unified_128x32.dmdz2.sram.stream`
+    - `version >= 2` and `profile in ('', 'psram', 'psram_hd')`: `unified_128x32.dmdz2.stream`
     """
     name = raw_stream_path.name
     if name.endswith(".rgb565.stream"):
         name = name[: -len(".rgb565.stream")]
-    suffix = ".dmdz2.stream" if int(version) >= 2 else ".dmdz.stream"
+    if int(version) < 2:
+        suffix = ".dmdz.stream"
+    elif normalize_stream_profile(profile) == "sram":
+        suffix = ".dmdz2.sram.stream"
+    else:
+        suffix = ".dmdz2.stream"
     return raw_stream_path.with_name(f"{name}{suffix}")
 
 
@@ -389,13 +412,27 @@ def encode_dmdz_frames(
     frames: np.ndarray,
     keyframe_interval: int = 0,
     version: int = 1,
+    profile: str = "",
+    sram_frame_cap: int = SRAM_DEFAULT_FRAME_CAP,
+    fps: int = 20,
 ) -> List[bytes]:
     """Encodes `(n, h, w)` uint16 RGB565 frames into DMDZ frame payloads (without length prefix)."""
     use_v2 = int(version) >= 2
+    is_sram = use_v2 and normalize_stream_profile(profile) == "sram"
+    eff_cap = max(64, int(sram_frame_cap))
+    work_frames = (
+        stabilize_rgb565_frames_sram(frames, fps=fps)
+        if is_sram
+        else np.ascontiguousarray(frames, dtype="<u2")
+    )
+    anchor_interval = max(18, int(fps or 20))
     payloads: List[bytes] = []
     prev: Optional[np.ndarray] = None
-    for k in range(frames.shape[0]):
-        cur = frames[k]
+    prev_src: Optional[np.ndarray] = None
+
+    for k in range(work_frames.shape[0]):
+        src_cur = work_frames[k]
+        cur = src_cur
         is_key = prev is None or (keyframe_interval > 0 and k % keyframe_interval == 0)
         if not use_v2:
             if is_key:
@@ -407,13 +444,70 @@ def encode_dmdz_frames(
                     payload = bytes([FRAME_SCROLL, dy & 0xFF]) + bytes(encode_frame_ops(cur, ref))
                 else:
                     payload = bytes([FRAME_DELTA]) + bytes(encode_frame_ops(cur, prev))
+            next_prev = cur
         else:
+            dx_hint: Optional[Tuple[int, int]] = None
+            tol_hint: Optional[Tuple[int, int]] = None
+            if (
+                is_sram
+                and not is_key
+                and prev is not None
+                and prev_src is not None
+                and (k % anchor_interval) != 0
+                and not np.array_equal(prev, prev_src)
+            ):
+                # Anchor unchanged / scrolled background pixels to reconstructed `prev` after PAL8
+                dx_s, dy_s = detect_scroll_2d(src_cur, prev_src, tol_mode=True, r_tol=2, g_tol=3, b_tol=2)
+                dx_hint = (dx_s, dy_s)
+                tol_hint = (dx_s, dy_s)
+                ref_src = (
+                    scrolled_reference_2d(prev_src, dx_s, dy_s)
+                    if (dx_s != 0 or dy_s != 0)
+                    else prev_src
+                )
+                ref_prev = (
+                    scrolled_reference_2d(prev, dx_s, dy_s) if (dx_s != 0 or dy_s != 0) else prev
+                )
+                adr = np.abs(
+                    ((src_cur >> 11) & 0x1F).astype(np.int16) - ((ref_src >> 11) & 0x1F).astype(np.int16)
+                )
+                adg = np.abs(
+                    ((src_cur >> 5) & 0x3F).astype(np.int16) - ((ref_src >> 5) & 0x3F).astype(np.int16)
+                )
+                adb = np.abs(
+                    (src_cur & 0x1F).astype(np.int16) - (ref_src & 0x1F).astype(np.int16)
+                )
+                hold_mask = (adr <= 2) & (adg <= 3) & (adb <= 2) & ((adr * 2 + adg + adb * 2) <= 9)
+                if np.any(hold_mask):
+                    cur = np.where(hold_mask, ref_prev, src_cur).astype("<u2")
+
             raw_fallback = bytes([FRAME_RAW]) + np.ascontiguousarray(cur, dtype="<u2").tobytes()
-            if is_key:
+            skip_v2_try = False
+            if is_sram and not is_key and prev is not None:
+                horiz_eq = int(np.count_nonzero(cur[:, 1:] == cur[:, :-1])) if cur.shape[1] > 1 else 0
+                if dx_hint is None:
+                    dx_hint = detect_scroll_2d(cur, prev, tol_mode=False)
+                ref_est = (
+                    scrolled_reference_2d(prev, dx_hint[0], dx_hint[1])
+                    if (dx_hint[0] != 0 or dx_hint[1] != 0)
+                    else prev
+                )
+                if int(np.count_nonzero(cur != ref_est)) > int(eff_cap * 1.25) and horiz_eq < (cur.size // 2):
+                    skip_v2_try = True
+
+            if skip_v2_try:
+                best_true565 = raw_fallback
+            elif is_key:
                 cand_payload = bytes([FRAME_KEY]) + bytes(encode_frame_ops_v2(cur, None))
+                best_true565 = cand_payload if len(cand_payload) <= len(raw_fallback) else raw_fallback
             else:
                 assert prev is not None
-                dx, dy = detect_scroll_2d(cur, prev, tol_mode=False)
+                dx, dy = (
+                    dx_hint
+                    if dx_hint is not None
+                    else detect_scroll_2d(cur, prev, tol_mode=False)
+                )
+                dx_hint = (dx, dy)
                 if dx == 0 and dy == 0:
                     cand_payload = bytes([FRAME_DELTA]) + bytes(encode_frame_ops_v2(cur, prev))
                 elif dx == 0:
@@ -424,16 +518,40 @@ def encode_dmdz_frames(
                     cand_payload = bytes([FRAME_SCROLL_2D, dx & 0xFF, dy & 0xFF]) + bytes(
                         encode_frame_ops_v2(cur, ref)
                     )
-            payload = cand_payload if len(cand_payload) <= len(raw_fallback) else raw_fallback
+                best_true565 = cand_payload if len(cand_payload) <= len(raw_fallback) else raw_fallback
+
+            if not is_sram or len(best_true565) <= eff_cap:
+                payload = best_true565
+                next_prev = cur
+            else:
+                pal_hint = (
+                    tol_hint
+                    if tol_hint is not None
+                    else (dx_hint if (dx_hint is not None and (dx_hint[0] != 0 or dx_hint[1] != 0)) else None)
+                )
+                payload, next_prev = encode_adaptive_pal8_sram(
+                    cur,
+                    prev,
+                    is_key=is_key,
+                    frame_cap=eff_cap,
+                    scroll_hint=pal_hint,
+                )
 
         if len(payload) > 0xFFFF:
             raise ValueError("DMDZ frame payload exceeds 65535 bytes")
         payloads.append(payload)
-        prev = cur
+        prev = next_prev
+        prev_src = src_cur
     return payloads
 
 
-def encode_dmdz_bytes(raw: bytes, keyframe_interval: int = 0, version: int = 1) -> bytes:
+def encode_dmdz_bytes(
+    raw: bytes,
+    keyframe_interval: int = 0,
+    version: int = 1,
+    profile: str = "",
+    sram_frame_cap: int = SRAM_DEFAULT_FRAME_CAP,
+) -> bytes:
     """Converts a raw `DMDS` stream (16-byte header + RGB565 frames) to a `DMDZ` v1 or v2 stream."""
     if len(raw) < 16 or raw[:4] != DMDS_MAGIC:
         raise ValueError("Not a DMDS stream")
@@ -445,7 +563,14 @@ def encode_dmdz_bytes(raw: bytes, keyframe_interval: int = 0, version: int = 1) 
     avail = (len(raw) - 16) // frame_bytes
     count = min(int(total), avail) if total else avail
     frames = np.frombuffer(raw[16 : 16 + count * frame_bytes], dtype="<u2").reshape(count, height, width)
-    payloads = encode_dmdz_frames(frames, keyframe_interval=keyframe_interval, version=eff_ver)
+    payloads = encode_dmdz_frames(
+        frames,
+        keyframe_interval=keyframe_interval,
+        version=eff_ver,
+        profile=profile,
+        sram_frame_cap=sram_frame_cap,
+        fps=int(fps or 20),
+    )
     out = bytearray(
         struct.pack(HEADER_FMT, DMDZ_MAGIC, eff_ver, fps, width, height, count, frame_dur_ms, keyframe_interval)
     )
@@ -459,25 +584,32 @@ def encode_dmdz_file(
     raw_stream_path: Path,
     dest_path: Optional[Path] = None,
     version: int = 1,
+    profile: str = "",
 ) -> Path:
     """Writes the DMDZ v1 or v2 sibling of a raw DMDS stream atomically and returns its path."""
     eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
-    dest = dest_path or dmdz_sibling_path(raw_stream_path, version=eff_ver)
-    data = encode_dmdz_bytes(raw_stream_path.read_bytes(), version=eff_ver)
+    norm_prof = normalize_stream_profile(profile)
+    dest = dest_path or dmdz_sibling_path(raw_stream_path, version=eff_ver, profile=norm_prof)
+    data = encode_dmdz_bytes(raw_stream_path.read_bytes(), version=eff_ver, profile=norm_prof)
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(dest)
     return dest
 
 
-def ensure_dmdz_sibling(raw_stream_path: Path, version: int = 1) -> Optional[Path]:
-    """Returns an up-to-date DMDZ sibling (`v1` or `v2`), encoding on demand; `None` on error."""
+def ensure_dmdz_sibling(
+    raw_stream_path: Path,
+    version: int = 1,
+    profile: str = "",
+) -> Optional[Path]:
+    """Returns an up-to-date DMDZ sibling (`v1` or `v2`, optional `profile`), encoding on demand."""
     try:
         eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
-        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver)
+        norm_prof = normalize_stream_profile(profile)
+        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver, profile=norm_prof)
         if dest.exists() and dest.stat().st_mtime >= raw_stream_path.stat().st_mtime:
             return dest
-        return encode_dmdz_file(raw_stream_path, dest, version=eff_ver)
+        return encode_dmdz_file(raw_stream_path, dest, version=eff_ver, profile=norm_prof)
     except (OSError, ValueError):
         return None
 
@@ -506,6 +638,13 @@ def decode_dmdz_bytes(data: bytes) -> np.ndarray:
             if not is_v2 or (end - off) != npx * 2:
                 raise ValueError("Invalid DMDZ FRAME_RAW")
             frame = np.frombuffer(data[off:end], dtype="<u2").astype(np.uint16).tolist()
+            off = end
+            frames.append(np.array(frame, dtype=np.uint16).reshape(height, width))
+            continue
+        if ftype == FRAME_PAL8:
+            if not is_v2:
+                raise ValueError("Invalid DMDZ FRAME_PAL8")
+            frame = decode_frame_pal8(data, off, end, frame, int(width), int(height))
             off = end
             frames.append(np.array(frame, dtype=np.uint16).reshape(height, width))
             continue

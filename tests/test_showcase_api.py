@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import tempfile
 import time
 from pathlib import Path
 from typing import List, Optional, Set
@@ -43,7 +44,8 @@ def _make_sample_png_bytes(width: int = 160, height: int = 220, color=(220, 60, 
 
 
 def _make_sample_mp4_bytes(width: int = 160, height: int = 120, fps: int = 10, frames: int = 30) -> bytes:
-    tmp = Path("/tmp/_test_sample_clip.mp4")
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tf:
+        tmp = Path(tf.name)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(tmp), fourcc, float(fps), (width, height))
     for i in range(frames):

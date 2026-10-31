@@ -49,20 +49,22 @@ dmd_media_showcase/
 │   ├── infrastructure/                   # Inbound & Outbound Concrete Adapters
 │   │   ├── http/                         # FastAPI middleware, runtime reloader & 6 modular routers
 │   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, rotation_batch
-│   │   │       └── consume_once.py       # Credit-acked WS /ws/{item_id}.dmdz + paced/unpaced DMDZ/DMDS HTTP
+│   │   │       └── consume_once.py       # 3-tier profile=sram|psram|psram_hd WS /ws/{item_id}.dmdz + HTTP DMDZ/DMDS
 │   │   ├── web/                          # Externalized Control Center WebUI (zero HTML/JS in Python)
 │   │   │   ├── dashboard_loader.py       # Portable resource loader for index.html, CSS & ES modules
 │   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ ES modules)
 │   │   ├── rendering/                    # Modular HUB75 RGB565LE rendering pipeline
 │   │   │   ├── card_geometry.py          # Adaptive YOKO/Square/TATE geometry solver
 │   │   │   ├── card_layout_engine.py     # 5 card layouts, bitmap fonts & DMDS card renderer
-│   │   │   ├── dmdz_codec.py             # Lossless DMDZ v1 RGB565 frame codec (encode_dmdz_bytes, ensure_dmdz_sibling)
+│   │   │   ├── dmdz_codec.py             # DMDZ v1/v2 True-RGB565 + sram profile codec (encode_dmdz_bytes, ensure_dmdz_sibling)
+│   │   │   ├── dmdz_motion.py            # 2D scroll search + stabilize_rgb565_frames_sram H.264 mosquito-noise filter
+│   │   │   ├── dmdz_pal8.py              # Adaptive FRAME_PAL8 (0x05) scene-palette encoder/decoder (<= 1,400 B/frame)
 │   │   │   ├── imaging_primitives.py     # Color boost, framing & RGB565 conversion helpers
 │   │   │   ├── panorama_and_static.py    # Deterministic TATE (L->R) / YOKO (T->B) zoom-to-cover panoramas
 │   │   │   └── video_pipeline.py         # Action-window detection & trailer stream encoding
 │   │   ├── mqtt/                         # EmbeddedMqttBroker (:1883) & ShowcaseMqttGateway
 │   │   ├── persistence/                  # JsonSeenHistoryRepository, DmdProfileStore, ServerConfigStore (source_policies)
-│   │   │   └── on_demand_cache_store.py  # shutil.copy2 mtime-preserving .rgb565.stream + .dmdz.stream sibling cache
+│   │   │   └── on_demand_cache_store.py  # shutil.copy2 mtime-preserving .rgb565/.dmdz/.dmdz2/.dmdz2.sram sibling cache
 │   │   ├── scrapers/                     # 11 domain adapters + ScraperRegistry + per-source referentials
 │   │   │   ├── games/                    # igdb_adapter, screenscraper_adapter, arcadeitalia_adapter, libretro_wikidata_adapter, arcade_aliases
 │   │   │   ├── movies/                   # tmdb_movie_adapter, itunes_movie_adapter
@@ -160,13 +162,14 @@ Append `"custom_retro"` to `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`
    - Frozen PyInstaller executables resolve `yt-dlp` via `resolve_ytdlp_command()` (`[sys.executable, "--internal-ytdlp"]` early dispatch in `app/main.py` plus in-process `yt_dlp.YoutubeDL` fallback in `youtube_resolver.py`) so hermetic `PATH` isolation never requires an external `yt-dlp.exe` binary.
    - `enforce_hermetic_environment()` exports bundled `certifi` CA roots (`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`), while `default_http_download_bytes()` (`imaging_primitives.py`) retries with an unverified TLS context (cached per host) when legacy retro archives such as `adb.arcadeitalia.net` serve expired certificates.
 
-8. **Real-Time `MQTT+TCP` (Credit-Acked WebSocket `DMDZ` & HTTP `DMDS`), Compact `item_id`s & Client Transports**:
-   - Models 1 and 2A (`supports_local_card: true`) default to `MQTT+TCP`: MQTT (`:1883`) handles `config`, retained `ready`, and `start_card`, while constrained `ESP32_STD` / `ESP32-S3` clients stream via the ZeDMD-style credit-acknowledged lossless `DMDZ` v1 WebSocket route `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`consume_once.py` + `dmdz_codec.py`):
-     - Cap every binary WebSocket message at `<= 1,024 B` (`DMDZ_SUBPACKET_BYTES = 1024`) gated by a sliding credit window (`DMDZ_WS_INITIAL_CREDITS = 2` default, `credits=1..16`, replenished by 1-byte `'A'` client ACKs) so `<= 2,048 B` are ever in flight.
+8. **Real-Time `MQTT+TCP` 3-Tier Adaptive Streaming (`profile=sram | psram | psram_hd`), `DMDZ` v2 + `FRAME_PAL8` (`0x05`), Compact `item_id`s & Client Transports**:
+   - Models 1 and 2A (`supports_local_card: true`) default to `MQTT+TCP`: MQTT (`:1883`) handles `config`, retained `ready`, and `start_card`, while the `:8890` data plane (`consume_once.py` + `dmdz_codec.py` + `dmdz_pal8.py` + `dmdz_motion.py`) serves three adaptive profiles:
+     - **`profile=sram` (`esp32dev` 0 PSRAM)**: `.dmdz2.sram.stream` combines `stabilize_rgb565_frames_sram()` temporal H.264 mosquito-noise stabilization with hybrid True-RGB565 `DMDZ` v2 (`<= 1,400 B`) and **`FRAME_PAL8` (`0x05`)** (`1..128` RGB565 scene colors + optional 2D scroll + `PAL_INDEX`/`PAL_SKIP`/`PAL_RUN`/`PAL_LONG_SKIP`) so **every frame fits `<= 1,400 B`** (`0` reference drift, clean panoramas 100% lossless). Served via `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` with **coalesced `[16 B DMDZ header + Frame 0]`** in the initial binary window and **`2 ms` inter-chunk pacing** when splitting multi-chunk frames.
+     - **`profile=psram` (`ESP32-S3 <= 128x64`) & `profile=psram_hd` (`ESP32-S3 256x64+`)**: Serve lossless True-RGB565 `.dmdz2.stream` unpaced over HTTP (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`, `X-DMD-Codec: dmdz2`, `X-DMD-Profile: psram|psram_hd`, exact `Content-Length`) for PSRAM bulk preloading (`0` Wi-Fi traffic during playback at `24–30 FPS`), or live over WebSocket (`credits=12..16, chunk=1400`, `0 ms` inter-chunk sleep).
      - Keep `ws_per_message_deflate=False` in `app/main.py` so RFC 7692 `permessage-deflate` never allocates dynamic zlib/LZ77 sliding windows on Uvicorn or embedded clients.
-     - Pace frames monotonically and re-anchor `t0` whenever backpressure delays delivery by `> 1` frame period (`0` catch-up bursts into Wi-Fi RX queues), draining final ACKs before closing.
-     - Preserve `shutil.copy2` mtime copying in `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) across `.rgb565.stream` and `.dmdz.stream` siblings so `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) never re-encodes on cache checkouts.
-   - Maintain full compatibility for the paced HTTP fallback (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` with `X-DMD-Paced: 1` & `X-DMD-Codec: dmdz1`, or raw paced `DMDS` with optional `&drop_late=1`) when a reverse proxy blocks WebSocket upgrades, as well as unpaced raw `DMDS` HTTP downloads (`?purge=true`) for high-RAM `ArcadeMatrix_RPi` preloading.
+     - Pace live frames monotonically and re-anchor `t0` whenever backpressure delays delivery by `> 1` frame period (`0` catch-up bursts into Wi-Fi RX queues), draining final ACKs before closing.
+     - Preserve `shutil.copy2` mtime copying in `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) across `.rgb565.stream`, `.dmdz.stream`, `.dmdz2.stream`, and `.dmdz2.sram.stream` siblings so `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) never re-encodes on cache checkouts.
+   - Maintain full compatibility for the paced HTTP fallback (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=sram` with `X-DMD-Paced: 1`, `X-DMD-Codec: dmdz2`, and `X-DMD-Profile: sram`, or `dmdz1` / raw paced `DMDS` with optional `&drop_late=1`) when a reverse proxy blocks WebSocket upgrades, as well as unpaced raw `DMDS` HTTP downloads (`?purge=false|true`, no `codec`) for high-RAM `ArcadeMatrix_RPi` preloading.
    - Keep `item_id` formatted as `pkg_<domain>_<12hex>` (`<= 24` chars) across `SlotPreparationService`, `OnDemandQueueService`, and `StudioPreviewService` so embedded clients never allocate heap buffers, and preserve `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` default, `HTTP`, `UDP-PASSIVE` for Mode 2B `:4210`, and optional `MQTT+UDP`).
 
 ---

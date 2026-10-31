@@ -29,6 +29,7 @@ from app.infrastructure.rendering.dmdz_codec import (
     DMDZ_VERSION,
     dmdz_sibling_path,
     ensure_dmdz_sibling,
+    normalize_stream_profile,
 )
 from app.models import DomainType, SessionRegisterRequest
 from app.scheduler.asset_builder import encode_dmdz_sibling_worker_task
@@ -51,16 +52,16 @@ DMDZ_WS_ACK_TIMEOUT_S = 4.0
 async def _resolve_dmdz_sibling_nonblocking(
     raw_stream_path: Path,
     version: int = DMDZ_VERSION,
+    profile: str = "",
 ) -> Optional[Path]:
     """
-    Return an up-to-date `.dmdz.stream` (`v1`) or `.dmdz2.stream` (`v2`) sibling without blocking
-    `uvicorn`'s main-process GIL:
-    1. Fast O(1) stat hit when `finalize_unified_stream_worker_task` already pre-encoded it.
-    2. Offloads missing/stale encoding to `batch_manager.shared_executor()` (`ProcessPoolExecutor`).
+    Return an up-to-date `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2`), or `.dmdz2.sram.stream`
+    (`v2`, `profile='sram'`) sibling without blocking `uvicorn`'s main-process GIL.
     """
     eff_ver = DMDZ_V2_VERSION if int(version) >= 2 else DMDZ_VERSION
+    norm_prof = normalize_stream_profile(profile) if eff_ver >= 2 else ""
     try:
-        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver)
+        dest = dmdz_sibling_path(raw_stream_path, version=eff_ver, profile=norm_prof)
         if dest.exists() and dest.stat().st_mtime >= raw_stream_path.stat().st_mtime:
             return dest
     except OSError:
@@ -69,12 +70,20 @@ async def _resolve_dmdz_sibling_nonblocking(
     loop = asyncio.get_running_loop()
     exec_pool = batch_manager.shared_executor()
     try:
-        if eff_ver == DMDZ_VERSION:
+        if eff_ver == DMDZ_VERSION and not norm_prof:
             out_str = await loop.run_in_executor(
                 exec_pool,
                 encode_dmdz_sibling_worker_task,
                 str(raw_stream_path),
                 settings.worker_nice_increment,
+            )
+        elif not norm_prof:
+            out_str = await loop.run_in_executor(
+                exec_pool,
+                encode_dmdz_sibling_worker_task,
+                str(raw_stream_path),
+                settings.worker_nice_increment,
+                eff_ver,
             )
         else:
             out_str = await loop.run_in_executor(
@@ -83,10 +92,11 @@ async def _resolve_dmdz_sibling_nonblocking(
                 str(raw_stream_path),
                 settings.worker_nice_increment,
                 eff_ver,
+                norm_prof,
             )
         return Path(out_str) if out_str else None
     except BrokenProcessPool:
-        return ensure_dmdz_sibling(raw_stream_path, version=eff_ver)
+        return ensure_dmdz_sibling(raw_stream_path, version=eff_ver, profile=norm_prof)
 
 
 @router.post("/api/v1/{domain}/config", tags=["Consume-Once Protocol"])
@@ -236,48 +246,37 @@ async def stream_consume_once_sequence(
     ),
     codec: str = Query(
         default="",
-        description="Optional lossless frame codec accepted by the client (`dmdz1`). Honoured only with `paced=1` and without `drop_late`; otherwise the raw `DMDS` stream is served.",
+        description="Optional `DMDZ` stream codec (`dmdz1` or `dmdz2`). Supports both paced streaming (`paced=1`) and unpaced PSRAM bulk preload (`paced=0&purge=false&codec=dmdz2&profile=psram|psram_hd`) without `drop_late`; omit `codec` for raw `DMDS` (`ArcadeMatrix_RPi`).",
+    ),
+    profile: str = Query(
+        default="",
+        description="Optional hardware stream tier (`sram`, `psram`, or `psram_hd`) selecting `.dmdz2.sram.stream` (`sram`) or `.dmdz2.stream` (`psram`/`psram_hd`) and echoed in `X-DMD-Profile`.",
     ),
 ) -> Response:
     """
     Stream the unified binary sequence (`Jacket Panorama -> Marquee Panorama -> Snapshots -> Video`)
-    for `item_id` over HTTP TCP (`MQTT+TCP` fallback, `HTTP` Consume-Once, or high-RAM `ArcadeMatrix_RPi`
-    unpaced preload) and immediately purge the consumed files from disk once the response completes
-    (unless `purge=false` is explicitly passed).
+    for `item_id` over HTTP TCP (`MQTT+TCP` fallback, `HTTP` Consume-Once, PSRAM `dmdz2` bulk preload,
+    or high-RAM `ArcadeMatrix_RPi` raw `DMDS` preload) and purge consumed files once `purge=true` completes.
 
-    ### Primary Constrained-MCU WebSocket Companion Endpoint (`ESP32` / `ESP32-S3`)
-    Constrained embedded clients connect first to the ZeDMD-style credit-acknowledged lossless `DMDZ` v1
-    WebSocket route **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`**
-    (`ws_per_message_deflate=False`, `<= 1,024 B` RFC 6455 binary sub-packets, `2`-credit sliding window =
-    `<= 2,048 B` max in flight, 1-byte `'A'` client ACK per message — full schema in `/asyncapi.yaml`), and
-    fall back transparently to this HTTP route (`?purge=true&paced=1&codec=dmdz1`) if a proxy blocks WebSocket
-    `101 Switching Protocols`. High-RAM Linux clients (`ArcadeMatrix_RPi`) call this HTTP route unpaced
-    (`?purge=true`) to preload the raw `DMDS` container directly into RAM.
+    ### Adaptive Hardware Stream Tiers (`ESP32` / `ESP32-S3` / `ArcadeMatrix_RPi`)
+    - **`profile=sram` (`esp32dev` 0 PSRAM)**: Connects primarily via credit-acknowledged WebSocket
+      `WS /api/v1/{domain}/ws/{item_id}.dmdz?v=2&credits=4&chunk=1360&profile=sram` (`.dmdz2.sram.stream`,
+      hybrid True-RGB565 + `FRAME_PAL8` `0x05` capped `<= 1,400 B/frame`, coalesced `16 B` header + Frame `0`,
+      `2 ms` inter-chunk pacing) with paced HTTP `?paced=1&codec=dmdz2&profile=sram` fallback.
+    - **`profile=psram` / `profile=psram_hd` (`ESP32-S3` Octal PSRAM)**: Preloads unpaced True-RGB565
+      `dmdz2` (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`) directly into PSRAM during the
+      Card intro (`0` Wi-Fi traffic during playback, `24–30 FPS`), falling back to `WS ?v=2&credits=12..16&chunk=1400`.
+    - **`ArcadeMatrix_RPi` (Linux RAM)**: Calls `?purge=false|true` (no `codec`) to preload raw `DMDS`.
 
-    ### Binary Lossless `DMDZ` v1 Container (`?paced=1&codec=dmdz1` & `WS /ws/{item_id}.dmdz`)
-    - `0..3` (`char[4]`): `"DMDZ"` (`0x44 0x4D 0x44 0x5A`), response header `X-DMD-Codec: dmdz1`
-    - `4` (`uint8`): `version` (`1`)
-    - `5` (`uint8`): `fps` (`8..60`)
-    - `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)
-    - `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)
-    - `10..11` (`uint16le`): `total_frames` (`1..65535`)
-    - `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)
-    - `14..15` (`uint16le`): `keyframe_interval` (`0` = frame `0` keyframe)
-    - `16..EOF`: Per frame `<H` `payload_len` + `payload_len` bytes of lossless `dmdz1` frame ops (`0=delta`, `1=scroll(dy)`, `2=keyframe`).
+    ### Binary `DMDZ` Container (`v1` `dmdz1` & `v2` `dmdz2` — `<4sBBHHHHH` 16-Byte Header)
+    - `0..3`: `"DMDZ"`, `4`: `version` (`1` or `2`), `5`: `fps`, `6..7`: `width`, `8..9`: `height`,
+      `10..11`: `total_frames`, `12..13`: `frame_dur_ms`, `14..15`: `keyframe_interval`.
+    - `16..EOF`: Per frame `<H` `payload_len` + frame ops (`0=delta`, `1=scroll(dy)`, `2=keyframe`,
+      plus `v2` `3=scroll_2d(dx,dy)`, `4=raw`, and `5=pal8` scene-palette op stream).
 
-    ### Binary Raw `DMDS` Header (16 Bytes, Little-Endian `<4sBBHHHHH`)
-    - `0..3` (`char[4]`): `"DMDS"` (`0x44 0x4D 0x44 0x53`)
-    - `4` (`uint8`): `version` (`1`)
-    - `5` (`uint8`): `fps` (`8..60`)
-    - `6..7` (`uint16le`): `width` (panel width in pixels, e.g. `128`)
-    - `8..9` (`uint16le`): `height` (panel height in pixels, e.g. `32`)
-    - `10..11` (`uint16le`): `total_frames` (`1..65535`)
-    - `12..13` (`uint16le`): `frame_dur_ms` (`round(1000 / fps)`)
-    - `14..15` (`uint16le`): `reserved` (`0`)
-    - `16..EOF`: Contiguous `total_frames * width * height * 2` bytes of Little-Endian RGB565 pixels.
-
-    For credit-acknowledged WebSocket `DMDZ` (`WS /api/v1/{domain}/ws/{item_id}.dmdz`) and passive Mode 2B
-    UDP `DMDF` datagram streaming (`10`-byte `<4sHBBH` header), see `/asyncapi.yaml`.
+    ### Binary Raw `DMDS` Header (`<4sBBHHHHH` 16 Bytes + `total_frames * width * height * 2` RGB565LE)
+    - `0..3`: `"DMDS"`, `4`: `1`, `5`: `fps`, `6..7`: `width`, `8..9`: `height`, `10..11`: `total_frames`,
+      `12..13`: `frame_dur_ms`, `14..15`: `0`. Full WebSocket & UDP `DMDF` specs in `/asyncapi.yaml`.
     """
     co = get_orchestrator()
     pkg = co.active_packages.get(item_id)
@@ -300,13 +299,16 @@ async def stream_consume_once_sequence(
     stream_path = pkg.unified_stream_path
     file_size = stream_path.stat().st_size
     norm_codec = codec.strip().lower()
+    norm_profile = normalize_stream_profile(profile)
     if not drop_late and norm_codec in (DMDZ_CODEC_ID, DMDZ_V2_CODEC_ID) and file_size > 16:
         req_ver = DMDZ_V2_VERSION if norm_codec == DMDZ_V2_CODEC_ID else DMDZ_VERSION
-        dmdz_path = await _resolve_dmdz_sibling_nonblocking(stream_path, version=req_ver)
+        dmdz_path = await _resolve_dmdz_sibling_nonblocking(
+            stream_path, version=req_ver, profile=norm_profile
+        )
         if dmdz_path is not None:
             if paced:
                 return _paced_dmdz_response(
-                    co, pkg, domain, item_id, dmdz_path, purge, codec_id=norm_codec
+                    co, pkg, domain, item_id, dmdz_path, purge, codec_id=norm_codec, profile=norm_profile
                 )
             stream_path = dmdz_path
             file_size = dmdz_path.stat().st_size
@@ -410,6 +412,8 @@ async def stream_consume_once_sequence(
     }
     if stream_path != pkg.unified_stream_path and norm_codec in (DMDZ_CODEC_ID, DMDZ_V2_CODEC_ID):
         unpaced_headers["X-DMD-Codec"] = norm_codec
+        if norm_profile:
+            unpaced_headers["X-DMD-Profile"] = norm_profile
 
     return StreamingResponse(
         _chunked_dmds_generator(),
@@ -426,6 +430,7 @@ def _paced_dmdz_response(
     dmdz_path: Path,
     purge: bool,
     codec_id: str = DMDZ_CODEC_ID,
+    profile: str = "",
 ) -> Response:
     """
     Serve the lossless `DMDZ` sibling of a unified stream with lead pacing.
@@ -516,17 +521,21 @@ def _paced_dmdz_response(
             if purge:
                 await co.purge_consumed_package(item_id)
 
+    paced_dmdz_headers: Dict[str, str] = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "X-DMD-Consume-Once": "1",
+        "X-DMD-Paced": "1",
+        "X-DMD-Codec": codec_id,
+        "X-Accel-Buffering": "no",
+        "Content-Length": str(file_size),
+    }
+    if profile:
+        paced_dmdz_headers["X-DMD-Profile"] = profile
+
     return StreamingResponse(
         _generator(),
         media_type="application/octet-stream",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "X-DMD-Consume-Once": "1",
-            "X-DMD-Paced": "1",
-            "X-DMD-Codec": codec_id,
-            "X-Accel-Buffering": "no",
-            "Content-Length": str(file_size),
-        },
+        headers=paced_dmdz_headers,
     )
 
 
@@ -540,16 +549,15 @@ async def stream_consume_once_dmdz_ws(
     credits_window: int = Query(default=DMDZ_WS_INITIAL_CREDITS, alias="credits"),
     codec_version: int = Query(default=DMDZ_VERSION, alias="v"),
     chunk_bytes: int = Query(default=DMDZ_SUBPACKET_BYTES, alias="chunk"),
+    profile: str = Query(default=""),
 ) -> None:
     """
-    ZeDMD-style credit-acknowledged lossless `DMDZ` (`v1` / `v2`) WebSocket stream for ESP32 clients.
+    ZeDMD-style credit-acknowledged `DMDZ` (`v1` / `v2`) WebSocket stream for ESP32 & ESP32-S3 clients.
 
-    Why credit-acked WebSocket beats blind HTTP TCP push over NAT/Docker proxies + Wi-Fi:
-    - `101 Switching Protocols` disables HTTP response buffering across proxies (`gvproxy`, Nginx).
-    - Binary messages fit inside a single Wi-Fi TCP MSS (`1,024 B` default, up to `1,360 B` with
-      `?v=2&credits=4&chunk=1360` = `<= 5,440 B` in flight `<= 5,744 B` classic ESP32 `TCP_WND`).
-    - Coalesced `'A'` credit ACKs keep the sliding window continuously fed with zero dry-pipe RTT
-      stalls and minimal 2.4 GHz half-duplex TX/RX collisions.
+    - Supports adaptive `profile=sram|psram|psram_hd` (`sram` serves `.dmdz2.sram.stream` with `FRAME_PAL8`
+      `<= 1,400 B` ceiling and `2 ms` inter-chunk pacing; `psram`/`psram_hd` serve True-RGB565 `.dmdz2.stream`).
+    - Coalesces the 16-byte `DMDZ` header with Frame `0` into the initial WebSocket message window, saving a
+      full round-trip ACK before first-pixel display.
     """
     co = get_orchestrator()
     pkg = co.active_packages.get(item_id)
@@ -562,9 +570,14 @@ async def stream_consume_once_dmdz_ws(
         await websocket.close(code=1008)
         return
 
+    norm_profile = normalize_stream_profile(profile)
     req_ver = DMDZ_V2_VERSION if int(codec_version) >= 2 else DMDZ_VERSION
     eff_chunk_bytes = max(256, min(1400, int(chunk_bytes)))
-    dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=req_ver)
+    dmdz_path = await _resolve_dmdz_sibling_nonblocking(
+        pkg.unified_stream_path, version=req_ver, profile=norm_profile
+    )
+    if (dmdz_path is None or not dmdz_path.exists()) and norm_profile:
+        dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=req_ver)
     if (dmdz_path is None or not dmdz_path.exists()) and req_ver != DMDZ_VERSION:
         dmdz_path = await _resolve_dmdz_sibling_nonblocking(pkg.unified_stream_path, version=DMDZ_VERSION)
     if dmdz_path is None or not dmdz_path.exists():
@@ -646,12 +659,18 @@ async def stream_consume_once_dmdz_ws(
         co.state.client_last_seen[claim_key] = now_wall
         co.state.last_claimed_until[claim_key] = now_wall + 15.0
         header = fh.read(16)
-        if not await _send_credited(header):
-            end_reason = "hdr_abort"
+        if int(total_frames) <= 0:
+            if not await _send_credited(header):
+                end_reason = "hdr_abort"
             return
 
         period = 1.0 / float(eff_fps)
-        lead_cap_s = 0.08 if (int(hdr_ver) >= 2 and credits_window >= 4) else DMDZ_WS_SEND_LEAD_S
+        if norm_profile in ("psram", "psram_hd"):
+            lead_cap_s = 0.20
+        elif int(hdr_ver) >= 2 and credits_window >= 4:
+            lead_cap_s = 0.08
+        else:
+            lead_cap_s = DMDZ_WS_SEND_LEAD_S
         eff_ws_lead = min(lead_cap_s, max(period, float(credits_window) * period * 0.75))
         t0 = time.perf_counter()
         for frame_idx in range(int(total_frames)):
@@ -675,9 +694,11 @@ async def stream_consume_once_dmdz_ws(
                 co.state.client_last_seen[claim_key] = ts_now
                 co.state.last_claimed_until[claim_key] = ts_now + 15.0
 
-            wire_frame = size_raw + payload
+            wire_frame = (header + size_raw + payload) if frame_idx == 0 else (size_raw + payload)
             ok_frame = True
             for off in range(0, len(wire_frame), eff_chunk_bytes):
+                if off > 0 and norm_profile == "sram":
+                    await asyncio.sleep(0.002)
                 if not await _send_credited(wire_frame[off : off + eff_chunk_bytes]):
                     ok_frame = False
                     break
@@ -712,6 +733,8 @@ async def stream_consume_once_dmdz_ws(
         fh.close()
         co.state.last_claimed_until.pop(claim_key, None)
         ws_codec_tag = "ws-dmdz2" if int(hdr_ver) >= 2 else "ws-dmdz1"
+        if norm_profile:
+            ws_codec_tag = f"{ws_codec_tag}:{norm_profile}"
         logger.info(
             "[STREAM] %s '%s' -> %s (%s): frames=%d/%d dur=%.1fs reanchors=%d size=%dB",
             ws_codec_tag,

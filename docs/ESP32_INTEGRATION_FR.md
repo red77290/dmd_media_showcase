@@ -7,15 +7,17 @@
 
 ---
 
-**DMD Media Showcase Server** prend en charge trois topologies complémentaires d'intégration pour les matrices LED HUB75 **ESP32 et ESP32-S3**. Le **Modèle 1** (DMD Multi-Moteurs piloté par le client, ex. `ArcadeMatrix` ESP32 / `ArcadeMatrix_RPi`) et le **Modèle 2A** (Récepteur Hybride piloté par le serveur, `supports_local_card: true`) associent le **plan de contrôle MQTT `:1883`** (`config`/`hello`, `ready`, `start_card`) au **Streaming WebSocket `DMDZ` v1 Sans Perte Acquitté par Crédits inspiré de ZeDMD (`WS /api/v1/{domain}/ws/{item_id}.dmdz` sur `:8890`, `MQTT+TCP` par défaut)** avec **repli automatique HTTP TCP `DMDZ`/`DMDS` cadencé** (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`), tandis que le **Modèle 2B** (`supports_local_card: false`) offre un récepteur optionnel ultra-minimal (~180 lignes C++) **100 % Passif UDP `:4210` `DMDF`** (`UDP-PASSIVE`).
+**DMD Media Showcase Server** prend en charge trois topologies complémentaires d'intégration pour les matrices LED HUB75 **ESP32 et ESP32-S3**. Le **Modèle 1** (DMD Multi-Moteurs piloté par le client, ex. `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi`) et le **Modèle 2A** (Récepteur Hybride piloté par le serveur, `supports_local_card: true`) associent le **plan de contrôle MQTT `:1883`** (`config`/`hello`, `ready` retenu, `start_card` — avec bascule automatique **`MQTT -> HTTP (/config + /next)`** dans le même tour et posters binaires HTTP `.rgb565`) au **Streaming Adaptatif 3 Niveaux `DMDZ` v2 (`dmdz2`, `profile=sram | psram | psram_hd`) sur `:8890` (`MQTT+TCP` par défaut)** : WebSocket acquitté par crédits `WS /api/v1/{domain}/ws/{item_id}.dmdz?v=2&profile=sram` (`<= 1 400 o/trame` via hybride True-RGB565 + `FRAME_PAL8` `0x05`) sur `esp32dev`, pré-chargement PSRAM HTTP `.dmdz2.stream` non cadencé (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd`) sur `ESP32-S3`, et repli HTTP cadencé automatique (`?purge=true&paced=1&codec=dmdz2`), tandis que le **Modèle 2B** (`supports_local_card: false`) offre un récepteur optionnel ultra-minimal (~180 lignes C++) **100 % Passif UDP `:4210` `DMDF`** (`UDP-PASSIVE`).
 
 > [!IMPORTANT]
-> **Pourquoi `MQTT + TCP` avec WebSocket `DMDZ` v1 Acquitté par Crédits (`:8890`) est le Transport par Défaut & Recommandé pour les Modèles 1 & 2A**
-> 1. **Zéro Perte NAT UDP VM Docker Desktop / Rancher Desktop & Zéro Buffering Proxy** : La connexion entrante TCP `:8890` traverse nativement tous les ponts conteneurs et NAT des VMs hôtes sans expiration de trou NAT UDP retour, tandis que le basculement `101 Switching Protocols` (`WS /api/v1/{domain}/ws/{item_id}.dmdz`, `ws_per_message_deflate=False`) désactive tout buffering intermédiaire HTTP de bout en bout.
-> 2. **Plafond Strict d'Octets en Vol (`<= 2 048 o` sur `ESP32_STD`, Zéro Épuisement LwIP `pcb->ooseq`)** : Inspiré du handshake déterministe de trames ZeDMD, le serveur découpe chaque trame `DMDZ` v1 sans perte (`<H` longueur utile + opcodes) en **sous-paquets binaires WebSocket `<= 1 024 o`** et applique une **fenêtre glissante de crédits** (`?credits=2` par défaut = **`<= 2 048 o` max en vol**, ajustable `1..16`, ex. `?credits=8` sur `ESP32-S3` PSRAM). Le serveur attend l'acquittement client de 1 octet `'A'` (`0x41`) après chaque sous-paquet consommé — rendant mathématiquement impossible la saturation de la `TCP_WND` (`5 760 o`) et de la SRAM interne en segments hors-séquence (`pcb->ooseq`) lors des balises Wi-Fi.
-> 3. **Codec Sans Perte Bit-Exact `DMDZ` v1 + Coexistence Multi-Plateformes Transparente** : `DMDZ` v1 (`SKIP`, `LONG SKIP`, `RUN`, `INDEX[64]`, `DIFF`, `LIT`, `SCROLL_DY`) atteint une compression sans perte de **`2,4–6x` sur vidéo** et **`23–64x` sur panoramas défilants** avec `~152 octets` d'état sur pile et `0 o` heap. Si un équipement intermédiaire bloque `Upgrade: websocket`, le client bascule automatiquement vers `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` (`X-DMD-Paced: 1`), tandis qu'`ArcadeMatrix_RPi` conserve le préchargement HTTP `DMDS` brut non-cadencé (`?purge=true`, `0` impact) et le Modèle 2B conserve l'UDP `:4210` `DMDF`.
-> 4. **Sockets LwIP Brutes Zéro-`TIME_WAIT` (`SO_LINGER {1, 0}`) & Allocation LIFO `frame565` Bornée à la Phase 2 sur `ESP32_STD`** : Tant le claim MQTT `:1883` (`RawMqttSocket`, zéro heap `PubSubClient`/`WiFiClientRxBuffer`) que le flux `:8890` se ferment avec `SO_LINGER {1, 0}`, recyclant immédiatement les PCB TCP LwIP sans accumuler de sockets `TIME_WAIT` de 120 s au fil des rotations. Sur `ESP32_STD` (0 PSRAM), le buffer `frame565` de `8 Ko` n'est alloué que durant la Phase 2 (LIFO) puis libéré juste après la fermeture socket sous barrière Dekker `seq_cst` `renderBlitSeq`, garantissant `0 o` de fragmentation DRAM et le maintien permanent de la **profondeur HUB75 8 bits**.
-> 5. **Identifiants `item_id` Compacts sans Collision (`<= 24` caractères)** : Chaque package préparé utilise le format `pkg_<domain>_<12hex>` (ex. `pkg_games_a1b2c3d4e5f6`), tenant dans un buffer fixe sur pile `ESP32_STD` sans allocation dynamique.
+> **Pourquoi `MQTT + TCP` avec `DMDZ` v2 Adaptatif 3 Niveaux (`profile=sram | psram | psram_hd`) & Récupération Unifiée 1:1 (Parité RPi) est l'Architecture par Défaut & Recommandée pour les Modèles 1 & 2A**
+> 1. **Zéro Perte NAT UDP VM Docker / Rancher Desktop, IPs Pairs Candidates & Repli `MQTT -> HTTP` dans le Même Tour** : Le trafic entrant TCP `:8890` traverse nativement les ponts conteneurs et NAT des VMs hôtes sans expiration de trou NAT UDP retour, tandis que `101 Switching Protocols` (`WS /api/v1/{domain}/ws/{item_id}.dmdz`, `ws_per_message_deflate=False`) désactive tout buffering HTTP intermédiaire. Les IPs candidates issues du WebUI résolvent les écarts NAT hôte/pont de Docker/Rancher Desktop, et si MQTT `:1883` échoue ou expire, Core 0 bascule automatiquement sur `POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` **au sein du même tour de rotation**.
+> 2. **Protocole de Récupération Unifié 1:1 (Parité RPi), JSON Filtré en Flux Sans Plafond & Poster Binaire `.rgb565`** : La barrière `turn_evaluated` (`800 ms` à froid / `250 ms` à chaud) cède le tour en **`0 ms`** lorsque `ready: false` (`0` écran noir), analyse les messages MQTT `ready` retenus via un parseur JSON filtré en flux **sans aucune limite de taille**, et télécharge la mini-jaquette binaire `GET /api/v1/{domain}/poster/{item_id}.rgb565` sur Core 0 (libérée juste après `StreamBlank` à l'entrée en Phase 2).
+> 3. **Audit Mémoire Exact `esp32dev` (`0 Ko` PSRAM) (`>= 20 Ko` DRAM Libre Wi-Fi/LwIP & HUB75 8 Bits CIE-1931 Préservé)** : Sur `esp32dev` sans PSRAM (`128x32` en pleine profondeur **HUB75 8 bits CIE-1931**), **`36,0 Ko` de DRAM interne 8 bits libre + `8,0 Ko` `SRAM1` `CanvasBufferedSurface` = `44,2 Ko` au total**. Le décodage `DMDZ` v2 **zéro-copie sur place sur Core 1 via `ScopedCanvasGuard`** directement dans le canevas hors-écran `SRAM1` existant (`0 o` d'allocation `frame565` dupliquée !), couplé à l'empreinte compacte `~1,2 Ko` de `MediaShowcaseBase` et au démarrage task-first de `ShowcaseWkr`, laisse **`~30 Ko` disponibles** — accueillant un **anneau SPSC sans verrou de `8–10 Ko`** tout en préservant **`>= 20 Ko` de DRAM interne libre** en permanence pour `esp_wifi` / `lwIP`.
+> 4. **3 Profils de Streaming Adaptatifs (`profile=sram | psram | psram_hd`) & Codec Hybride `FRAME_PAL8` (`0x05`)** :
+>    - **`profile=sram` (`esp32dev` 0 PSRAM)** : `.dmdz2.sram.stream` combine la stabilisation temporelle H.264 (`stabilize_rgb565_frames_sram`) avec l'hybride True-RGB565 `DMDZ` v2 (`<= 1 400 o`) et **`FRAME_PAL8` (`0x05`)** (`1..128` couleurs RGB565 de scène + défilement 2D optionnel + `PAL_INDEX`/`PAL_SKIP`/`PAL_RUN`/`PAL_LONG_SKIP`), garantissant **chaque trame `<= 1 400 o` (`0` dérive)** tout en gardant les panoramas propres 100 % sans perte (`8,1x` plus compact qu'une vidéo bruitée brute). Servi sur `WS ?v=2&credits=4&chunk=1360&profile=sram` avec **fusion `[en-tête DMDZ 16 o + Trame 0]`** et **cadencement inter-chunk de `2 ms`** (`20–24 FPS`).
+>    - **`profile=psram` (`ESP32-S3 <= 128x64`) & `profile=psram_hd` (`ESP32-S3 256x64+`)** : Pré-chargent `.dmdz2.stream` True-RGB565 sans perte non cadencé (`1,5 Mo` en `psram`, `3,5 Mo` en `psram_hd`) en PSRAM Octale pendant la Fiche Info via `GET .rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd` (**`0` trafic Wi-Fi pendant la lecture à `24–30 FPS`**), avec repli live WebSocket (anneau PSRAM `256 Ko` / `768 Ko`, `credits=12..16, chunk=1400`), tandis qu'`ArcadeMatrix_RPi` conserve le pré-chargement `DMDS` brut (`0` impact).
+> 5. **Sockets LwIP Brutes Zéro-`TIME_WAIT` (`SO_LINGER {1, 0}`) & Identifiants `item_id` Compacts (`<= 24` caractères)** : Les sockets MQTT `:1883` et `:8890` se ferment avec `SO_LINGER {1, 0}` (`0` accumulation PCB `TIME_WAIT` de 120 s), et chaque package préparé utilise `pkg_<domain>_<12hex>` (`<= 24` caractères).
 
 ---
 
@@ -25,15 +27,17 @@
 
 Conçu pour les firmwares riches multi-écrans où l'ESP32 orchestre sa propre rotation locale (`Clock`, `Weather`, `Scoreboard`, `AudioSpectrum`, `RetroGames`, `Movies`, `Series`, `Anime`), sa pile de préemption (`DisplayArbiter`) et son propre WebUI embarqué.
 
-- **Autorité de Configuration** : Le WebUI de l'ESP32 interroge dynamiquement `GET /api/v1/{domain}/filters?lang={ui_lang}` pour peupler ses listes déroulantes localisées, sauvegarde les filtres en flash locale, et publie sa configuration retenue sur `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
-- **Session MQTT Brute Zéro-Heap + Streaming WebSocket `DMDZ` Acquitté par Crédits** : Core 0 réclame la fiche `ready` retenue via une socket MQTT LwIP brute zéro-heap (`start_card`), **ferme immédiatement la socket TCP MQTT avec `SO_LINGER {1, 0}`** (`0` socket ouverte et `0` PCB `TIME_WAIT` pendant le défilement de la Fiche en Phase 1), puis lit la Phase 2 (`Panoramas + Captures + Vidéo`) sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`:8890`, avec repli automatique sur `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`).
-- **Comportement en Rotation** : Lorsque le tour d'un moteur Showcase arrive et que le slot MQTT retenu (`dmd_showcase/clients/{dmd_id}/{domain}/ready`) indique `{"ready": false}`, le moteur cède son tour en **`0 ms`** (`m_skipTurnImmediately = true`). Le panneau affiche instantanément le moteur local suivant (`Clock`, `Weather`, etc.) sans jamais provoquer d'écran noir ni de latence.
+- **Autorité de Configuration & IPs Pairs Candidates** : Le WebUI de l'ESP32 interroge dynamiquement `GET /api/v1/{domain}/filters?lang={ui_lang}`, sauvegarde les filtres en flash locale, mémorise les IPs candidates des pairs WebUI pour les ponts NAT Docker/Rancher Desktop, et publie sa configuration retenue sur `dmd_showcase/clients/{dmd_id}/config` (`retain=True`).
+- **Récupération Unifiée 1:1 (Parité RPi) & Streaming Adaptatif 3 Niveaux** : Core 0 (`ShowcaseWkr`) évalue le slot `ready` retenu dans une fenêtre `turn_evaluated` de `800 ms / 250 ms` via un parseur JSON filtré en flux sans plafond (avec repli automatique dans le même tour vers `POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` si MQTT `:1883` est injoignable), réclame l'œuvre (`start_card`), ferme MQTT avec `SO_LINGER {1, 0}` et télécharge `GET /api/v1/{domain}/poster/{item_id}.rgb565` (libéré sur Core 0 après `StreamBlank`). La Phase 2 s'adapte automatiquement à la mémoire de la carte :
+  - **`esp32dev` (`profile=sram`)** : Lit `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` dans un anneau SPSC sans verrou de `8–10 Ko` pendant que Core 1 décode `DMDZ` v2 + `FRAME_PAL8` (`0x05`) zéro-copie sur place dans `CanvasBufferedSurface` via `ScopedCanvasGuard`.
+  - **`ESP32-S3` (`profile=psram` / `profile=psram_hd`)** : Pré-charge `.dmdz2.stream` non cadencé (`<= 1,5 Mo` / `<= 3,5 Mo`) en PSRAM Octale pendant la Fiche Info (`?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd` -> `0` trafic Wi-Fi durant la lecture à `24–30 FPS`), avec repli live WebSocket (`credits=12..16, chunk=1400`, anneau PSRAM `256 Ko` / `768 Ko`).
+- **Comportement en Rotation** : Lorsque le tour d'un moteur Showcase arrive et que `ready` vaut `false`, le moteur cède son tour en **`0 ms`** (`m_skipTurnImmediately = true`). Le panneau affiche instantanément le moteur local suivant (`Clock`, `Weather`, etc.) sans jamais provoquer d'écran noir ni de latence.
 - **Implémentation de Référence en Production (`ArcadeMatrix` — Découpe Modulaire à Responsabilité Unique)** :
   - Orchestrateur des Moteurs Showcase & Descripteurs : [`src/engines/MediaShowcaseEngines.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.h) / [`src/engines/MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp)
   - Police Pixel UTF-8 Core 1, Pixel-Art d'Attente & Dispositions Card Adaptatives : [`src/engines/showcase/ShowcaseCardRenderer.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/showcase/ShowcaseCardRenderer.h) / [`src/engines/showcase/ShowcaseCardRenderer.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/showcase/ShowcaseCardRenderer.cpp)
-  - Client de Flux Partagé Zéro-Heap WebSocket `DMDZ` à Crédits + Repli HTTP Cadencé (partagé par `MediaShowcaseBase` & `FrontendSyncEngine`) : [`src/core/net/DmdzStreamClient.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/DmdzStreamClient.h) / [`src/core/net/DmdzStreamClient.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/DmdzStreamClient.cpp)
-  - Socket MQTT 3.1.1 LwIP Brute Zéro-Heap & Fermeture `SO_LINGER {1, 0}` : [`src/core/net/RawMqttSocket.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/RawMqttSocket.h) / [`src/core/net/RawMqttSocket.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/RawMqttSocket.cpp)
-  - Décodeur Sans Perte `DMDZ` v1 & Démultiplexeur Binaire RFC 6455 : [`src/core/drawing/DmdzStreamDecoder.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/drawing/DmdzStreamDecoder.h) / [`src/core/drawing/DmdzStreamDecoder.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/drawing/DmdzStreamDecoder.cpp)
+  - Client de Flux Adaptatif 3 Niveaux WebSocket `DMDZ` v2 + Pré-chargement PSRAM + Repli HTTP Cadencé (partagé par `MediaShowcaseBase` & `FrontendSyncEngine`) : [`src/core/net/DmdzStreamClient.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/DmdzStreamClient.h) / [`src/core/net/DmdzStreamClient.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/DmdzStreamClient.cpp)
+  - Socket MQTT 3.1.1 LwIP Filtrée en Flux & Fermeture `SO_LINGER {1, 0}` : [`src/core/net/RawMqttSocket.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/RawMqttSocket.h) / [`src/core/net/RawMqttSocket.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/net/RawMqttSocket.cpp)
+  - Décodeur Sur Place `DMDZ` v1/v2 + `FRAME_PAL8` (`0x05`) & Démultiplexeur Binaire RFC 6455 : [`src/core/drawing/DmdzStreamDecoder.h`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/drawing/DmdzStreamDecoder.h) / [`src/core/drawing/DmdzStreamDecoder.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/core/drawing/DmdzStreamDecoder.cpp)
 
 ---
 
@@ -43,7 +47,7 @@ Conçu pour les afficheurs Showcase dédiés souhaitant conserver un rendu texte
 
 - **Annonce Matérielle Légère** : Au démarrage, l'ESP32 publie un court message retenu sur `dmd_showcase/clients/{dmd_id}/hello` (`retain=True`) déclarant uniquement sa géométrie et son adresse LAN (`width`, `height`, `config_source: "server"`, `supports_local_card: true` et langue par défaut `lang`).
 - **Profil Centralisé Persisté (`./data/dmd_profiles.json`)** : Toutes les playlists de domaines (`games`, `movies`, `series`, `anime`), catégories (`systems`, `genres`, `decades`), préréglages de cadrage/colorimétrie IA (`video_mode`, `color_boost`) et la langue de diffusion du contenu (`lang`) sont configurés dans le **Dashboard Web Showcase** (`http://dmdmediashowcase.local:8890/`) et sauvegardés dans `./data/dmd_profiles.json`.
-- **Rendu Hybride** : L'ESP32 affiche localement la **Phase 1 (Fiche Info)** à 60 FPS (mini-jaquette + badge coloré + défilement fluide du synopsis poussé via `ready` ou `dmd_showcase/clients/{dmd_id}/command` `play_card`, acquitté par `start_card`), puis bascule sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` sur `:8890` pour recevoir la **Phase 2 (Panoramas + Vidéo)** en WebSocket `DMDZ` v1 sans perte acquitté par crédits (avec repli automatique HTTP `?purge=true&paced=1&codec=dmdz1` et support `mqtt_udp` `start_stream` optionnel).
+- **Rendu Hybride** : L'ESP32 affiche localement la **Phase 1 (Fiche Info)** à 60 FPS (mini-jaquette `/api/v1/{domain}/poster/{item_id}.rgb565` + badge coloré + défilement fluide du synopsis poussé via `ready` ou `dmd_showcase/clients/{dmd_id}/command` `play_card`, acquitté par `start_card`), puis lit la **Phase 2 (Panoramas + Vidéo)** en `DMDZ` v2 3 niveaux (`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` sur `esp32dev`, pré-chargement PSRAM `.dmdz2.stream` ou `credits=12..16&chunk=1400&profile=psram|psram_hd` sur `ESP32-S3`, avec repli automatique HTTP `?purge=true&paced=1&codec=dmdz2` et support `mqtt_udp` `start_stream` optionnel).
 
 ---
 
@@ -61,14 +65,14 @@ Conçu pour des montages matériels ultra-légers et sans maintenance (`ESP32_ST
 
 | Critère | Modèle 1 : Piloté Client (`ArcadeMatrix`) | Modèle 2A : Hybride Piloté Serveur | Modèle 2B : Récepteur UDP 100 % Passif |
 | :--- | :--- | :--- | :--- |
-| **Annonce & Transport** | `config_source: "client"` (`MQTT+TCP` par défaut) | `config_source: "server"`, `supports_local_card: true` (`MQTT+TCP` par défaut) | `config_source: "server"`, `supports_local_card: false` (`UDP-PASSIVE` `:4210`) |
+| **Annonce & Transport** | `config_source: "client"` (`MQTT+TCP` + repli HTTP `/config+/next` même tour) | `config_source: "server"`, `supports_local_card: true` (`MQTT+TCP` par défaut) | `config_source: "server"`, `supports_local_card: false` (`UDP-PASSIVE` `:4210`) |
 | **Stockage Playlists & Filtres** | Flash ESP32 (`config.json`) | Serveur (`./data/dmd_profiles.json`) | Serveur (`./data/dmd_profiles.json`) |
-| **Complexité Firmware / UI** | OS Multi-Moteurs complet + WebUI | ~350 lignes C++ (MQTT brut + WS `DMDZ` à crédits + Police) | **~120–180 lignes C++** (Zéro UI, Zéro Police, Zéro JSON) |
-| **Rendu Phase 1 (Fiche Info)** | Local 60 FPS sur Core 1 ESP32 | Local 60 FPS sur Core 1 ESP32 | **Rendu par le serveur dans le flux UDP RGB565** |
-| **Rendu Phase 2 (Panoramas + Vidéo)** | **WebSocket `WS /ws/{id}.dmdz` à crédits (`:8890`, `<= 2 Ko` en vol) + repli HTTP `?paced=1&codec=dmdz1`** *(option `mqtt_udp`)* | **WebSocket `WS /ws/{id}.dmdz` à crédits (`:8890`, `<= 2 Ko` en vol) + repli HTTP `?paced=1&codec=dmdz1`** *(option `mqtt_udp`)* | **UDP Passif `DMDF` (`:4210`)** |
-| **Empreinte SRAM (`128x32`)** | **`2 Ko` jaquette (Phase 1) / `8 Ko` `frame565` LIFO borné Phase 2 (`ESP32_STD` ; PSRAM sur `S3`)** | `2–6 Ko` jaquette + `8 Ko` `frame565` LIFO Phase 2 | **`8 Ko` simple (`16 Ko` ping-pong) — `0 o` jaquette/JSON** |
-| **Qualification `ESP32_STD` (Sans PSRAM)** | Qualifié (`128x32` en **HUB75 8 bits**, `64x64`, `128x64`) | Qualifié (`128x32` à `128x64`) | **Qualifié (`128x32` jusqu'à `256x64` simple buffer)** |
-| **Charge CPU Core 0** | Faible (MQTT brut + Base64 + décodage WS `DMDZ` `<= 1024 o` + ACK `'A'`) | Faible (MQTT brut + Base64 + décodage WS `DMDZ` `<= 1024 o` + ACK `'A'`) | **Minimale (pur `memcpy` UDP non-bloquant)** |
+| **Complexité Firmware / UI** | OS Multi-Moteurs complet + WebUI | ~350 lignes C++ (MQTT brut + WS `DMDZ` v2 à crédits + Police) | **~120–180 lignes C++** (Zéro UI, Zéro Police, Zéro JSON) |
+| **Rendu Phase 1 (Fiche Info)** | Local 60 FPS sur Core 1 ESP32 + poster HTTP `.rgb565` | Local 60 FPS sur Core 1 ESP32 + poster HTTP `.rgb565` | **Rendu par le serveur dans le flux UDP RGB565** |
+| **Rendu Phase 2 (Panoramas + Vidéo)** | **`DMDZ` v2 3 niveaux (`sram` WS `<= 1400 o` PAL8/True565 ; `psram`/`psram_hd` pré-chargement HTTP + WS) + repli HTTP `?paced=1&codec=dmdz2`** | **`DMDZ` v2 3 niveaux (`sram` / `psram` / `psram_hd`) + repli HTTP `?paced=1&codec=dmdz2`** | **UDP Passif `DMDF` (`:4210`)** |
+| **Empreinte Mémoire (`128x32`)** | **`esp32dev` : Canevas `SRAM1` Zéro-Copie + anneau SPSC `8–10 Ko` (`>= 20 Ko` DRAM Wi-Fi libre) ; `S3` : pré-chargement PSRAM `1,5–3,5 Mo`** | `2–6 Ko` poster + canevas `8 Ko` / décodage `DMDZ` v2 | **`8 Ko` simple (`16 Ko` ping-pong) — `0 o` jaquette/JSON** |
+| **Qualification `ESP32_STD` (`esp32dev`, Sans PSRAM)** | **Qualifié (`128x32` en HUB75 8 bits CIE-1931, `20–24 FPS`, `64x64`, `128x64`)** | Qualifié (`128x32` à `128x64`) | **Qualifié (`128x32` jusqu'à `256x64` simple buffer)** |
+| **Charge CPU Core 0 / Core 1** | Faible (`sram` : RX SPSC Core 0 + décodage in-place Core 1 ; `S3` : `0` RX Wi-Fi en lecture PSRAM) | Faible (décodage `DMDZ` v2 + ACK `'A'`) | **Minimale (pur `memcpy` UDP non-bloquant)** |
 | **Réactivité `Skip` / `Pause` / `Play Now`** | File prioritaire (`N+1`) ou MQTT `.../command` | Via MQTT `.../command` (`play_card` / `skip`) | **Instantanée (`< 50 ms`) directement dans le streamer `DMDF`** |
 
 ---
@@ -79,58 +83,56 @@ Les dalles LED HUB75 ne possèdent pas de mémoire vidéo interne : le périphé
 
 Pour garantir un rafraîchissement irréprochable à **60 FPS** (`16,67 ms` par trame), l'architecture impose une séparation matérielle stricte entre les deux cœurs :
 
-- **Core 0 (`PRO_CPU` — Worker Réseau & Protocole)** :
-  - Exécute la pile Wi-Fi / LwIP et la résolution mDNS (`dmdmediashowcase.local` sur `224.0.0.251:5353`).
-  - **Modèles 1 & 2A (`MQTT+TCP` par défaut)** : Exécute une **session MQTT `:1883` LwIP brute zéro-heap** (`config` ou `hello` $\to$ `ready` retenu $\to$ `start_card` $\to$ fermeture immédiate `SO_LINGER {1, 0}` afin que `0` socket et `0` PCB `TIME_WAIT` ne subsistent pendant le défilement de la Fiche). En Phase 2, Core 0 alloue `frame565` en LIFO sur `ESP32_STD` (ou réutilise la PSRAM sur `ESP32-S3`), bascule un `lwip_socket` (`TCP_NODELAY`) sur **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`** (`101 Switching Protocols`, ou `credits=8` avec PSRAM), lit l'**en-tête Little-Endian `<4sBBHHHHH` `DMDZ` v1 de 16 octets**, décode sur place les **sous-paquets binaires `<= 1 024 o`** dans `frame565` (`~152 octets` sur pile, `0 o` heap) et renvoie une trame RFC 6455 masquée de 7 octets contenant `'A'` (`0x41`) par message consommé afin de limiter le flux en vol à `<= 2 048 octets` sur `ESP32_STD` (`0` épuisement `pcb->ooseq`). Si la mise à niveau WebSocket échoue, Core 0 bascule automatiquement sur `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`.
-  - **Modèle 2B (`UDP-PASSIVE :4210`)** : Assure le heartbeat HTTP `POST /api/v1/clients/hello` et réassemble les datagrammes **UDP `DMDF`** non-bloquants (en-tête `<4sHBBH` de `10 octets` + tranche `<= 1408 octets` RGB565LE = `<= 1418 octets` par paquet UDP, zéro fragmentation IP sous le MTU Wi-Fi de `1500 octets`).
+- **Core 0 (`PRO_CPU` — Worker Réseau `ShowcaseWkr`)** :
+  - Exécute la pile Wi-Fi / LwIP, la résolution mDNS (`dmdmediashowcase.local`) et le repli vers les IPs candidates pairs du WebUI.
+  - **Modèles 1 & 2A (`MQTT+TCP` + Repli HTTP Même Tour)** : Démarre `ShowcaseWkr` en priorité (task-first), analyse `ready` retenu via un parseur JSON filtré en flux sans plafond (ou bascule dans le même tour vers `POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`), publie `start_card`, ferme MQTT avec `SO_LINGER {1, 0}` et télécharge `GET /api/v1/{domain}/poster/{item_id}.rgb565` (libéré sur Core 0 dès `StreamBlank`). En Phase 1/2 :
+    - **`profile=sram` (`esp32dev`, 0 PSRAM)** : Bascule sur **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram`**, reçoit le message initial **fusionné `[en-tête DMDZ 16 o + Trame 0]`** et les sous-paquets cadencés de `2 ms` (`<= 1 400 o/trame`), pousse les trames `DMDZ` v2 compressées dans un **anneau SPSC sans verrou de `8–10 Ko`** et renvoie les ACKs `'A'` (`0x41`).
+    - **`profile=psram` / `profile=psram_hd` (`ESP32-S3`, PSRAM Octale)** : Pré-charge l'intégralité de `.dmdz2.stream` sans perte (`<= 1,5 Mo` sur `psram`, `<= 3,5 Mo` sur `psram_hd`) en PSRAM **pendant la Fiche Info** via `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd` (`0` trafic Wi-Fi durant la lecture Phase 2 !), ou lit en direct sur `WS ?v=2&credits=12..16&chunk=1400&profile=psram|psram_hd` dans un anneau PSRAM `256 Ko` / `768 Ko`.
+  - **Modèle 2B (`UDP-PASSIVE :4210`)** : Assure le heartbeat HTTP `POST /api/v1/clients/hello` et réassemble les datagrammes **UDP `DMDF`** non-bloquants (en-tête `<4sHBBH` de `10 octets` + tranche `<= 1408 octets` RGB565LE = `<= 1418 octets` par paquet UDP).
 - **Core 1 (`APP_CPU` — Boucle Temps Réel HUB75 à 60 FPS)** :
-  - Pilote exclusivement `IDrawingSurface` / le DMA HUB75 à 60 FPS.
-  - **Zéro Allocation Dynamique** : Aucun appel à `malloc`, `new`, `String` ni `std::vector::push_back` dans la boucle chaude de rendu.
-  - **Zéro Mutex / Zéro Contention** : Aucun `std::mutex` ni sémaphore FreeRTOS partagé avec Core 0.
-  - **Isolation Stricte du DMA** : Le worker réseau n'écrit jamais directement dans le buffer DMA HUB75 en cours de balayage ; les pixels sont décodés dans `frame565` puis copiés proprement via `IDrawingSurface` lors de la passe de rendu.
+  - Pilote exclusivement `IDrawingSurface` / le DMA HUB75 à 60 FPS, avec **zéro allocation dynamique** et **zéro mutex**.
+  - **`ScopedCanvasGuard` Zéro-Copie Sur Place (`esp32dev`) / Lecture PSRAM (`ESP32-S3`)** : Sur `esp32dev`, Core 1 dépile les trames `DMDZ` v2 `<= 1 400 o` (`True-RGB565` ou `FRAME_PAL8` `0x05`) depuis l'anneau SPSC `8–10 Ko` et les décode **directement sur place dans le `CanvasBufferedSurface` `SRAM1` de `8 Ko`** avant `blitCanvas565()`, éliminant tout second buffer `frame565`.
 
-### Passage de Trames Lock-Free : `frameSeq` Pair/Impair + Barrière Dekker `renderBlitSeq` vs Double-Buffer Ping-Pong
+### Passage de Trames Lock-Free : Anneau SPSC + `ScopedCanvasGuard` Zéro-Copie vs Seqlock vs Ping-Pong
 
-Deux mécanismes sans verrou permettent de transférer les trames de Core 0 vers Core 1 :
+1. **`ScopedCanvasGuard` Zéro-Copie + Anneau SPSC de Trames Compressées (`ArcadeMatrix` Production `esp32dev` & Repli Live `ESP32-S3`)** :
+   - Core 0 pousse les trames binaires WebSocket dans un anneau SPSC borné (`8–10 Ko` DRAM interne sur `esp32dev` contenant `6–10` trames compressées `<= 1 400 o` ; `256 Ko` / `768 Ko` PSRAM sur `ESP32-S3`) et n'acquitte `'A'` qu'à mesure que l'anneau se libère.
+   - Core 1 cadence la présentation (`20–24 FPS` en `sram`, `24–30 FPS` en `psram`/`psram_hd`) et exécute `DmdzStreamDecoder` (`v1`/`v2` + `FRAME_PAL8` `0x05`) **sur place dans `CanvasBufferedSurface` (`SRAM1`)** sous `ScopedCanvasGuard`, économisant `8 192 o` de DRAM interne.
+2. **Seqlock `frameSeq` Pair/Impair + Barrière Dekker `renderBlitSeq` (Référence Autonome Monofichier Section 4.A)** :
+   - Pour les firmwares autonomes sans `CanvasBufferedSurface`, Core 0 décode dans un buffer unique `g_frame565` encadré par `g_frameSeq` + `g_renderBlitSeq`.
+3. **Double-Buffer Ping-Pong `frame565[2]` (`std::atomic<uint8_t> frontIdx` — Modèle 2B UDP `DMDF`)** :
+   - Core 0 réassemble les fragments `DMDF` dans `frame565[backIdx]` via `chunkMask` 64 bits et permute atomiquement `frontIdx` lorsque la trame est complète.
 
-1. **Synchronisation Sans Déchirement `frameSeq` Pair/Impair + `consumedFrameSeq` + Barrière Dekker `renderBlitSeq` (`frame565` Unique — Modèles 1 & 2A par défaut)** :
-   - Éprouvée en production dans [`MediaShowcaseEngines.cpp`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) pour éliminer tout déchirement horizontal et tout accès mémoire concurrent avec **un unique buffer `frame565`** (`8 Ko` en `128x32`) alloué exclusivement pendant la Phase 2 sur `ESP32_STD`.
-   - Core 0 cadence la présentation de manière monotone (`periodMs = frameDurMs`) **pendant que `frameSeq` reste `PAIR`** et n'envoie les crédits `'A'` qu'au fur et à mesure de la lecture des sous-paquets WebSocket `<= 1 024 o`, de sorte que ni Core 1 ni `TCP_WND` ne sont jamais bloqués.
-   - Avant de décoder une nouvelle trame `DMDZ`, Core 0 attend au plus `18 ms` (`1` rafraîchissement HUB75) que Core 1 ait consommé la trame précédente (`consumedFrameSeq == frameSeq`), bascule `frameSeq` en **`IMPAIR`** (`fetch_add(1, memory_order_acq_rel)`), décode la trame `DMDZ` sans perte sur place dans `frame565`, puis repasse `frameSeq` en **`PAIR`** (`fetch_add(1, memory_order_release)`).
-   - Core 1 encadre son `memcpy` par un compteur `IMPAIR`/`PAIR` `renderBlitSeq` (`memory_order_seq_cst`). En fin de Phase 2 sur `ESP32_STD`, Core 0 écrit `frameSeq = 1` (`seq_cst`), attend `(renderBlitSeq & 1U) == 0U` (`~15 µs`), ferme la socket (`SO_LINGER {1, 0}`) et libère `frame565` en ordre LIFO strict (`0` fragmentation du heap).
-2. **Double-Buffer Ping-Pong `frame565[2]` (`std::atomic<uint8_t> frontIdx` — Modèle 2B UDP `DMDF`)** :
-   - Core 0 écrit les tranches `DMDF` dans `frame565[backIdx]` en marquant chaque bit `(1ULL << chunk_idx)` dans un masque 64 bits `chunkMask`.
-   - Dès que `chunkMask == ((1ULL << total_chunks) - 1ULL)`, Core 0 permute atomiquement `frontIdx.store(backIdx, std::memory_order_release)`. Core 1 lit toujours une trame 100 % complète.
+### Audit Mémoire Exact `esp32dev` (`0 Ko` PSRAM) & Les 3 Profils Adaptatifs
 
-### Budgets Exacts SRAM / PSRAM par Géométrie HUB75
+Sur un **`esp32dev` (`128x32`, `0 Ko` PSRAM)** multi-moteurs en production exécutant le **HUB75 8 bits CIE-1931 complet** avec Wi-Fi, AsyncWebServer et `CanvasBufferedSurface` :
+- **Réserve de Base** : **`36,0 Ko` de DRAM interne 8 bits libre + `8,0 Ko` `SRAM1` `CanvasBufferedSurface` = `44,2 Ko` au total**.
+- **Empreinte Moteur Showcase** : `ScopedCanvasGuard` Zéro-Copie (`0 Ko` `frame565` additionnel !) + **`~1,2 Ko` `MediaShowcaseBase`** + pile **`ShowcaseWkr`** task-first = **`~30 Ko` disponibles**.
+- **Allocation Streaming** : **Anneau SPSC sans verrou de `8–10 Ko`** -> **`>= 20 Ko` de DRAM interne libre conservés en permanence pour `esp_wifi` / `lwIP`** (`0` saturation `pcb->ooseq`, `0` fragmentation heap, `0` rétrogradation HUB75 8 bits !).
 
-Un **`ESP32_STD` sans PSRAM** (WROOM-32 disposant d'environ `110–140 Ko` de heap interne libre après initialisation Wi-Fi + HUB75 DMA) exécute l'intégralité du pipeline avec une large marge de sécurité :
-
-| Géométrie Dalle | Pixels (`L x H`) | `WS DMDZ` (`<= 1024 o` x `2` crédits) / `UDP DMDF` | `frame565` Phase 2 (Modèles 1 & 2A) | Ping-Pong `frame565[2]` (Modèle 2B) | `poster565` Carte Locale (Modèle 1 / 2A) | Compatibilité `ESP32_STD` Sans PSRAM |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`128x32`** *(DMD WPC)* | `4 096 px` | `<= 2 048 o` WS en vol / `6` tranches UDP | **`8 192 o`** (`8 Ko` LIFO) | `16 384 o` (`16 Ko`) | `2 048 o` (`32x32`) | **Fluide en profondeur HUB75 8 bits sur `ESP32_STD`** |
-| **`64x64`** *(Carré)* | `4 096 px` | `<= 2 048 o` WS en vol / `6` tranches UDP | **`8 192 o`** (`8 Ko` LIFO) | `16 384 o` (`16 Ko`) | `2 048 o` (`32x32`) | **Fluide sur `ESP32_STD`** |
-| **`128x64` / `64x128` TATE** | `8 192 px` | `<= 2 048 o` WS en vol / `12` tranches UDP | **`16 384 o`** (`16 Ko` LIFO) | `32 768 o` (`32 Ko`) | `6 144 o` (`48x64`) / `3 200 o` (`40x40`) | **Tient en SRAM interne `ESP32_STD` (repli auto HUB75 4 bits si requis)** |
-| **`256x64`** *(Super-DMD)* | `16 384 px` | `<= 2 048 o` WS (`8 Ko` sur `S3` `credits=8`) / `24` tranches UDP | **`32 768 o`** (`32 Ko`) | `65 536 o` (`64 Ko`) | `6 144 o` (`48x64`) | **`32 Ko` Simple sur `ESP32_STD` ; `ESP32-S3` PSRAM recommandé** |
+| Profil de Flux | Matériel & Géométrie Cibles | Fichier Frère & Codec Serveur | Transport & Contrôle de Flux | Budget Buffers Client | Cadence & Fidélité |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`profile=sram`** | **`esp32dev` (`0 Ko` PSRAM)**, `128x32` / `64x64` (`<= 8 192 px`) | **`.dmdz2.sram.stream`** (`stabilize_rgb565_frames_sram` + True-RGB565 `<= 1 400 o` / `FRAME_PAL8` `0x05` `<= 1 400 o`) | `WS ?v=2&credits=4&chunk=1360&profile=sram` (**en-tête `16 o` + Trame `0` fusionnés**, **cadencement inter-chunk `2 ms`**) | **Canevas `SRAM1` `8 Ko` Zéro-Copie + anneau SPSC `8–10 Ko` (`>= 20 Ko` DRAM Wi-Fi libre)** | **`20–24 FPS`**, **HUB75 8 bits CIE-1931**, panoramas 100 % sans perte, `0` dérive |
+| **`profile=psram`** | **`ESP32-S3` (PSRAM Octale)**, `<= 128x64` / `64x128` (`<= 8 192 px`) | **`.dmdz2.stream`** (True-RGB565 `DMDZ` v2 100 % sans perte) | **Pré-chargement HTTP non cadencé** (`?purge=false&paced=0&codec=dmdz2&profile=psram` pendant la Fiche) + repli `WS ?v=2&credits=12&chunk=1400&profile=psram` | **Pré-chargement PSRAM `<= 1,5 Mo`** (anneau PSRAM `256 Ko` en repli) | **`25–30 FPS`** True-RGB565 (**`0` trafic Wi-Fi en lecture pré-chargée**) |
+| **`profile=psram_hd`** | **`ESP32-S3` (PSRAM Octale)**, `256x64+` (`> 8 192 px` HD) | **`.dmdz2.stream`** (True-RGB565 `DMDZ` v2 100 % sans perte) | **Pré-chargement HTTP progressif** (`?purge=false&paced=0&codec=dmdz2&profile=psram_hd`) + repli `WS ?v=2&credits=16&chunk=1400&profile=psram_hd` | **Pré-chargement PSRAM `<= 3,5 Mo`** (anneau PSRAM `768 Ko` en repli) | **`24–30 FPS` HD** True-RGB565 |
+| **Modèle 2B `DMDF`** | `esp32dev` / `ESP32-S3`, `128x32` à `256x64` (`<= 64` chunks) | `DMDF` `<4sHBBH` live (`<= 1 408 o` par tranche) | UDP Passif `:4210` (`supports_local_card: false`) | Canevas `8 Ko` + ping-pong `16 Ko` (`128x32`) | `15–25 FPS` récepteur passif zéro-JSON |
 
 ### Pipeline d'Affichage HUB75 Préconisé : `Single DMA Buffer + Offscreen RGB565 Canvas` (`canvas_single`)
 
 Sur l'ensemble des firmwares ESP32 HUB75 (dont [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix)), le pipeline **`Single DMA Buffer + Offscreen RGB565 Canvas` (`canvas_single`)** adossé à [`mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA`](https://github.com/mrfaptastic/ESP32-HUB75-MatrixPanel-I2S-DMA) constitue **l'architecture de référence préconisée** :
 
 1. **Économie de 50 % sur la SRAM Interne Compatible DMA (`mxconfig.double_buff = false`)** :
-   - Sur `ESP32_STD` (sans PSRAM), les descripteurs DMA I2S et les bitplanes BCM doivent impérativement être alloués dans la DRAM interne contiguë (`MALLOC_CAP_DMA`) — exactement la ressource sollicitée par la pile Wi-Fi + LwIP TCP/UDP.
-   - Désactiver le double-buffering DMA matériel (`mxconfig.double_buff = false`) divise par deux l'empreinte des bitplanes, tandis que le canevas linéaire RGB565 hors-écran (`GFXcanvas16`) ne consomme que `2 octets/pixel` (`8 Ko` en `128x32`, `16 Ko` en `128x64`, et logeable en PSRAM sur `ESP32-S3`).
-2. **Maintien de la Profondeur Couleur HUB75 8 Bits sur `ESP32_STD` (`esp32dev`) via Hystérésis & Préemption `WEBUI_SYNC`** :
-   - Les firmwares multi-moteurs (`ArcadeMatrix`) conservent **la pleine profondeur couleur HUB75 BCM 8 bits** sur dalle `128x32` sur les cartes `ESP32_STD` (`esp32dev` sans PSRAM) sur un nombre illimité de rotations : `PipelineSelectionPolicy` applique une hystérésis de maintien de `3,5 Ko` une fois le DMA 8 bits alloué, et l'allocation LIFO Phase 2 de `frame565` couplée à `SO_LINGER {1, 0}` garantit zéro érosion de la DRAM interne — ne descendant à `4 bits` **que** sur des dalles plus grandes (`128x64` sans PSRAM).
-   - Lors du chargement initial de la SPA WebUI embarquée (`GET /`), `ArcadeMatrix` active temporairement une source d'affichage haute priorité zéro-heap **`WEBUI_SYNC`** ([`WebUiSyncEngine`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/WebUiSyncEngine.h)) sur `PreemptionStack`. L'éviction du moteur actif (`deactivate()`) libère immédiatement **`~48 Ko` de SRAM interne** (`m_frame565`, `m_poster565`, `m_ioScratch` et buffers TCP) pour servir la SPA compressée sans erreur mémoire, puis reprend automatiquement la diffusion Showcase 8 bits dès la synchronisation navigateur terminée.
+   - Sur `ESP32_STD` (sans PSRAM), les descripteurs DMA I2S et les bitplanes BCM doivent résider en DRAM interne contiguë (`MALLOC_CAP_DMA`), partagée avec Wi-Fi + LwIP.
+   - Désactiver le double-buffering DMA matériel (`mxconfig.double_buff = false`) divise par deux l'empreinte des bitplanes, tandis que le canevas linéaire RGB565 hors-écran (`CanvasBufferedSurface` en `SRAM1` ou `GFXcanvas16`) ne consomme que `2 octets/pixel` (`8 Ko` en `128x32`, `16 Ko` en `128x64`, logeable en PSRAM sur `ESP32-S3`).
+2. **Maintien du HUB75 8 Bits CIE-1931 sur `esp32dev` via `ScopedCanvasGuard` Zéro-Copie & Préemption `WEBUI_SYNC`** :
+   - Les firmwares multi-moteurs (`ArcadeMatrix`) conservent **la pleine profondeur couleur HUB75 BCM 8 bits** sur dalle `128x32` sur `esp32dev` sans PSRAM sur un nombre illimité de rotations : `PipelineSelectionPolicy` applique une hystérésis de maintien de `3,5 Ko` une fois le DMA 8 bits alloué, tandis que `ScopedCanvasGuard` + l'anneau SPSC `8–10 Ko` + `SO_LINGER {1, 0}` préservent `>= 20 Ko` de DRAM interne libre — ne descendant à `4 bits` **que** sur `128x64` sans PSRAM.
+   - Lors du chargement initial de la SPA WebUI embarquée (`GET /`), `ArcadeMatrix` active **`WEBUI_SYNC`** ([`WebUiSyncEngine`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/WebUiSyncEngine.h)) sur `PreemptionStack` : `deactivate()` libère immédiatement l'anneau SPSC, le poster `.rgb565`, la pile worker et les buffers TCP afin de servir la SPA compressée sans erreur mémoire, puis reprend automatiquement la diffusion Showcase 8 bits.
 3. **Zéro Scintillement Noir & Zéro Effet Stroboscopique (Écrasement Bitplane Sur Place)** :
-   - Dessiner directement dans un unique buffer DMA (`direct_single`) en appelant `clearScreen()` efface les bitplanes en cours de balayage actif, provoquant un clignotement noir permanent.
-   - Avec un **Canevas RGB565 Hors-Écran**, tous les effacements, tracés `Adafruit_GFX` (texte, HUD, score), animations d'attente et mises à jour de trames `DMDZ`/`DMDS`/`DMDF` s'effectuent à 100 % en mémoire hors-écran. `blitCanvas565()` réécrit ensuite chaque mot de bitplane HUB75 **sur place** (`(dmaRow[ax] & ~0x003F) | rgb12`) en **`~300 µs`** (`128x32`) **sans jamais passer par un `clearScreen()` noir préalable**.
+   - Tous les tracés `Adafruit_GFX`, animations d'attente et décodages sur place `DMDZ` v2 / `FRAME_PAL8` (`0x05`) / `DMDF` s'effectuent à 100 % en mémoire hors-écran. `blitCanvas565()` réécrit ensuite chaque mot de bitplane HUB75 **sur place** (`(dmaRow[ax] & ~0x003F) | rgb12`) en **`~300 µs`** (`128x32`) sans jamais passer par un `clearScreen()` noir préalable.
 4. **Gating par Compteur d'État `Dirty` (`frameSeq != lastPresentedSeq`)** :
-   - Core 1 cadencé à `60 Hz` (`16,6 ms`) cohabite avec un flux vidéo WS `DMDZ` / TCP `DMDS` / UDP `DMDF` à `15–25 FPS` (`40–66 ms`).
-   - En ne déclenchant le burst vers `frame_buffer[0]` **que lorsqu'une nouvelle trame a réellement modifié le canevas**, Core 1 n'effectue **aucune écriture DMA redondante** entre deux trames vidéo, supprimant toute contention sur le bus SRAM pendant le balayage I2S.
+   - Core 1 (`60 Hz`) ne déclenche le burst vers `frame_buffer[0]` **que lorsqu'une nouvelle trame a modifié le canevas**, supprimant toute contention sur le bus SRAM pendant le balayage I2S.
 5. **Encodage Burst BCM Multiplexé + Gamma Perceptif CIE 1931 + Swap FIFO I2S ESP32 Classique** :
-   - Encode simultanément la demi-ligne haute `(y)` et la demi-ligne basse `(y + H/2)` dans `R1G1B1R2G2B2` via des tables **gamma CIE 1931** calibrées à la profondeur active, applique la permutation 16 bits du FIFO I2S de l'ESP32 original (`MATRIX_TX_ADJUST(x)`) et vide les lignes de cache CPU (`Cache_WriteBack_Addr`) lorsque `SPIRAM_DMA_BUFFER` est actif sur `ESP32-S3`.
+   - Encode simultanément `(y)` et `(y + H/2)` dans `R1G1B1R2G2B2` via des tables **gamma CIE 1931**, applique `MATRIX_TX_ADJUST(x)` sur ESP32 classique et vide le cache (`Cache_WriteBack_Addr`) lorsque `SPIRAM_DMA_BUFFER` est actif sur `ESP32-S3`.
 
 | Mode Pipeline | `mxconfig.double_buff` | Canevas RGB565 Hors-Écran | Marge DRAM DMA (`ESP32_STD`) | Scintillement / Tearing | Préconisation |
 | :--- | :---: | :---: | :--- | :--- | :--- |
@@ -147,42 +149,44 @@ Sur l'ensemble des firmwares ESP32 HUB75 (dont [`ArcadeMatrix`](https://github.c
 
 ```mermaid
 sequenceDiagram
-    participant C1 as ESP32 Core 1 (60 FPS HUB75)
-    participant C0 as ESP32 Core 0 (MQTT brut + WS DMDZ a credits)
+    participant C1 as ESP32 Core 1 (60 FPS HUB75 + ScopedCanvasGuard)
+    participant C0 as ESP32 Core 0 (ShowcaseWkr : MQTT/HTTP + SPSC/PSRAM)
     participant SRV as Serveur Showcase (:1883 MQTT / :8890 WS+HTTP)
     participant UDP as FfmpegUdpClockStreamer (Mode 2B :4210)
 
-    Note over C1,C0: 1. BOOT & DECOUVERTE mDNS / MQTT BRUT ZERO-HEAP
+    Note over C1,C0: 1. BOOT, IPs PAIRS CANDIDATES & RECUPERATION MQTT / HTTP MEME TOUR
     C1->>C1: Animation pixel-art procedurale 60 FPS non-bloquante
-    C0->>SRV: Resolution mDNS dmdmediashowcase.local + Raw LwIP MQTT CONNECT (avec LWT)
+    C0->>SRV: Resolution mDNS / IP pair + MQTT CONNECT (LWT) -> repli HTTP /config+/next meme tour
     C0->>SRV: PUBLISH clients/{id}/config OU clients/{id}/hello (retain=True)
 
-    Note over C1,SRV: 2. WARMING / ATTENTE DE CONTENU (ready=false)
-    SRV-->>C0: Retained ready=false (preparation pkg_{domain}_{12hex} en tache de fond)
+    Note over C1,SRV: 2. BARRIERE TURN_EVALUATED (800 ms / 250 ms) & WARMING (ready=false)
+    SRV-->>C0: Retained ready=false (preparation pkg_{domain}_{12hex} + freres .dmdz2/.dmdz2.sram)
     alt DMD Multi-Moteurs (ArcadeMatrix, rotationSlots > 1)
-        C0->>C1: m_skipTurnImmediately = true (passage en 0 ms vers Horloge/Meteo)
+        C0->>C1: turn_evaluated -> m_skipTurnImmediately = true (passage en 0 ms vers Horloge/Meteo)
     else Recepteur Dedie / Passif (Modeles 2A & 2B)
         C1->>C1: Maintien de l'animation d'attente fluide a 60 FPS (zero ecran noir)
     end
 
-    Note over C1,SRV: 3. PHASE 1 — CLAIM MQTT BRUT & FICHE INFO LOCALE 60 FPS
-    SRV-->>C0: Delivre ready=true + Carte N (pkg_{domain}_{12hex})
-    C0->>SRV: PUBLISH {domain}/events {action: start_card, item_id: N} puis MQTT DISCONNECT + SO_LINGER {1,0}
-    Note over C0: 0 socket ouverte & 0 PCB TIME_WAIT pendant le defilement de la Fiche !
+    Note over C1,SRV: 3. PHASE 1 — CLAIM, POSTER HTTP .rgb565 & PRE-CHARGEMENT PSRAM S3 OPTIONNEL
+    SRV-->>C0: Delivre ready=true + Carte N (parseur JSON filtre en flux sans plafond)
+    C0->>SRV: PUBLISH {domain}/events {action: start_card, item_id: N} + fermeture MQTT SO_LINGER {1,0}
+    C0->>SRV: GET /api/v1/{domain}/poster/{N}.rgb565 (libere sur Core 0 des StreamBlank)
     SRV->>SRV: Verrouille N dans seen_history.json + lance preparation Standby N+1
-    C1->>C1: Defilement synopsis localise 60 FPS & mini-jaquette (5-12 s)
+    C1->>C1: Defilement synopsis localise 60 FPS & mini-jaquette (5-12 s) -> StreamBlank
 
-    Note over C1,UDP: 4. PHASE 2 — FLUX WS DMDZ A CREDITS (DEFAUT), REPLI HTTP OU UDP PASSIF DMDF
-    alt Mode Principal MQTT+TCP (Modeles 1 & 2A — WS DMDZ a credits + Repli HTTP)
-        C0->>C0: Alloc LIFO Phase 2 de frame565 (8 Ko sur ESP32_STD, PSRAM persistante sur S3)
-        C0->>SRV: GET /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={id}&credits=2 (Upgrade websocket)
-        SRV-->>C0: 101 Switching Protocols + En-tete DMDZ v1 16o (fenetre initiale 2 credits)
-        loop Sous-paquets DMDZ Sans Perte (<= 1024 o, <= 2048 o max en vol)
-            SRV-->>C0: Sous-paquet binaire WS (<= 1024 o) -> DmdzStreamDecoder sur place
-            C0->>SRV: ACK credit 1 octet 'A' (0x41) masque
-            C0->>C1: Passage frameSeq Pair/Impair + renderBlitSeq + cadencement client monotone
+    Note over C1,UDP: 4. PHASE 2 — DMDZ v2 ADAPTATIF 3 NIVEAUX (sram | psram | psram_hd) OU UDP DMDF
+    alt ESP32-S3 Pre-chargement PSRAM (profile=psram <= 1.5 Mo | profile=psram_hd <= 3.5 Mo)
+        C0->>SRV: Pendant la Fiche : GET .rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram|psram_hd
+        SRV-->>C0: Content-Length exact .dmdz2.stream sans perte en PSRAM -> 0 trafic Wi-Fi en Phase 2 !
+        C1->>C1: Lecture PSRAM DMDZ v2 a 24-30 FPS -> POST stop_stream / purge(N)
+    else esp32dev Sans PSRAM (profile=sram) ou Repli Live S3 (WS DMDZ v2)
+        C0->>SRV: WS /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={id}&v=2&credits=4&chunk=1360&profile=sram
+        SRV-->>C0: 101 Switching Protocols + [En-tete DMDZ 16o + Trame 0] fusionnes
+        loop Hybride True-RGB565 / FRAME_PAL8 (0x05) (<= 1400 o/trame, cadencement inter-chunk 2 ms)
+            SRV-->>C0: Sous-paquet binaire WS -> Anneau SPSC 8-10 Ko -> ACK credit 'A' groupe
+            C0->>C1: Decodage zero-copie sur place Core 1 ScopedCanvasGuard dans SRAM1 (20-24 FPS)
         end
-        Note over C0,SRV: Repli auto si Upgrade WS bloque -> GET .rgb565.stream?purge=true&paced=1&codec=dmdz1
+        Note over C0,SRV: Repli auto proxy -> GET .rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=sram
         SRV->>SRV: Fermeture WS / EOF -> purge_consumed_package(N) immediate sur disque
     else Modele 2B Passif (UDP-PASSIVE :4210, supports_local_card=false)
         UDP-->>C0: UDP DMDF (En-tete 10o + <= 1408 o RGB565LE) vers :4210
@@ -191,35 +195,34 @@ sequenceDiagram
 
     Note over C1,SRV: 5. DESACTIVATION / PREEMPTION (EXTINCTION QUIESCENTE < 250 ms)
     C0->>SRV: SO_LINGER {1,0} + lwip_close(sock) -> 0 TIME_WAIT & purge disque immediate de N
-    C0->>C1: Attente renderBlitSeq PAIR -> liberation LIFO de frame565 sur ESP32_STD
 ```
 
 ### Machine à États Déterministe du Récepteur ESP32
 
 ```mermaid
 stateDiagram-v2
-    state "1. BOOT & DECOUVERTE (Wi-Fi + mDNS + MQTT LwIP Brut / Hello HTTP)" as BootDiscovery
-    state "2. WARMING / ATTENTE (ready == false)" as WarmingWait
+    state "1. BOOT & DECOUVERTE (IPs Pairs + mDNS + MQTT / Repli HTTP Meme Tour)" as BootDiscovery
+    state "2. BARRIERE TOUR (800/250 ms) & WARMING (ready == false)" as WarmingWait
     state "Saut du Tour en 0 ms (Rotation Multi-Moteurs)" as SkipZeroMs
-    state "3. PHASE 1 - FICHE INFO (60 FPS Local, 0 Socket Ouverte, 0 TIME_WAIT)" as Phase1Card
-    state "4. PHASE 2 - WS DMDZ A CREDITS (8890) / REPLI HTTP OU UDP DMDF (4210)" as Phase2Stream
-    state "5. DESACTIVATION QUIESCENTE (SO_LINGER {1,0}, renderBlitSeq, LIFO free)" as QuiescentStop
+    state "3. PHASE 1 - FICHE INFO + Poster HTTP .rgb565 (+ Pre-chargement PSRAM S3)" as Phase1Card
+    state "4. PHASE 2 - DMDZ v2 3 NIVEAUX (WS sram / PSRAM) OU UDP DMDF" as Phase2Stream
+    state "5. DESACTIVATION QUIESCENTE (SO_LINGER {1,0}, purge SPSC, 0 fragmentation)" as QuiescentStop
 
     [*] --> BootDiscovery
 
     BootDiscovery --> WarmingWait : Connecte (slot en preparation)
-    BootDiscovery --> Phase1Card : Retained ready == true, start_card, SO_LINGER close MQTT (Modele 1 / 2A)
+    BootDiscovery --> Phase1Card : ready == true (MQTT ou HTTP /next), start_card, poster .rgb565
     BootDiscovery --> Phase2Stream : Premiere trame UDP DMDF recue (Modele 2B)
 
-    WarmingWait --> SkipZeroMs : m_skipTurnImmediately (ArcadeMatrix > 1 moteur)
+    WarmingWait --> SkipZeroMs : turn_evaluated && m_skipTurnImmediately (ArcadeMatrix > 1 moteur)
     WarmingWait --> Phase1Card : ready == true / commande play_card
     WarmingWait --> Phase2Stream : Demarrage flux UDP DMDF (Modele 2B)
 
-    Phase1Card --> Phase2Stream : Fin synopsis, ouverture WS /ws/{id}.dmdz?purge=true&credits=2
+    Phase1Card --> Phase2Stream : StreamBlank libere poster -> lecture PSRAM .dmdz2 OU WS ?v=2&profile=sram
     Phase1Card --> Phase1Card : commande pause / resume
     Phase1Card --> WarmingWait : commande skip
 
-    Phase2Stream --> WarmingWait : WS CLOSE / totalFrames atteint, LIFO free frame565 (Modeles 1 & 2A)
+    Phase2Stream --> WarmingWait : EOF du flux / totalFrames atteint (Modeles 1 & 2A)
     Phase2Stream --> WarmingWait : Inactivite socket > 3500 ms OU silence UDP > 2500 ms
     Phase2Stream --> WarmingWait : Duree > maxStreamCeilingMs (Plafond de securite)
     Phase2Stream --> Phase1Card : Oeuvre N+1 deja prete
@@ -232,32 +235,31 @@ stateDiagram-v2
 
 ### Analyse Détaillée des 5 États & Garanties de Résilience
 
-1. **`BOOT & DÉCOUVERTE mDNS / MQTT BRUT ZÉRO-HEAP`** :
+1. **`BOOT, IPs PAIRS CANDIDATES & RÉCUPÉRATION UNIFIÉE MQTT / HTTP MÊME TOUR`** :
    - Dès la mise sous tension, Core 1 affiche une animation procédurale pixel-art à 60 FPS sans attendre la connexion Wi-Fi.
-   - Core 0 résout `dmdmediashowcase.local` par mDNS (`224.0.0.251:5353`) et ouvre la session MQTT `:1883` sur un `lwip_socket` brut (`RawMqttSocket`, zéro allocation heap `PubSubClient` / `WiFiClientRxBuffer`) avec un **Last Will and Testament (`LWT`)** `{"online": false}` sur `dmd_showcase/clients/{dmd_id}/status`.
-2. **`WARMING / ATTENTE DE CONTENU` (`ready: false`)** :
-   - **Récepteurs Dédiés / Passifs (Modèles 2A & 2B)** : Maintiennent leur animation 60 FPS fluide pendant que le serveur télécharge et transcode la première œuvre (`pkg_<domain>_<12hex>`).
-   - **DMD Multi-Moteurs (`ArcadeMatrix` — Modèle 1)** : Si `m_rotationSlotCount > 1` et que le topic retenu publie `{"ready": false}`, `MediaShowcaseBase` positionne `m_skipTurnImmediately = true` (`isFinished() == true` en **`0 ms`**). L'afficheur enchaîne immédiatement sur l'horloge ou la météo sans **aucun écran noir** pendant que le serveur prépare l'œuvre en arrière-plan.
-3. **`PHASE 1 — CLAIM MQTT BRUT, ZÉRO TIME_WAIT & PIPELINING N+1`** :
-   - Dès que l'œuvre `N` (`pkg_<domain>_<12hex>`) est réclamée via `start_card`, Core 0 **envoie immédiatement `DISCONNECT` et ferme la socket MQTT avec `SO_LINGER {1, 0}`**, laissant **`0` socket ouverte et `0` PCB `TIME_WAIT`** pendant les `5–12 s` du défilement local à 60 FPS (avant même que `m_frame565` ne soit alloué sur `ESP32_STD`).
-   - Côté serveur, `start_card` verrouille l'œuvre `N` dans `./data/seen_history.json` (sauf si `mark_seen: false` via `FrontendSync`), bascule le topic retenu `ready` à `{"ready": false}` et déclenche **instantanément la préparation en tâche de fond du slot `N+1`**.
-4. **`PHASE 2 — FLUX WEBSOCKET DMDZ ACQUITTÉ PAR CRÉDITS (DÉFAUT), REPLI HTTP OU UDP PASSIF DMDF`** :
-   - **Modèles 1 & 2A (`MQTT+TCP` par défaut)** : Core 0 alloue `m_frame565` en portée LIFO stricte sur `ESP32_STD` (ou réutilise la PSRAM persistante sur `ESP32-S3`) et bascule un `lwip_socket` (`TCP_NODELAY`, `SO_RCVTIMEO` de `250 ms`) sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`credits=8` avec PSRAM). Le serveur transmet l'en-tête `DMDZ` v1 de 16 octets suivi de **sous-paquets binaires `<= 1 024 o`** bornés par la fenêtre de crédits (`<= 2 048 o` max en vol sur `ESP32_STD`), attendant l'acquittement client de 1 octet `'A'` (`0x41`) au fur et à mesure du décodage sur place dans `m_frame565` et du cadencement monotone sur Core 0. Si la mise à niveau WebSocket est bloquée, Core 0 bascule automatiquement sur `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1` (tandis qu'`ArcadeMatrix_RPi` conserve le préchargement `DMDS` brut non-cadencé via `?purge=true`). Un **watchdog d'inactivité socket de `3 500 ms`** protège chaque lecture, et à la fermeture du flux, le bloc `finally` du serveur purge immédiatement le dossier disque de `N`.
-   - **Modèle 2B (`UDP-PASSIVE :4210`, `supports_local_card: false`)** : `FfmpegUdpClockStreamer` cadence les tranches UDP `DMDF` (`<= 1408 o`) vers `:4210`, protégées par un **watchdog local d'inactivité UDP de `2 500 ms`** (`millis() - lastUdpPacketMs > 2500`) et un plafond de durée maximale.
+   - Core 0 (`ShowcaseWkr`, alloué en priorité task-first) résout `dmdmediashowcase.local` ou utilise les IPs candidates pairs du WebUI (indispensables sous ponts NAT Docker Desktop / Rancher Desktop) et ouvre la session MQTT `:1883` (`RawMqttSocket` avec `LWT` `{"online": false}`). Si MQTT `:1883` échoue ou expire, Core 0 exécute de façon transparente `POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next` **au sein du même tour**.
+2. **`BARRIÈRE TURN_EVALUATED (800 ms / 250 ms) & WARMING` (`ready: false`)** :
+   - Les messages retenus sont lus par un **parseur JSON filtré en flux sans aucune limite de taille** (`0` rejet de synopsis localisé long).
+   - **DMD Multi-Moteurs (`ArcadeMatrix` — Modèle 1)** : Dès que `turn_evaluated` s'achève (`<= 800 ms` à froid / `<= 250 ms` à chaud) avec `ready: false`, `MediaShowcaseBase` active `m_skipTurnImmediately = true` (`isFinished() == true` en **`0 ms`**, zéro écran noir).
+3. **`PHASE 1 — CLAIM, POSTER BINAIRE HTTP .rgb565 & PIPELINING N+1`** :
+   - Le claim de l'œuvre `N` (`pkg_<domain>_<12hex>`) via `start_card` ferme immédiatement MQTT avec `SO_LINGER {1, 0}`, télécharge le poster binaire `GET /api/v1/{domain}/poster/{item_id}.rgb565` sur Core 0 (libéré dès `StreamBlank`) et déclenche la **préparation en arrière-plan du slot `N+1`** (incluant `.dmdz.stream`, `.dmdz2.stream` et `.dmdz2.sram.stream`). Sur `ESP32-S3`, Core 0 pré-charge déjà `.dmdz2.stream` non cadencé en PSRAM Octale pendant le défilement de la Fiche !
+4. **`PHASE 2 — STREAMING ADAPTATIF DMDZ v2 À 3 NIVEAUX OU UDP PASSIF DMDF`** :
+   - **`profile=sram` (`esp32dev` 0 PSRAM)** : Bascule sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram`. Le serveur transmet **`[en-tête DMDZ 16 o + Trame 0]` fusionnés** puis les trames hybrides True-RGB565 / `FRAME_PAL8` (`0x05`) `<= 1 400 o` (cadencées de `2 ms` inter-chunk) vers l'anneau SPSC `8–10 Ko` (`>= 20 Ko` DRAM libre pour `esp_wifi`/`lwIP`), décodées zéro-copie sur place sur Core 1 (`ScopedCanvasGuard`, `20–24 FPS`).
+   - **`profile=psram` / `profile=psram_hd` (`ESP32-S3`)** : Lecture directe depuis la PSRAM à `24–30 FPS` avec **`0` trafic Wi-Fi**, ou flux live `WS ?v=2&credits=12..16&chunk=1400&profile=psram|psram_hd` (anneau PSRAM `256 Ko` / `768 Ko`), avec repli proxy automatique vers `?purge=true&paced=1&codec=dmdz2`.
+   - **Modèle 2B (`UDP-PASSIVE :4210`)** : `FfmpegUdpClockStreamer` cadence les tranches UDP `DMDF` (`<= 1408 o`) vers `:4210` (watchdog UDP de `2 500 ms`).
 5. **`DÉSACTIVATION, PRÉEMPTION WEBUI_SYNC & REPRISE APRÈS REBOOT`** :
-   - **Désactivation Propre & Quiescente (`< 250 ms`)** : Le passage de `m_wantActive = false` réveille `SO_RCVTIMEO` en `<= 250 ms`, ferme la socket avec `SO_LINGER {1, 0}` (`0` PCB `TIME_WAIT`, déclenchant la purge disque immédiate côté serveur), attend que la barrière Dekker `m_renderBlitSeq` de Core 1 soit `PAIR`, libère `m_frame565` en LIFO sur `ESP32_STD`, puis joint la tâche Core 0 (`stopWorkerTaskBounded()` sans allocation dynamique), y compris lors d'une préemption `WEBUI_SYNC`.
-   - **Reboot Brutal de l'ESP32** : Le `RST`/timeout TCP `:8890` ou le `LWT` MQTT (`{"online": false}`) libère immédiatement tout flux serveur actif tout en conservant le slot `N+1` préparé en tâche de fond.
+   - **Désactivation Propre & Quiescente (`< 250 ms`)** : `m_wantActive = false` réveille `SO_RCVTIMEO` en `<= 250 ms`, ferme la socket avec `SO_LINGER {1, 0}` (`0` PCB `TIME_WAIT`, purge disque immédiate de `N`), draine proprement `ScopedCanvasGuard` / l'anneau SPSC et joint `ShowcaseWkr` (`0` fragmentation heap), y compris lors d'une préemption `WEBUI_SYNC`.
 
 ---
 
 ## 4. Implémentations C++ ESP32 de Référence (`MQTT+TCP` par défaut & UDP Passif `DMDF`)
 
-### A. Modèles 1 & 2A — Session MQTT Brute Zéro-Heap + Streamer WebSocket `DMDZ` v1 à Crédits (`MQTT+TCP` par défaut)
+### A. Modèles 1 & 2A — Session MQTT Brute Autonome + Streamer WebSocket `DMDZ` v2 (`FRAME_PAL8` `0x05`) Adaptatif
 
-Cette implémentation C++17 illustre le patron exact zéro-heap **`MQTT LwIP brut (:1883) + WebSocket DMDZ v1 sans perte acquitté par crédits (:8890) + Repli HTTP cadencé`** déployé en production sur [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp) pour le **Modèle 1** (`config_source: "client"`) et le **Modèle 2A** (`config_source: "server"`, `supports_local_card: true`) :
+Cette référence C++17 autonome illustre le protocole filaire zéro-heap **`MQTT LwIP brut (:1883) + WebSocket DMDZ v2 adaptatif 3 niveaux (:8890, profile=sram | psram | psram_hd) + Repli HTTP cadencé dmdz2`** pour récepteurs **Modèle 1** et **Modèle 2A** personnalisés (pour l'architecture multi-moteurs complète `ScopedCanvasGuard` zéro-copie + anneau SPSC + pré-chargement PSRAM, voir [`ArcadeMatrix`](https://github.com/red77290/ArcadeMatrix/blob/main/src/engines/MediaShowcaseEngines.cpp)) :
 
-1. **Claim MQTT LwIP Brut Zéro-Heap (`0` Socket & `0` `TIME_WAIT` Pendant la Fiche)** : Core 0 se connecte directement à `:1883` via `lwip_socket` (évitant les 4 Ko de heap de `PubSubClient` et `WiFiClientRxBuffer`), publie `config` (Modèle 1) ou `hello` (`supports_local_card: true`, Modèle 2A), extrait la fiche `ready` retenue (`pkg_<domain>_<12hex>`), publie `{"action":"start_card","item_id":"pkg_..."}`, puis ferme avec **`SO_LINGER {1, 0}`**.
-2. **`g_frame565` LIFO Phase 2 + WebSocket `WS /ws/{item_id}.dmdz` à Crédits (`?credits=2` / `8`) + Repli HTTP** : Une fois le défilement local 60 FPS terminé, `StepCFrameBufferGuard` alloue `g_frame565` (`8 Ko` SRAM interne sur `ESP32_STD` ou PSRAM persistante sur `ESP32-S3`), bascule sur `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (avec repli automatique vers `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`), décode les sous-paquets `DMDZ` v1 `<= 1 024 o` sur place en renvoyant l'acquittement masqué `'A'` de 7 octets, et synchronise sans déchirement avec Core 1 (`canvas_single`) via **`g_frameSeq` Pair/Impair + `g_consumedFrameSeq` + `g_renderBlitSeq`**.
+1. **Claim MQTT LwIP Brut Zéro-Heap (`0` Socket & `0` `TIME_WAIT` Pendant la Fiche)** : Core 0 se connecte à `:1883` via `lwip_socket`, publie `config` (Modèle 1) ou `hello` (`supports_local_card: true`, Modèle 2A), extrait la fiche `ready` retenue (`pkg_<domain>_<12hex>`), publie `start_card` et ferme avec **`SO_LINGER {1, 0}`**.
+2. **Décodeur Adaptatif `DMDZ` v2 + `FRAME_PAL8` (`0x05`) & WebSocket Fusionné à Crédits** : Se connecte à `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` sur `esp32dev` (ou `credits=12..16&chunk=1400&profile=psram|psram_hd` sur `ESP32-S3`, avec repli automatique vers `GET .rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=...`), reçoit `[en-tête 16 o + Trame 0]` fusionnés, décode sur place les opcodes True-RGB565 `v1`/`v2` ainsi que les trames **`FRAME_PAL8` (`0x05`)**, et renvoie les ACKs `'A'`.
 
 ```cpp
 #include <Arduino.h>
@@ -451,44 +453,78 @@ bool claimReadyCardZeroHeapMqtt(const char* host, const char* dmdId, const char*
 }
 
 // -----------------------------------------------------------------------------------------
-// STEP 2 (CORE 0): ZERO-HEAP LOSSLESS `DMDZ` v1 DECODER + RFC 6455 CREDIT-ACKED WEBSOCKET
+// STEP 2 (CORE 0): ZERO-HEAP `DMDZ` v1/v2 + `FRAME_PAL8` (0x05) DECODER & CREDIT-ACKED WS
 // -----------------------------------------------------------------------------------------
 struct DmdzStreamDecoder {
     uint16_t cache[64]{};
+    uint16_t pal[128]{};
     uint32_t numPx = 0, pos = 0;
     uint16_t w = 0, h = 0, rem = 0, last = 0;
-    uint8_t  litRem = 0, lo = 0, state = 0;
-    bool     err = false;
+    uint8_t  ver = 2, litRem = 0, lo = 0, b0 = 0, palCount = 0, palLoaded = 0, state = 0;
+    int8_t   sdx = 0;
+    bool     palHasScroll = false, err = false;
 
     static inline uint8_t hashPx(uint16_t p) {
         return static_cast<uint8_t>(((((p >> 11) & 0x1FU) * 3U) + (((p >> 5) & 0x3FU) * 5U) + ((p & 0x1FU) * 7U)) & 63U);
     }
-    void init(uint16_t width, uint16_t height) {
-        w = width; h = height; numPx = static_cast<uint32_t>(w) * h; err = (numPx == 0U);
+    static inline uint16_t addRgb(uint16_t base, int dr, int dg, int db) {
+        const uint16_t r  = static_cast<uint16_t>((static_cast<int>((base >> 11) & 0x1FU) + dr) & 0x1F);
+        const uint16_t g  = static_cast<uint16_t>((static_cast<int>((base >> 5)  & 0x3FU) + dg) & 0x3F);
+        const uint16_t bl = static_cast<uint16_t>((static_cast<int>( base        & 0x1FU) + db) & 0x1F);
+        return static_cast<uint16_t>((r << 11) | (g << 5) | bl);
+    }
+    bool applyScroll2d(uint16_t* fb, int dx, int dy) {
+        const uint16_t ay = static_cast<uint16_t>(dy >= 0 ? dy : -dy);
+        const uint16_t ax = static_cast<uint16_t>(dx >= 0 ? dx : -dx);
+        if (ay >= h || ax >= w) { err = true; return false; }
+        if (dy > 0) memmove(fb, fb + static_cast<size_t>(ay) * w, static_cast<size_t>(h - ay) * w * 2U);
+        else if (dy < 0) memmove(fb + static_cast<size_t>(ay) * w, fb, static_cast<size_t>(h - ay) * w * 2U);
+        if (dx != 0) {
+            for (uint16_t y = 0; y < h; ++y) {
+                uint16_t* row = fb + static_cast<size_t>(y) * w;
+                if (dx > 0) memmove(row, row + ax, static_cast<size_t>(w - ax) * 2U);
+                else memmove(row + ax, row, static_cast<size_t>(w - ax) * 2U);
+            }
+        }
+        return true;
+    }
+    void init(uint16_t width, uint16_t height, uint8_t version = 2) {
+        w = width; h = height; ver = version; numPx = static_cast<uint32_t>(w) * h; err = (numPx == 0U);
     }
     bool beginFrame(uint16_t payloadLen) {
         if (numPx == 0U || payloadLen == 0U) { err = true; return false; }
         memset(cache, 0, sizeof(cache));
-        pos = 0; rem = payloadLen; last = 0; litRem = 0; state = 0; err = false;
+        pos = 0; rem = payloadLen; last = 0; litRem = 0; palCount = 0; palLoaded = 0; state = 0; err = false;
         return true;
     }
     bool feed(const uint8_t* src, size_t len, uint16_t* fb) {
+        static const int8_t kTdiff[8][3] = {
+            {-1, -2, -1}, {-1, -1, -1}, {0, -1, 0}, {0, 1, 0},
+            {1, 1, 1}, {1, 2, 1}, {0, -2, 0}, {0, 2, 0}
+        };
         if (err || !fb || len > rem) { err = true; return false; }
         for (size_t i = 0; i < len; ++i) {
             const uint8_t b = src[i];
             --rem;
-            if (state == 0) { // FrameType: 0=delta, 1=vertical scroll + delta, 2=keyframe
+            if (state == 0) { // FrameType: 0=delta, 1=scroll_dy, 2=key, 3=scroll_2d, 4=raw, 5=pal8
                 if (b == 0U || b == 2U) state = 2;
                 else if (b == 1U) state = 1;
+                else if (b == 3U && ver >= 2U) state = 7;
+                else if (b == 4U && ver >= 2U && rem == numPx * 2U) state = 9;
+                else if (b == 5U && ver >= 2U) state = 14;
                 else { err = true; return false; }
-            } else if (state == 1) { // ScrollDy (in-place memmove)
-                const int dy = static_cast<int>(static_cast<int8_t>(b));
-                const uint16_t s = static_cast<uint16_t>(dy >= 0 ? dy : -dy);
-                if (s >= h) { err = true; return false; }
-                if (dy > 0) memmove(fb, fb + static_cast<size_t>(s) * w, static_cast<size_t>(h - s) * w * 2U);
-                else if (dy < 0) memmove(fb + static_cast<size_t>(s) * w, fb, static_cast<size_t>(h - s) * w * 2U);
+            } else if (state == 1) {
+                if (!applyScroll2d(fb, 0, static_cast<int8_t>(b))) return false;
                 state = 2;
-            } else if (state == 2) { // Op byte
+            } else if (state == 7) { sdx = static_cast<int8_t>(b); state = 8; }
+            else if (state == 8) {
+                if (!applyScroll2d(fb, sdx, static_cast<int8_t>(b))) return false;
+                state = 2;
+            } else if (state == 9) { lo = b; state = 10; }
+            else if (state == 10) {
+                fb[pos++] = static_cast<uint16_t>(lo | (static_cast<uint16_t>(b) << 8));
+                state = (pos == numPx) ? 2 : 9;
+            } else if (state == 2) { // True-RGB565 v1/v2 opcode stream
                 if (b < 0x40U) { // SKIP (n + 1)
                     const uint32_t n = static_cast<uint32_t>(b) + 1U;
                     if (pos + n > numPx) { err = true; return false; }
@@ -500,20 +536,23 @@ struct DmdzStreamDecoder {
                 } else if (b < 0xC0U) { // INDEX[64]
                     if (pos >= numPx) { err = true; return false; }
                     last = cache[b & 0x3FU]; fb[pos++] = last;
-                } else if (b < 0xE0U) { // DIFF (dr, dg, db in {-1, 0, +1})
+                } else if (b <= 0xDAU) { // DIFF
                     const uint8_t x = static_cast<uint8_t>(b & 0x1FU);
-                    if (x > 26U || pos >= numPx) { err = true; return false; }
-                    const uint16_t r  = static_cast<uint16_t>((static_cast<int>((last >> 11) & 0x1FU) + static_cast<int>(x / 9U) - 1) & 0x1F);
-                    const uint16_t g  = static_cast<uint16_t>((static_cast<int>((last >> 5) & 0x3FU) + static_cast<int>((x / 3U) % 3U) - 1) & 0x3F);
-                    const uint16_t bl = static_cast<uint16_t>((static_cast<int>(last & 0x1FU) + static_cast<int>(x % 3U) - 1) & 0x1F);
-                    last = static_cast<uint16_t>((r << 11) | (g << 5) | bl);
+                    if (pos >= numPx) { err = true; return false; }
+                    last = addRgb(last, static_cast<int>(x / 9U) - 1, static_cast<int>((x / 3U) % 3U) - 1, static_cast<int>(x % 3U) - 1);
                     fb[pos++] = last; cache[hashPx(last)] = last;
-                } else if (b < 0xF0U) { // LIT (n + 1) raw <H pixels
+                } else if (b >= 0xDCU && b <= 0xDFU && ver >= 2U) { b0 = b; state = 11; } // OP_LUMA / OP_TLUMA
+                else if (b >= 0xE0U && b <= 0xEFU) { // LIT (n + 1)
                     litRem = static_cast<uint8_t>((b & 0x0FU) + 1U);
                     if (pos + litRem > numPx) { err = true; return false; }
                     state = 3;
-                } else if (b == 0xF0U) { // LONG SKIP (<H count)
-                    state = 5;
+                } else if (b == 0xF0U) { state = 5; } // LONG_SKIP
+                else if (b >= 0xF1U && b <= 0xF4U && ver >= 2U) { b0 = b; state = 11; }
+                else if ((b == 0xF6U || b == 0xF7U) && ver >= 2U) { b0 = b; state = 12; } // OP_LZ
+                else if (b >= 0xF8U && ver >= 2U && pos < numPx) { // OP_TDIFF
+                    const int8_t* v = kTdiff[b & 0x07U];
+                    last = addRgb(fb[pos], v[0], v[1], v[2]);
+                    fb[pos++] = last; cache[hashPx(last)] = last;
                 } else { err = true; return false; }
             } else if (state == 3) { lo = b; state = 4; }
             else if (state == 4) {
@@ -521,18 +560,65 @@ struct DmdzStreamDecoder {
                 fb[pos++] = last; cache[hashPx(last)] = last;
                 state = (--litRem > 0U) ? 3 : 2;
             } else if (state == 5) { lo = b; state = 6; }
-            else {
+            else if (state == 6) {
                 const uint32_t n = static_cast<uint32_t>(lo) | (static_cast<uint32_t>(b) << 8);
                 if (n == 0U || pos + n > numPx) { err = true; return false; }
                 pos += n; last = fb[pos - 1U]; cache[hashPx(last)] = last; state = 2;
+            } else if (state == 11) {
+                const bool isT = (b0 >= 0xF1U);
+                const int dg = static_cast<int>((((isT ? (b0 - 0xF1U) : (b0 & 0x03U)) << 2) | (b >> 6))) - 8;
+                const int dgrb = dg >> 1;
+                if (pos >= numPx) { err = true; return false; }
+                last = addRgb(isT ? fb[pos] : last, dgrb + static_cast<int>((b >> 3) & 0x07U) - 4, dg, dgrb + static_cast<int>(b & 0x07U) - 4);
+                fb[pos++] = last; cache[hashPx(last)] = last; state = 2;
+            } else if (state == 12) { lo = b; state = 13; }
+            else if (state == 13) {
+                const uint32_t p17 = (static_cast<uint32_t>(b0 & 1U) << 16) | lo | (static_cast<uint32_t>(b) << 8);
+                const uint32_t cnt = ((p17 >> 11) & 0x3FU) + 3U, dist = (p17 & 0x7FFU) + 1U;
+                if (dist > pos || pos + cnt > numPx) { err = true; return false; }
+                const uint32_t sIdx = pos - dist;
+                for (uint32_t k = 0; k < cnt; ++k) fb[pos++] = fb[sIdx + k];
+                last = fb[pos - 1U]; cache[hashPx(last)] = last; state = 2;
+            } else if (state == 14) { // FRAME_PAL8 (0x05): pal_hdr
+                palHasScroll = (b & 0x80U) != 0U;
+                palCount = static_cast<uint8_t>((b & 0x7FU) + 1U);
+                palLoaded = 0;
+                state = palHasScroll ? 15 : 17;
+            } else if (state == 15) { sdx = static_cast<int8_t>(b); state = 16; }
+            else if (state == 16) {
+                if (!applyScroll2d(fb, sdx, static_cast<int8_t>(b))) return false;
+                state = 17;
+            } else if (state == 17) { lo = b; state = 18; }
+            else if (state == 18) {
+                pal[palLoaded++] = static_cast<uint16_t>(lo | (static_cast<uint16_t>(b) << 8));
+                if (palLoaded == palCount) { last = pal[0]; state = 19; }
+                else state = 17;
+            } else if (state == 19) { // FRAME_PAL8 op stream
+                if (b < 0x80U) { // PAL_INDEX
+                    if (b >= palCount || pos >= numPx) { err = true; return false; }
+                    last = pal[b]; fb[pos++] = last;
+                } else if (b < 0xC0U) { // PAL_SKIP (1..64)
+                    const uint32_t n = static_cast<uint32_t>(b & 0x3FU) + 1U;
+                    if (pos + n > numPx) { err = true; return false; }
+                    pos += n; last = fb[pos - 1U];
+                } else if (b < 0xFFU) { // PAL_RUN (2..64)
+                    const uint32_t n = static_cast<uint32_t>(b - 0xC0U) + 2U;
+                    if (pos + n > numPx) { err = true; return false; }
+                    for (uint32_t k = 0; k < n; ++k) fb[pos++] = last;
+                } else { state = 20; } // PAL_LONG_SKIP (<H)
+            } else if (state == 20) { lo = b; state = 21; }
+            else {
+                const uint32_t n = static_cast<uint32_t>(lo) | (static_cast<uint32_t>(b) << 8);
+                if (n == 0U || pos + n > numPx) { err = true; return false; }
+                pos += n; last = fb[pos - 1U]; state = 19;
             }
         }
         return true;
     }
-    bool finishFrame() const { return !err && rem == 0U && state == 2U && pos == numPx; }
+    bool finishFrame() const { return !err && rem == 0U && (state == 2U || state == 19U) && pos == numPx; }
 };
 
-// RFC 6455 masked 1-byte 'A' (0x41) credit ACK frame returned to Showcase after each <= 1024 B WS message
+// RFC 6455 masked 1-byte 'A' (0x41) credit ACK frame returned to Showcase per drained WS message
 static const uint8_t kWsMaskedCreditAck[7] = {0x82U, 0x81U, 0x37U, 0xFAU, 0x21U, 0x3DU, static_cast<uint8_t>(0x41U ^ 0x37U)};
 
 struct SimpleWsBinaryDemuxer {
@@ -629,17 +715,20 @@ static int connectAndUpgradeOrFallback(
         return -1;
     }
 
-    const unsigned credits = g_hasPsram ? 8U : 2U;
+    const bool isHd = g_hasPsram && (static_cast<uint32_t>(PANEL_W) * PANEL_H > 8192U);
+    const char* profile = !g_hasPsram ? "sram" : (isHd ? "psram_hd" : "psram");
+    const unsigned credits = !g_hasPsram ? 4U : (isHd ? 16U : 12U);
+    const unsigned chunk = !g_hasPsram ? 1360U : 1400U;
     const int reqLen = tryWebSocket
         ? snprintf(reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
-            "GET /api/v1/%s/ws/%s.dmdz?purge=true&client_id=%s&credits=%u HTTP/1.1\r\n"
+            "GET /api/v1/%s/ws/%s.dmdz?purge=true&client_id=%s&v=2&credits=%u&chunk=%u&profile=%s HTTP/1.1\r\n"
             "Host: %s:%u\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-            domain, itemId, dmdId, credits, host, port)
+            domain, itemId, dmdId, credits, chunk, profile, host, port)
         : snprintf(reinterpret_cast<char*>(g_ioScratch), sizeof(g_ioScratch),
-            "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&paced=1&codec=dmdz1 HTTP/1.1\r\n"
+            "GET /api/v1/%s/stream/%s.rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=%s HTTP/1.1\r\n"
             "Host: %s:%u\r\nConnection: close\r\n\r\n",
-            domain, itemId, host, port);
+            domain, itemId, profile, host, port);
     if (!sendAllBounded(sock, g_ioScratch, static_cast<size_t>(reqLen))) {
         closeSocketZeroTimeWait(sock);
         return -1;
@@ -689,7 +778,7 @@ bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, c
     }
 
     SimpleWsBinaryDemuxer wsDemux{};
-    uint8_t appBuf[1024]{};
+    uint8_t appBuf[1408]{};
     size_t  appAvail = 0, appOff = 0;
     size_t  rawLeft = rxUsed - bodyOff, rawOff = bodyOff;
 
@@ -707,7 +796,7 @@ bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, c
             }
             if (rawLeft == 0U) {
                 if (isWs && wsDemux.closed) return 0;
-                const int r = lwip_recv(sock, g_ioScratch, 1024U, 0);
+                const int r = lwip_recv(sock, g_ioScratch, 1408U, 0);
                 if (r > 0) { rawLeft = static_cast<size_t>(r); rawOff = 0; lastProgressMs = millis(); }
                 else if (r == 0) return 0;
                 else {
@@ -724,7 +813,7 @@ bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, c
                 size_t consumed = 0; uint8_t credits = 0;
                 appAvail = wsDemux.decode(g_ioScratch + rawOff, rawLeft, consumed, appBuf, sizeof(appBuf), credits);
                 appOff = 0; rawOff += consumed; rawLeft -= consumed;
-                // Return 1-byte 'A' credit ACK per drained WS message (<= 2,048 B max in flight!)
+                // Return 1-byte 'A' credit ACK per drained WS message
                 for (uint8_t c = 0; c < credits; ++c) {
                     if (!sendAllBounded(sock, kWsMaskedCreditAck, sizeof(kWsMaskedCreditAck))) return -1;
                 }
@@ -739,10 +828,10 @@ bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, c
         return (got == want) ? static_cast<int>(got) : -1;
     };
 
-    // Parse 16-byte Little-Endian <4sBBHHHHH> DMDZ v1 (or legacy DMDS) container header
+    // Parse 16-byte Little-Endian <4sBBHHHHH> DMDZ v1/v2 (or legacy DMDS) container header
     uint8_t hdr[16]{};
     if (pullStreamBytes(hdr, 16U) != 16) { closeSocketZeroTimeWait(sock); return false; }
-    const bool isDmdz = (memcmp(hdr, "DMDZ", 4) == 0 && hdr[4] == 1U);
+    const bool isDmdz = (memcmp(hdr, "DMDZ", 4) == 0 && (hdr[4] == 1U || hdr[4] == 2U));
     const bool isDmds = (!isDmdz && memcmp(hdr, "DMDS", 4) == 0);
     const uint8_t  fps         = (hdr[5] > 0U) ? hdr[5] : 15U;
     const uint16_t w           = static_cast<uint16_t>(hdr[6]  | (hdr[7]  << 8));
@@ -755,7 +844,7 @@ bool streamShowcasePhase2(const char* host, uint16_t port, const char* domain, c
     }
 
     DmdzStreamDecoder dmdzDec{};
-    dmdzDec.init(w, h);
+    dmdzDec.init(w, h, hdr[4]);
     const uint32_t periodMs = (frameDurMs > 0U) ? frameDurMs : (1000U / fps);
     uint32_t nextPresentMs = millis();
 
@@ -1472,7 +1561,7 @@ Sur une borne d'arcade ou un PC de salon exécutant **Batocera**, **RetroBat**, 
    - `FrontendSync` (sur `ArcadeMatrix` ESP32 comme sur `ArcadeMatrix_RPi`) appelle `POST /api/v1/clients/{dmd_id}/queue/async` avec `mode: "play_now"` et **`mark_seen: false`**, recevant `202 Accepted` en `< 3 ms` pendant que `DomainSourceChainService` résout les alias ROM d'arcade (ex. `sf2x` sur `cps2`) et transcode en arrière-plan.
    - **Pourquoi `mark_seen: false` est indispensable** : Lancer 20 fois votre jeu Neo-Geo, CPS-2 ou Mega Drive favori **ne pollue jamais `./data/seen_history.json`**, préservant intacte la découverte Consume-Once en mode attract !
 2. **Transport du Flux En Jeu (`DmdzStreamClient`, `purge=false`) & Sortie du Jeu** :
-   - Sur `ArcadeMatrix` ESP32, `FrontendSyncEngine` réutilise exactement les mêmes primitives zéro-heap `net::DmdzStreamClient` et `net::RawMqttSocket` que les moteurs Showcase autonomes : dès que `/queue` passe à `ready`, il lit `WS /api/v1/games/ws/{item_id}.dmdz?purge=false&client_id={sync_id}` (`credits=2` sur `ESP32_STD`, `&credits=8` sur `ESP32-S3` PSRAM, avec repli automatique HTTP `?purge=false&paced=1&codec=dmdz1`), en conservant `purge=false` pour les modes de cycle `once` / `loop` / `alternating` avant de nettoyer l'entrée via `DELETE /api/v1/clients/{sync_id}/queue/{queue_id}` sans `TIME_WAIT` (`SO_LINGER {1, 0}`).
+   - Sur `ArcadeMatrix` ESP32, `FrontendSyncEngine` réutilise exactement les mêmes primitives 3 niveaux `net::DmdzStreamClient` et `net::RawMqttSocket` que les moteurs Showcase autonomes : dès que `/queue` passe à `ready`, il lit `WS /api/v1/games/ws/{item_id}.dmdz?purge=false&client_id={sync_id}&v=2&credits=4&chunk=1360&profile=sram` sur `esp32dev` (ou pré-chargement PSRAM `.dmdz2.stream` / `&v=2&credits=12..16&chunk=1400&profile=psram|psram_hd` sur `ESP32-S3`, avec repli automatique HTTP `?purge=false&paced=1&codec=dmdz2`), en conservant `purge=false` pour les modes de cycle `once` / `loop` / `alternating` avant de nettoyer l'entrée via `DELETE /api/v1/clients/{sync_id}/queue/{queue_id}` sans `TIME_WAIT` (`SO_LINGER {1, 0}`).
    - Sur les récepteurs passifs (`Modèle 2B`), au retour sur le menu ou en veille, `FrontendSync` envoie `{"action": "skip"}` sur `/api/v1/clients/{dmd_id}/control` pour reprendre immédiatement la rotation Showcase `N+1` pré-chauffée.
 
 ```bash

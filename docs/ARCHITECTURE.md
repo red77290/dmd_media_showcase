@@ -13,7 +13,7 @@ The server enforces a strict **Hexagonal (Ports & Adapters) and Domain-Driven De
 
 - **Domain Layer (`app/domain/`)**: 100% pure Python (zero FastAPI, HTTPX, Pillow, OpenCV, or Infrastructure imports). Houses immutable Entities & Value Objects (`entities.py`, `board_identity.py`, `style_specs.py`, `on_demand_cache_key.py`), generic reusable Domain Aggregates (`app/domain/aggregates/`), the modular multilingual Taxonomy subpackage (`app/domain/taxonomy/` with `66` canonical retro/arcade systems across `55+` platforms), and Hexagonal Port interfaces (`app/domain/ports/`).
 - **Application Layer (`app/application/`)**: Depends strictly on `app/domain/` and Port interfaces. Decomposed into single-responsibility Application Services — including the configurable Chain-of-Responsibility + Strategy router (`DomainSourceChainService`) and Cross-Source Composite Enricher (`CandidateAggregator`) — coordinated by a lightweight `ConsumeOnceOrchestrator` facade (`<= 550` lines) and wired lazily at runtime through the Composition Root (`app/container.py`).
-- **Infrastructure, Security & Scheduler Layers (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Concrete Inbound Adapters (`6` cohesive FastAPI routers under `app/infrastructure/http/routers/` — including credit-acknowledged WebSocket `DMDZ` & HTTP `DMDS` streaming in `consume_once.py` — externalized ES-module WebUI under `app/infrastructure/web/static/`, and `ShowcaseMqttGateway`), Outbound Adapters (`11` domain scraper adapters & per-source referential strategies, modular HUB75 card/panorama/video/`DMDZ` rendering pipeline including `dmdz_codec.py`, JSON & mtime-preserving `on_demand_cache_store.py` repositories, `DmdConverterAdapter`, and `FfmpegUdpClockStreamer`), and Security Services (`vault.py` 3-tier native C `_prod_vault` loader and `log_redactor.py` `SecretRedactingLogFilter`).
+- **Infrastructure, Security & Scheduler Layers (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Concrete Inbound Adapters (`6` cohesive FastAPI routers under `app/infrastructure/http/routers/` — including 3-tier adaptive `profile=sram|psram|psram_hd` credit-acknowledged WebSocket `DMDZ` & HTTP `DMDZ`/`DMDS` streaming in `consume_once.py` — externalized ES-module WebUI under `app/infrastructure/web/static/`, and `ShowcaseMqttGateway`), Outbound Adapters (`11` domain scraper adapters & per-source referential strategies, modular HUB75 card/panorama/video/`DMDZ` rendering pipeline including `dmdz_codec.py`, `dmdz_pal8.py`, and `dmdz_motion.py`, JSON & mtime-preserving `on_demand_cache_store.py` repositories, `DmdConverterAdapter`, and `FfmpegUdpClockStreamer`), and Security Services (`vault.py` 3-tier native C `_prod_vault` loader and `log_redactor.py` `SecretRedactingLogFilter`).
 
 ```mermaid
 flowchart TD
@@ -127,14 +127,15 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
 
 ---
 
-## 4. Real-Time `MQTT + TCP` (Credit-Acked WebSocket `DMDZ` & HTTP `DMDS`) Primary Pipeline, `N+1` Pipelining & Passive UDP `DMDF`
+## 4. Real-Time `MQTT + TCP` 3-Tier Adaptive Streaming (`profile=sram | psram | psram_hd`), `DMDZ` v2 + `FRAME_PAL8` (`0x05`), `N+1` Pipelining & Passive UDP `DMDF`
 
 `ShowcaseRuntimeState.client_transports` tracks four deterministic client transport profiles surfaced live in `ClientRegistryService` and the Admin UI:
-- **`MQTT+TCP` (Default & Recommended — Model 1 `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi` & Model 2A Hybrid `supports_local_card: true`)**: Pairs the **MQTT (`:1883`) Control Plane** (`config`, `ready`, `start_card` with `retain=True` + `LWT`, compact collision-free `pkg_<domain>_<12hex>` `item_id`s `<= 24` chars) with an additive multi-tier TCP (`:8890`) data plane tailored to each client class (and eliminating Docker Desktop / Rancher Desktop VM UDP NAT return-pinhole drops):
-  1. **Constrained MCU Primary (`ESP32_STD` 0 PSRAM & `ESP32-S3` PSRAM) — Credit-Acked Lossless `DMDZ` v1 WebSocket**: Connects first to `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2` (`ws_per_message_deflate=False` in `main.py`, `<= 1,024 B` RFC 6455 binary sub-packets, `2`-credit sliding window = `<= 2,048 B` max in flight, 1-byte `'A'` client ACK per WS message). `dmdz_codec.py` shrinks trailer videos `2.4–6x` and panoramas `23–64x` with zero visual loss, `101 Switching Protocols` disables HTTP response buffering across reverse/VM proxies (`gvproxy`, Nginx), and capping in-flight bytes at `<= 2,048 B` keeps 100% of RX traffic inside pre-allocated static Wi-Fi buffers (`0` dynamic heap allocations, `0` LwIP `pcb->ooseq` out-of-order reassembly exhaustion, and clean `SO_LINGER {1, 0}` socket teardown).
-  2. **Paced HTTP TCP Fallback (`?purge=true&paced=1&codec=dmdz1` or raw `DMDS`)**: `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream` (`X-DMD-Paced: 1`, `X-DMD-Codec: dmdz1`, `<= 1,024 B` sub-packet slices, monotonic clock re-anchoring without catch-up bursts — plus optional `drop_late=1` / `X-DMD-Drop-Late: 1` wall-clock frame seek for chunk-decoding clients) used automatically when a reverse proxy blocks WebSocket `101 Switching Protocols`.
-  3. **High-RAM Linux Preload (`ArcadeMatrix_RPi`)**: Unpaced raw `DMDS` HTTP download (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true`) preloaded directly into RAM (`0` codec or pacing overhead).
-- **`HTTP`**: Stateless HTTP Consume-Once polling (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`) streaming over the same additive `:8890` data plane (credit-acked `WS /api/v1/{domain}/ws/{item_id}.dmdz`, paced HTTP `DMDZ`/`DMDS` fallback, or unpaced `DMDS` preload).
+- **`MQTT+TCP` (Default & Recommended — Model 1 `ArcadeMatrix` ESP32 / ESP32-S3 / `ArcadeMatrix_RPi` & Model 2A Hybrid `supports_local_card: true`)**: Pairs the **MQTT (`:1883`) Control Plane** (`config`, `ready`, `start_card` with `retain=True` + `LWT`, compact collision-free `pkg_<domain>_<12hex>` `item_id`s `<= 24` chars, and automatic same-turn HTTP `/config + /next` fallback) with a 3-tier TCP (`:8890`) data plane (`profile=sram | psram | psram_hd`):
+  1. **Tier 1 — `profile=sram` (`esp32dev`, `0 KB` PSRAM)**: Connects to `WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&v=2&credits=4&chunk=1360&profile=sram` (`ws_per_message_deflate=False`). Serves `.dmdz2.sram.stream` combining `stabilize_rgb565_frames_sram()` temporal H.264 mosquito-noise stabilization with hybrid True-RGB565 `DMDZ` v2 (`<= 1,400 B`) and **`FRAME_PAL8` (`0x05`)** (`dmdz_pal8.py`, `1..128` scene RGB565 colors + optional 2D scroll + `PAL_INDEX`/`PAL_SKIP`/`PAL_RUN`/`PAL_LONG_SKIP`), guaranteeing **every frame `<= 1,400 B`** (`0` reference drift). The WebSocket route coalesces the `16 B` `DMDZ` header with Frame `0` into the initial message window and paces multi-chunk splits by `2 ms` (`20–24 FPS` into an `8–10 KB` lock-free SPSC ring).
+  2. **Tier 2 — `profile=psram` (`ESP32-S3 <= 128x64`, Octal PSRAM)**: Preloads unpaced True-RGB565 `.dmdz2.stream` up to `1.5 MB` directly into PSRAM during the Phase 1 Card intro via `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=false&paced=0&codec=dmdz2&profile=psram` (`X-DMD-Codec: dmdz2`, `X-DMD-Profile: psram` -> `0` Wi-Fi traffic during playback at `25–30 FPS`), with live fallback to `WS ?v=2&credits=12&chunk=1400&profile=psram` (`256 KB` PSRAM SPSC ring).
+  3. **Tier 3 — `profile=psram_hd` (`ESP32-S3 256x64+`, Octal PSRAM)**: Preloads up to `3.5 MB` of unpaced True-RGB565 `.dmdz2.stream` into PSRAM (`?purge=false&paced=0&codec=dmdz2&profile=psram_hd`) or streams live via `WS ?v=2&credits=16&chunk=1400&profile=psram_hd` (`768 KB` PSRAM SPSC ring, `24–30 FPS` HD).
+  4. **Paced HTTP TCP Fallback & High-RAM Linux Preload (`ArcadeMatrix_RPi`)**: `GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz2&profile=sram` provides automatic proxy-resilient paced HTTP fallback, while `ArcadeMatrix_RPi` preloads unpaced raw `DMDS` (`?purge=false|true`, no `codec`) directly into RAM.
+- **`HTTP`**: Stateless HTTP Consume-Once polling (`POST /api/v1/{domain}/config` + `GET /api/v1/{domain}/next`) streaming over the same 3-tier `:8890` data plane.
 - **`UDP-PASSIVE` (Model 2B — `supports_local_card: false`)**: Ultra-minimal ~180-line passive UDP `:4210` `DMDF` `<4sHBBH` framebuffer receiver where the server composites even Phase 1 Info Cards directly into the RGB565 stream (`render_card_in_stream=True`).
 - **`MQTT+UDP` (Optional Legacy `mqtt_udp`)**: Explicit `start_stream` event triggering `FfmpegUdpClockStreamer` `DMDF` `<4sHBBH` UDP chunks to `{udp_ip}:{udp_port}`.
 
@@ -142,7 +143,7 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
 
 ```mermaid
 sequenceDiagram
-    participant DMD as DMD Client (ESP32 / RPi)
+    participant DMD as DMD Client (ESP32 / ESP32-S3 / RPi)
     participant MQTT as Showcase MQTT (:1883)
     participant HTTP as FastAPI consume_once (:8890)
     participant ORCH as ConsumeOnceOrchestrator
@@ -151,27 +152,25 @@ sequenceDiagram
 
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/config (retain=True, client_ip, domains)
     MQTT->>ORCH: handle_mqtt_client_config() -> client_transports = "MQTT+TCP"
-    ORCH->>PREP: ensure_slot_prepared() (prepares Unseen Item N: pkg_{domain}_{12hex})
+    ORCH->>PREP: ensure_slot_prepared() (prepares Unseen Item N + .dmdz/.dmdz2/.dmdz2.sram siblings)
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, card, source_used)
     MQTT->>DMD: Deliver Retained Ready Card (Item N)
 
-    Note over DMD: Rotation turn starts -> Phase 1: Info Card (Poster + Scrolling Synopsis)
+    Note over DMD: Rotation turn starts -> Phase 1: Info Card + HTTP .rgb565 Poster (or PSRAM dmdz2 Preload)
     DMD->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/events {"action":"start_card", "item_id": N}
-    Note over DMD: ESP32 closes MQTT TCP socket (0 sockets open during Card dwell!)
     MQTT->>ORCH: claim_next_package(N) -> DualSlotPipeline.claim_ready() + mark_consumed(N)
     ORCH->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=False)
     ORCH->>PREP: Background N+1 Pipelining: immediately prepare Standby Item N+1!
 
-    alt Primary MQTT+TCP Mode (Models 1 & 2A — Default)
-        Note over DMD: Info Card finishes -> Credit-Acked WS DMDZ (ESP32) or HTTP .rgb565.stream (Fallback / RPi Preload)
-        DMD->>HTTP: WS /api/v1/{domain}/ws/{N}.dmdz?purge=true&client_id={dmd_id}&credits=2 (or GET .rgb565.stream)
-        HTTP-->>DMD: 101 Switching Protocols + 16B DMDZ Header (2-credit window, <= 2048 B in flight)
-        loop Lossless DMDZ Frames (<= 1024 B Sub-Packets @ 15-25 FPS)
-            HTTP-->>DMD: Binary WS Sub-Packet (<= 1024 B) -> in-place DmdzStreamDecoder -> m_frame565
-            DMD-->>HTTP: 1-Byte Credit ACK ('A')
+    alt Primary MQTT+TCP Mode (Models 1 & 2A — 3-Tier Adaptive)
+        Note over DMD: PSRAM Bulk Preload (?paced=0&codec=dmdz2) OR Credit-Acked WS DMDZ v2 (?v=2&profile=sram|psram)
+        DMD->>HTTP: WS /api/v1/{domain}/ws/{N}.dmdz?v=2&credits=4&chunk=1360&profile=sram (or GET .rgb565.stream)
+        HTTP-->>DMD: 101 Switching Protocols + Coalesced [16B DMDZ Header + Frame 0]
+        loop Adaptive DMDZ v2 Frames (<= 1400 B PAL8/True565 on sram @ 20-24 FPS; 24-30 FPS on psram/psram_hd)
+            HTTP-->>DMD: Binary WS Sub-Packet (<= 1360..1400 B) -> SPSC Ring -> Core 1 In-Place DmdzStreamDecoder
+            DMD-->>HTTP: Coalesced Credit ACK ('A' / 'AA...')
         end
-        Note over DMD,HTTP: Tail ACK drain + ESP32 SO_LINGER {1, 0} close
-        HTTP->>PREP: Stream EOF -> purge_consumed_package(N) (immediate disk cleanup)
+        HTTP->>PREP: Stream EOF / stop_stream -> purge_consumed_package(N)
     else Passive Mode 2B (UDP-PASSIVE :4210) or Optional Legacy MQTT+UDP (start_stream)
         ORCH->>FFMPEG: Start monotonic DMDF real-time transmitter thread
         loop Every Frame (15-25 FPS)
@@ -182,28 +181,28 @@ sequenceDiagram
     PREP->>MQTT: PUBLISH dmd_showcase/clients/{dmd_id}/{domain}/ready (retain=True, ready=True, Item N+1)
 ```
 
-### Binary `DMDZ` v1 Lossless Stream Header & Frame Ops (16 Bytes, Little-Endian `<4sBBHHHHH` — Primary Constrained-MCU Codec)
+### Binary `DMDZ` (`v1` `dmdz1` & `v2` `dmdz2`) Container & `FRAME_PAL8` (`0x05`) Hybrid Codec (16-Byte Header `<4sBBHHHHH`)
 
-Encoded on demand into `.dmdz.stream` siblings by `app/infrastructure/rendering/dmdz_codec.py` and served over **`WS /api/v1/{domain}/ws/{item_id}.dmdz?purge=true&client_id={dmd_id}&credits=2`** (`ws_per_message_deflate=False`, `<= 1,024 B` sub-packets, `2`-credit window) as well as the paced HTTP fallback **`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1&codec=dmdz1`** (`X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, `X-DMD-Codec: dmdz1`):
+Pre-encoded into `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2` lossless True-RGB565 for `psram` / `psram_hd`), and `.dmdz2.sram.stream` (`v2` `profile=sram` capped `<= 1,400 B/frame`) by `dmdz_codec.py` + `dmdz_pal8.py`:
 
 | Offset | Type | Field | Description |
 | :--- | :--- | :--- | :--- |
 | `0..3` | `char[4]` | `magic` | `"DMDZ"` (`0x44 0x4D 0x44 0x5A`) |
-| `4` | `uint8` | `version` | Lossless codec version (`1`, codec ID `"dmdz1"`) |
-| `5` | `uint8` | `fps` | Target playback frame rate (`8..60`) |
-| `6..7` | `uint16le` | `width` | Panel width in pixels (e.g. `128`) |
-| `8..9` | `uint16le` | `height` | Panel height in pixels (e.g. `32`) |
+| `4` | `uint8` | `version` | `DMDZ` wire version (`1` = `"dmdz1"`, `2` = `"dmdz2"`) |
+| `5` | `uint8` | `fps` | Target playback frame rate (`8..60`, e.g. `20–24` on `sram`, `24–30` on `psram`/`psram_hd`) |
+| `6..7` | `uint16le` | `width` | Panel width in pixels (`128`, `256`, etc.) |
+| `8..9` | `uint16le` | `height` | Panel height in pixels (`32`, `64`, etc.) |
 | `10..11` | `uint16le` | `total_frames` | Total encoded frames (`1..65535`) |
 | `12..13` | `uint16le` | `frame_dur_ms` | Nominal per-frame duration in ms (`round(1000 / fps)`) |
-| `14..15` | `uint16le` | `keyframe_interval` | Periodic keyframe interval (`0` = only frame `0` is a keyframe) |
-| `16..EOF` | `uint8[]` | `frames` | Per frame: `<H` `payload_len` + `type` (`0=delta`, `1=scroll(dy)` signed `int8` in-place `memmove`, `2=keyframe`) + raster opcodes covering `width * height` RGB565LE pixels |
+| `14..15` | `uint16le` | `keyframe_interval` | Periodic keyframe interval (`0` = frame `0` keyframe) |
+| `16..EOF` | `uint8[]` | `frames` | Per frame: `<H` `payload_len` + `type` (`0=delta`, `1=scroll(dy)`, `2=keyframe`, `3=scroll_2d(dx,dy)`, `4=raw`, `5=pal8`) + raster opcodes |
 
-Per-frame decoder state resets to `last = 0` and `cache[64] = 0` (`hash(p) = (r * 3 + g * 5 + b * 7) & 63` on R5/G6/B5):
-- **`SKIP` (`00nnnnnn`, `1..64` px) & `LONG_SKIP` (`0xF0` + `<H` `count`)**: Leave `count` pixels unchanged from the reference frame (`prev` or vertically scrolled `prev`), then set `last = frame[pos - 1]` and `cache[hash(last)] = last`.
-- **`RUN` (`01nnnnnn`, `1..64` px)**: Repeat `last` `n + 1` times.
-- **`INDEX[64]` (`10iiiiii`)**: Emit `last = cache[i]`.
-- **`DIFF` (`110xxxxx`, `x = (dr + 1) * 9 + (dg + 1) * 3 + (db + 1)` with `dr, dg, db` in `{-1, 0, +1}`)**: Apply per-channel RGB565 delta to `last`, emit, and store in `cache[hash(p)]`.
-- **`LIT` (`1110nnnn` + `n + 1` `<H` raw RGB565LE pixels, `1..16` px)**: Emit raw Little-Endian RGB565 pixels, updating `last` and `cache[hash(p)]` on each pixel.
+- **True-RGB565 Opcodes (`type 0..3`, `cache[64]`, `last = 0`)**: `SKIP` (`00nnnnnn`), `LONG_SKIP` (`0xF0 + <H`), `RUN` (`01nnnnnn`), `INDEX[64]` (`10iiiiii`), `DIFF` (`110xxxxx`), `LIT` (`1110nnnn`), plus `v=2` spatial `OP_LUMA` (`0xDC..0xDF`), temporal `OP_TLUMA` (`0xF1..0xF4`), backward `OP_LZ` (`0xF6..0xF7`), and 1-byte `OP_TDIFF` (`0xF8..0xFF`), bounded by `FRAME_RAW` (`0x04`).
+- **`FRAME_PAL8` (`0x05`, `v=2`, `profile=sram`)**: Triggered automatically only when a noisy video frame exceeds `1,400 B` in True-RGB565 (keeping clean panoramas 100% lossless and updating encoder `prev` to the exact reconstructed frame for `0` drift):
+  - `byte[1]`: `pal_hdr = (0x80 if has_scroll_2d else 0x00) | ((pal_count - 1) & 0x7F)` (`1..128` RGB565 scene colors)
+  - optional `bytes[2..3]` (iff `has_scroll_2d`): `<bb` `(dx, dy)` in-place 2D scroll
+  - `pal_count * 2` bytes: `<u2` RGB565 palette entries
+  - op stream (`pos = 0`, `last_color = palette[0]`): `0x00..0x7F` `PAL_INDEX`, `0x80..0xBF` `PAL_SKIP (1..64)`, `0xC0..0xFE` `PAL_RUN (2..64)`, `0xFF + <H` `PAL_LONG_SKIP`.
 
 ### Binary HTTP TCP `DMDS` Raw Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH` — RPi Preload & Raw HTTP Fallback)
 

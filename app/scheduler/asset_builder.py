@@ -44,10 +44,11 @@ def encode_dmdz_sibling_worker_task(
     raw_stream_path_str: str,
     nice_inc: int = 10,
     version: int = 1,
+    profile: str = "",
 ) -> Optional[str]:
     """Pickleable `ProcessPoolExecutor` entrypoint isolating DMDZ encoding away from `uvicorn`'s GIL."""
     _apply_worker_nice(nice_inc, 1)
-    dest = ensure_dmdz_sibling(Path(raw_stream_path_str), version=version)
+    dest = ensure_dmdz_sibling(Path(raw_stream_path_str), version=version, profile=profile)
     return str(dest) if dest is not None else None
 
 
