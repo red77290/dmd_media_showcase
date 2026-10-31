@@ -204,9 +204,9 @@ Pre-encoded into `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2` lossless True-RGB5
   - `pal_count * 2` bytes: `<u2` RGB565 palette entries
   - op stream (`pos = 0`, `last_color = palette[0]`): `0x00..0x7F` `PAL_INDEX`, `0x80..0xBF` `PAL_SKIP (1..64)`, `0xC0..0xFE` `PAL_RUN (2..64)`, `0xFF + <H` `PAL_LONG_SKIP`.
 
-### Binary HTTP TCP `DMDS` Raw Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH` — RPi Preload & Raw HTTP Fallback)
+### Binary HTTP TCP `DMDS` Raw Stream Header (16 Bytes, Little-Endian `<4sBBHHHHH` — Legacy Raw HTTP Fallback)
 
-Served unpaced (`?purge=true`) for `ArcadeMatrix_RPi` RAM preloading or paced (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, plus optional `&drop_late=1`) with response headers `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, and `X-DMD-Drop-Late: 1`:
+Served unpaced (`?purge=true`) as an automatic fallback when `codec=dmdz2` is omitted (whereas updated `ArcadeMatrix_RPi` and `ESP32-S3` clients preload compact lossless `?paced=0&codec=dmdz2&profile=psram|psram_hd`), or paced (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, plus optional `&drop_late=1`) with response headers `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1`, and `X-DMD-Drop-Late: 1`:
 
 | Offset | Type | Field | Description |
 | :--- | :--- | :--- | :--- |

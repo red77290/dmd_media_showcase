@@ -202,9 +202,9 @@ Precodificado en `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2` True-RGB565 sin p�
   - `pal_count * 2` bytes: entradas de paleta RGB565 `<u2`
   - flujo de opcodes (`pos = 0`, `last_color = palette[0]`): `0x00..0x7F` `PAL_INDEX`, `0x80..0xBF` `PAL_SKIP (1..64)`, `0xC0..0xFE` `PAL_RUN (2..64)`, `0xFF + <H` `PAL_LONG_SKIP`.
 
-### Cabecera Binaria HTTP TCP `DMDS` Pura (16 Bytes, Little-Endian `<4sBBHHHHH` — Precarga RPi y Respaldo HTTP Puro)
+### Cabecera Binaria HTTP TCP `DMDS` Pura (16 Bytes, Little-Endian `<4sBBHHHHH` — Respaldo HTTP Puro Retrocompatible)
 
-Servida sin marcapasos (`?purge=true`) para la precarga en RAM de `ArcadeMatrix_RPi` o con marcapasos (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, más `&drop_late=1` opcional) con las cabeceras `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` y `X-DMD-Drop-Late: 1`:
+Servida sin marcapasos (`?purge=true`) como respaldo automático cuando se omite `codec=dmdz2` (mientras que los clientes `ArcadeMatrix_RPi` y `ESP32-S3` precargan el flujo compacto sin pérdidas `?paced=0&codec=dmdz2&profile=psram|psram_hd`), o con marcapasos (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, más `&drop_late=1` opcional) con las cabeceras `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` y `X-DMD-Drop-Late: 1`:
 
 | Offset | Tipo | Campo | Descripción |
 | :--- | :--- | :--- | :--- |

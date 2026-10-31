@@ -204,9 +204,9 @@ Pré-encodé en `.dmdz.stream` (`v1`), `.dmdz2.stream` (`v2` True-RGB565 sans pe
   - `pal_count * 2` octets : entrées de palette RGB565 `<u2`
   - flux d'opcodes (`pos = 0`, `last_color = palette[0]`) : `0x00..0x7F` `PAL_INDEX`, `0x80..0xBF` `PAL_SKIP (1..64)`, `0xC0..0xFE` `PAL_RUN (2..64)`, `0xFF + <H` `PAL_LONG_SKIP`.
 
-### En-tête Binaire HTTP TCP `DMDS` Brut (16 Octets, Little-Endian `<4sBBHHHHH` — Pré-chargement RPi & Repli HTTP Brut)
+### En-tête Binaire HTTP TCP `DMDS` Brut (16 Octets, Little-Endian `<4sBBHHHHH` — Repli HTTP Brut Rétrocompatible)
 
-Servi sans cadencement (`?purge=true`) pour le pré-chargement RAM d'`ArcadeMatrix_RPi` ou cadencé (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, plus `&drop_late=1` optionnel) avec les en-têtes `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` et `X-DMD-Drop-Late: 1` :
+Servi sans cadencement (`?purge=true`) en repli automatique lorsque `codec=dmdz2` est omis (tandis que les clients `ArcadeMatrix_RPi` et `ESP32-S3` pré-chargent désormais le flux sans perte compact `?paced=0&codec=dmdz2&profile=psram|psram_hd`), ou cadencé (`GET /api/v1/{domain}/stream/{item_id}.rgb565.stream?purge=true&paced=1`, plus `&drop_late=1` optionnel) avec les en-têtes `X-DMD-Consume-Once: 1`, `X-DMD-Paced: 1` et `X-DMD-Drop-Late: 1` :
 
 | Offset | Type | Champ | Description |
 | :--- | :--- | :--- | :--- |
