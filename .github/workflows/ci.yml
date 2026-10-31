@@ -55,7 +55,7 @@ jobs:
         include:
           - os: windows-latest
             artifact_name: portable-windows-x64
-          - os: macos-14
+          - os: macos-15
             artifact_name: portable-macos-arm64
           - os: ubuntu-latest
             artifact_name: portable-linux-x64
