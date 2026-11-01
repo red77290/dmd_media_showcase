@@ -41,11 +41,16 @@ info:
        - `FfmpegUdpClockStreamer` strips the 16-byte `DMDS` file header (`<4sBBHHHHH`), clocks raw RGB565LE
          frames via a dedicated monotonic thread at the negotiated `video_fps`, and slices each frame into Wi-Fi MTU-safe
          UDP datagrams (`<= 1418` bytes total: **10-byte Little-Endian `<4sHBBH` `DMDF` header** + `<= 1408` bytes RGB565LE = `6` chunks per `128x32` frame).
-    4. **`N+1` Background Pipelining, On-Demand Queue & Strict Consume-Once**:
+    4. **`N+1` Background Pipelining, Ephemeral `FrontendSync` (`*_sync`), Process-Tree Abort & Strict Consume-Once**:
        - Publishing `start_card` immediately marks item `N` consumed in `seen_history.json` (unless `mark_seen: false`
          was set by `FrontendSync` on-demand playback), updates the retained `ready` topic to `{"ready": false}`,
-         and starts preparing unseen item `N+1` immediately without deferral while preserving item `N`'s `.rgb565.stream` + `.dmdz2.stream`
+         and starts preparing unseen item `N+1` immediately without deferral (except for ephemeral `{dmd_id}_sync`
+         `FrontendSync` slots, which never trigger passive `N+1` warming) while preserving item `N`'s `.rgb565.stream` + `.dmdz2.stream`
          files on disk until `stop_stream` / `DELETE` / `purge=true` completes.
+       - Ephemeral `*_sync` transcoding jobs execute in dedicated OS process groups (`1..N` tracked per `dmd_id` in
+         `DmdProcessRegistry` outside `ProcessPoolExecutor`); when a player exits or switches games, calling HTTP
+         `DELETE /api/v1/clients/{dmd_id}_sync/queue` drains pending queue entries, cancels async tasks, and kills all
+         `1..N` active `dmd_show_converter` / `ffmpeg` / `yt-dlp` worker process trees immediately without breaking background workers.
   contact:
     name: ArcadeMatrix Community
     url: https://t.me/+DrSdAO8UMUViNmE0
@@ -206,7 +211,9 @@ channels:
     description: >-
       Server-to-DMD real-time playback control and server-managed card push (`dmd_showcase/clients/{dmdId}/command`).
       Delivers `play_card`, `skip`, `pause`, `resume`, and `stop` directives triggered by the Showcase WebUI,
-      On-Demand Priority Queue (`play_now`), `FrontendSync` game launchers, or the server-managed playlist scheduler.
+      On-Demand Priority Queue (`play_now`, with optional `fallback_query`), `FrontendSync` game launchers
+      (isolated on `{dmd_id}_sync`, aborted on game exit via HTTP `DELETE /api/v1/clients/{dmd_id}_sync/queue`),
+      or the server-managed playlist scheduler.
     parameters:
       dmd_id:
         $ref: '#/components/parameters/DmdIdParam'
@@ -250,7 +257,7 @@ channels:
 components:
   parameters:
     DmdIdParam:
-      description: Unique DMD client/engine identifier (e.g. `esp32_passive_128x32`, `esp32_games_128x32`, `rpi_movies_128x32`).
+      description: Unique DMD client/engine identifier (e.g. `esp32_passive_128x32`, `esp32_games_128x32`, `rpi_movies_128x32`, or ephemeral `FrontendSync` `{dmd_id}_sync`).
       schema:
         type: string
     DomainParam:

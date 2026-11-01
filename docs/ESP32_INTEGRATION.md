@@ -1624,11 +1624,13 @@ curl -X PUT "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_128
 
 ### 5.3 Per-DMD On-Demand Priority Queue (`GET / POST / DELETE /api/v1/clients/{dmd_id}/queue`, `POST /queue/async`, `POST /api/v1/{domain}/on-demand`)
 
-Inspects (`GET` — including per-item `source_used` provenance), pushes (`POST /queue` synchronous or `POST /queue/async` non-blocking `< 3 ms` `202 Accepted`), or removes (`DELETE /api/v1/clients/{dmd_id}/queue/{queue_id}`) specific titles in a target DMD's priority queue — either by `candidate_id` returned from `/search`, or directly by `{domain, query, systems, genres, decades, lang}` (also supported on `POST /api/v1/{domain}/on-demand`):
+Inspects (`GET` — including per-item `source_used` provenance), pushes (`POST /queue` synchronous or `POST /queue/async` non-blocking `< 3 ms` `202 Accepted`), removes a single entry (`DELETE /api/v1/clients/{dmd_id}/queue/{queue_id}`), or **aborts and clears the entire client queue (`DELETE /api/v1/clients/{dmd_id}/queue`)** — either by `candidate_id` returned from `/search`, or directly by `{domain, query, fallback_query, systems, genres, decades, lang}` (also supported on `POST /api/v1/{domain}/on-demand`):
 
 - **`mode: "enqueue_next"`** *(Default)*: Transcodes the item at `HIGH_ON_DEMAND` priority and plays it cleanly as soon as the currently playing item finishes.
 - **`mode: "play_now"`**: Immediately preempts the current card/stream (`stop`/`play_card` on MQTT + kills running `ffmpeg -re` UDP stream) and broadcasts the requested title on the panel as soon as transcoding completes.
 - **`POST /api/v1/clients/{dmd_id}/queue/async`** *(Recommended for embedded firmware & `FrontendSync`)*: Registers an immediate `preparing` placeholder and schedules scraping + transcoding asynchronously in the background, returning `202 Accepted` in `< 3 ms` so client HTTP sockets never block.
+- **`fallback_query`** *(Optional human-readable title fallback)*: Secondary search query (e.g. `"Metal Slug X - Super Vehicle-001"` from EmulationStation `Game=` / `$5`) automatically tried when a cryptic MAME/FBNeo/console ROM basename in `query` (e.g. `"mslugx"`) yields zero direct scraper matches.
+- **`DELETE /api/v1/clients/{dmd_id}/queue`** *(Full Queue Clear + `1..N` OS Process-Tree Abort)*: Clears all queued/ready items for `dmd_id`, cancels any in-flight `asyncio` preparation task, and **immediately kills all `1..N` active OS worker process trees** (`dmd_show_converter` / `dmd_gif_converter`, `ffmpeg`, `yt-dlp`) registered under `dmd_id` (`os.killpg` on POSIX / `taskkill /F /T` on Windows) without poisoning `ProcessPoolExecutor` workers serving autonomous `N+1` rotation.
 - **`mark_seen: true | false`**: Controls whether playing this item records it in `./data/seen_history.json`.
 
 ```bash
@@ -1642,6 +1644,9 @@ curl -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_12
     "mode": "enqueue_next",
     "mark_seen": true
   }'
+
+# Abort all pending/running conversions (1..N OS worker process trees) & clear queue for a DMD
+curl -X DELETE "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_ABCDEF_games_128x32_sync/queue"
 ```
 
 ---
@@ -1659,34 +1664,129 @@ curl -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_12
 
 ---
 
-### 5.5 `FrontendSync` Integration (Batocera / RetroBat / LaunchBox / Playnite)
+### 5.5 `FrontendSync` Integration Protocol & Process-Tree Abort (Recalbox / Batocera / RetroPie / RetroBat / LaunchBox / Playnite)
 
-When your arcade cabinet or HTPC runs **Batocera**, **RetroBat**, **LaunchBox / BigBox**, or **Playnite**, **`FrontendSync`** turns your HUB75 DMD into a reactive marquee/topper synchronized with the game currently selected or launched by the player — while seamlessly returning to zero-repetition Showcase attract mode when idle:
+When your arcade cabinet, console, or HTPC runs **Recalbox**, **Batocera**, **RetroPie**, **RetroBat**, **LaunchBox / BigBox**, or **Playnite**, **`FrontendSync`** turns your HUB75 DMD into a reactive marquee/topper synchronized with the game currently selected or launched by the player — while seamlessly returning to zero-repetition Showcase attract mode when idle:
 
-1. **Game Selected or Launched (`POST /queue/async`, `mode: "play_now"`, `mark_seen: false`)**:
-   - `FrontendSync` (on both `ArcadeMatrix` ESP32 and `ArcadeMatrix_RPi`) sends `POST /api/v1/clients/{dmd_id}/queue/async` with `mode: "play_now"` and **`mark_seen: false`**, returning `202 Accepted` in `< 3 ms` while `DomainSourceChainService` resolves arcade shortnames (e.g. `sf2x` on `cps2`) and transcodes in the background.
-   - **Why `mark_seen: false` is essential**: Launching your favorite Neo-Geo, CPS-2, or Mega Drive game 20 times in a week **never pollutes `./data/seen_history.json`**, preserving strict Consume-Once discovery during idle attract mode!
-2. **In-Game Stream Transport (`ShowcaseStreamPlayer` + `DmdzStreamClient`, `purge=false`) & Game Exit**:
-   - On `ArcadeMatrix` ESP32, `FrontendSyncEngine` + `InGameShowcaseEngine` (`allowsOverlay() == false`) share 100% of the same `engines::showcase::ShowcaseStreamPlayer`, `net::DmdzStreamClient`, and `net::RawMqttSocket` layer as the autonomous Showcase engines (`0` duplicated streaming code and `0 B` private RGB565 buffer on unrotated `esp32dev` via Core 1 Zero-Copy `ScopedCanvasGuard`): once `/queue` reports `ready`, it downloads `GET /api/v1/games/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2` into self-cleaning `/cache/showcase_sync.dmdz` (`esp32dev` `25 MHz` SD staging opened with `O_TRUNC` + `8,448–9,216 B` SPSC ring + automatic `sd.remove` unlink on exit) or into Octal PSRAM (`ESP32-S3` `0` SD card, `<= 4 MB` preload or `1 MB` PSRAM SPSC ring for `256x64` HD) with **Late Preemption** (`waitFirstFrameBeforeLive = true`), keeping `purge=false` so `once` / `loop` / `alternating` In-Game cycle modes replay cleanly before reclaiming the queue item via zero-`TIME_WAIT` `DELETE /api/v1/clients/{sync_id}/queue/{queue_id}` (`SO_LINGER {1, 0}`).
-   - On passive receivers (`Model 2B`), when returning to the frontend menu or idle attract mode, `FrontendSync` posts `{"action": "skip"}` to `/api/v1/clients/{dmd_id}/control`, immediately resuming the pre-warmed `N+1` Showcase rotation.
+1. **Isolated `{dmd_id}_sync` Slot & Dual Lookup (`query` + `fallback_query`, `mark_seen: false`)**:
+   - `FrontendSync` (on both `ArcadeMatrix` ESP32 and `ArcadeMatrix_RPi`) targets a dedicated ephemeral sync client ID suffixed with **`_sync`** (e.g. `esp32_ABCDEF_games_128x32_sync` or `rpi_<serial>_games_128x32_sync`). On the server, `*_sync` slots are isolated from autonomous Showcase `DualSlotPipeline` rotation (`0` background `N+1` warming, hidden from persistent client lists, and ignored by autonomous rotation `/command` listeners).
+   - Sends `POST /api/v1/clients/{sync_id}/queue/async` with `query` (ROM basename, e.g. `"mslugx"`), optional `fallback_query` (human-readable frontend title from Recalbox `Game=` or Batocera `$5`, e.g. `"Metal Slug X"`), `mode: "play_now"`, and **`mark_seen: false`** (`202 Accepted` in `< 3 ms`), preserving `./data/seen_history.json` intact across repeated game launches.
+2. **In-Game Stream Transport (`ShowcaseStreamPlayer` + `DmdzStreamClient`, `purge=false`)**:
+   - On `ArcadeMatrix` ESP32, `FrontendSyncEngine` + `InGameShowcaseEngine` (`allowsOverlay() == false`) share 100% of `engines::showcase::ShowcaseStreamPlayer`, `net::DmdzStreamClient`, and `net::RawMqttSocket`: once `/queue` reports `ready` (within a `120 s` preparation budget covering cold `yt-dlp` + `ffmpeg` + `dmd_show_converter` runs), Core 0 downloads `GET /api/v1/games/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2` into self-cleaning `/cache/showcase_sync.dmdz` (`esp32dev` `25 MHz` SD staging opened with `O_TRUNC` + `8,448–9,216 B` SPSC ring + automatic `sd.remove` unlink on exit) or into Octal PSRAM (`ESP32-S3` `0` SD card, `<= 4 MB` preload or `1 MB` PSRAM SPSC ring for `256x64` HD) with **Late Preemption** (`waitFirstFrameBeforeLive = true`), keeping `purge=false` across `once` / `loop` / `alternating` In-Game cycles.
+3. **Mandatory Game-Exit & Superseding Process-Abort Protocol (`DELETE /api/v1/clients/{sync_id}/queue`)**:
+   - **Why process termination is part of the protocol**: If a player exits a game (`status: "browsing"` or `"stopped"`) or launches another game while `yt-dlp` / `ffmpeg` / `dmd_show_converter` is still transcoding, leaving orphan conversions running wastes CPU/RAM/bandwidth and stalls subsequent launches.
+   - **Server-Side `1..N` OS Process-Group Isolation**: For `*_sync` clients, the server spawns conversion jobs in isolated OS process groups (`start_new_session=True` on POSIX / `CREATE_NEW_PROCESS_GROUP` on Windows) outside `ProcessPoolExecutor`, indexing `1..N` active PIDs per `dmd_id`. Calling **`DELETE /api/v1/clients/{sync_id}/queue`** cancels queued tasks and kills **every** active child process tree (`os.killpg(pgid, SIGKILL)` / `taskkill /F /T`) for `{sync_id}` in `< 20 ms` while keeping `ProcessPoolExecutor` 100% healthy.
+   - **Client-Side Dirty-Session Guard (`remoteSyncDispatched` / `remote_sync_dirty`)**: Embedded clients arm a dirty flag strictly when `POST /queue/async` is dispatched for a `playing` event, and send `DELETE /api/v1/clients/{sync_id}/queue` (`SO_LINGER {1, 0}`) **strictly once** on game exit (`browsing`/`stopped`), superseding game launch, `120 s` timeout, or `once` cycle completion — guaranteeing **zero HTTP `DELETE` traffic** while scrolling frontend menus.
+
+```mermaid
+sequenceDiagram
+    participant CON as Console (Recalbox / Batocera / RetroPie)
+    participant MQTT as MQTT Broker (:1883 system/playing/#)
+    participant DMD as DMD Client (ESP32 Core 0 / RPi FrontendSync)
+    participant SRV as Showcase API (:8890 OnDemandQueueService)
+    participant PROC as Isolated OS Process Group (1..N dmd_show_converter / ffmpeg)
+
+    Note over CON,DMD: 1. MENU BROWSING (remoteSyncDispatched == false -> 0 HTTP DELETE!)
+    CON->>MQTT: {"status":"browsing", "game":"sf2x", "system":"cps2"}
+    MQTT->>DMD: Display cached Pixelcade marquee in 0 ms (no Showcase HTTP call)
+
+    Note over CON,PROC: 2. GAME LAUNCH -> ISOLATED *_sync SLOT & ASYNC PREPARATION
+    CON->>MQTT: {"status":"playing", "game":"mslugx", "title":"Metal Slug X", "system":"neogeo"}
+    MQTT->>DMD: Display marquee (0 ms) + arm remoteSyncDispatched = true
+    DMD->>SRV: POST /api/v1/clients/{dmd_id}_sync/queue/async (query="mslugx", fallback_query="Metal Slug X", mark_seen=false)
+    SRV-->>DMD: 202 Accepted (queue_id, status="preparing" or instant cache_hit)
+    SRV->>PROC: Spawn isolated OS process group(s) registered under {dmd_id}_sync (1..N PIDs)
+
+    alt Preparation completes within 120s while still in game
+        PROC-->>SRV: .rgb565.stream + lossless .dmdz2.stream ready
+        SRV-->>DMD: MQTT command play_card / GET /queue -> status="ready", item_id
+        DMD->>SRV: GET /api/v1/games/stream/{item_id}.rgb565.stream?purge=false&codec=dmdz2
+        Note over DMD: Late Preemption: Frame 0 ready -> play Card + Panoramas + Gameplay Video!
+    else Player exits game (browsing / stopped), launches another game, or 120s timeout expires
+        CON->>MQTT: {"status":"browsing"} OR {"status":"stopped"}
+        MQTT->>DMD: Restore menu/attract immediately + consume remoteSyncDispatched (true -> false)
+        DMD->>SRV: DELETE /api/v1/clients/{dmd_id}_sync/queue (SO_LINGER {1,0})
+        SRV->>PROC: Cancel asyncio task + kill 1..N process trees (os.killpg SIGKILL / taskkill /F /T)
+        Note over SRV,PROC: Orphan dmd_show_converter / ffmpeg / yt-dlp reaped in < 20 ms; ProcessPoolExecutor untouched!
+    end
+```
+
+#### Example A — Standalone EmulationStation Hooks (`game-start` + `game-end` Process Abort)
 
 ```bash
-# Example: Batocera EmulationStation hook (/userdata/system/configs/emulationstation/scripts/game-start/dmd_sync.sh)
+# 1) /userdata/system/configs/emulationstation/scripts/game-start/dmd_sync_start.sh
 #!/bin/sh
-SYSTEM="$1"   # e.g. "cps2", "megadrive", "neogeo", "mame"
+SYSTEM="$1"     # e.g. "cps2", "megadrive", "neogeo", "mame"
 ROM_PATH="$2"
-GAME_NAME="$3" # e.g. "sf2x" or "Streets of Rage 2"
+GAME_STEM=$(basename "$ROM_PATH" | sed 's/\.[^.]*$//') # e.g. "mslugx"
+GAME_TITLE="$3" # Human-readable EmulationStation title, e.g. "Metal Slug X"
+SYNC_ID="esp32_passive_128x32_sync"
 
-curl -fsS -m 2 -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_128x32/queue/async" \
+curl -fsS -m 2 -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/${SYNC_ID}/queue/async" \
   -H "Content-Type: application/json" \
   -d "{
     \"domain\": \"games\",
-    \"query\": \"${GAME_NAME}\",
+    \"query\": \"${GAME_STEM}\",
+    \"fallback_query\": \"${GAME_TITLE}\",
     \"systems\": [\"${SYSTEM}\"],
     \"lang\": \"fr\",
     \"mode\": \"play_now\",
     \"mark_seen\": false
   }" >/dev/null 2>&1 &
+```
+
+```bash
+# 2) /userdata/system/configs/emulationstation/scripts/game-end/dmd_sync_stop.sh
+#!/bin/sh
+SYNC_ID="esp32_passive_128x32_sync"
+
+# Immediately clear the sync queue AND kill all 1..N running dmd_show_converter / ffmpeg / yt-dlp processes!
+curl -fsS -m 2 -X DELETE "http://dmdmediashowcase.local:8890/api/v1/clients/${SYNC_ID}/queue" >/dev/null 2>&1 &
+
+# Optional on Model 2B 100% passive UDP receivers: resume autonomous N+1 attract rotation immediately
+curl -fsS -m 2 -X POST "http://dmdmediashowcase.local:8890/api/v1/clients/esp32_passive_128x32/control" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "skip"}' >/dev/null 2>&1 &
+```
+
+#### Example B — Embedded C++ ESP32 Core 0 Client Abort Helper (`SO_LINGER {1, 0}` + Dirty Guard)
+
+```cpp
+static std::atomic<bool> g_remoteSyncDispatched{false};
+
+// Invoked on Core 0 strictly when g_remoteSyncDispatched.exchange(false) == true
+// (game exit "browsing"/"stopped", superseding game launch, "once" cycle end, or 120s timeout):
+static bool abortRemoteShowcaseSyncQueue(const char* host, uint16_t port, const char* syncClientId) {
+    struct addrinfo hints{}, *res = nullptr;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    char portStr[8];
+    snprintf(portStr, sizeof(portStr), "%u", static_cast<unsigned>(port));
+    if (lwip_getaddrinfo(host, portStr, &hints, &res) != 0 || !res) return false;
+
+    int sock = lwip_socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) { lwip_freeaddrinfo(res); return false; }
+
+    struct timeval tv{2, 0};
+    lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    lwip_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    bool ok = false;
+    if (lwip_connect(sock, res->ai_addr, res->ai_addrlen) == 0) {
+        char req[256];
+        const int n = snprintf(
+            req, sizeof(req),
+            "DELETE /api/v1/clients/%s/queue HTTP/1.1\r\n"
+            "Host: %s:%u\r\n"
+            "Connection: close\r\n\r\n",
+            syncClientId, host, static_cast<unsigned>(port)
+        );
+        ok = (n > 0 && lwip_send(sock, req, static_cast<size_t>(n), 0) > 0);
+    }
+    lwip_freeaddrinfo(res);
+    closeSocketZeroTimeWait(sock); // SO_LINGER {1, 0} -> 0 TIME_WAIT PCB accumulation
+    return ok;
+}
 ```
 
 ---

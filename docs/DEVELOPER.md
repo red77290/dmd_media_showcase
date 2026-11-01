@@ -37,8 +37,9 @@ dmd_media_showcase/
 │   │   ├── concurrency.py                # DynamicConcurrencyLimiter & key locks
 │   │   ├── criteria_parser.py            # Domain criteria normalization & defaults
 │   │   ├── client_registry_service.py    # DMD registration, client_transports (MQTT+TCP default), LWT & live telemetry
+│   │   ├── sync_slot_rules.py            # Ephemeral *_sync slot isolation predicate (is_ephemeral_sync_client_id)
 │   │   ├── slot_preparation_service.py   # Compact pkg_<domain>_<12hex> IDs, Ready/Standby slots, claim & disk purge
-│   │   ├── on_demand_queue_service.py    # Priority playback queue & zero-retranscode Studio promotion
+│   │   ├── on_demand_queue_service.py    # Priority playback queue, fallback_query & full per-DMD queue/process abort
 │   │   ├── passive_director_service.py   # Server-managed Mode 2A/2B playlist loops & live controls
 │   │   ├── studio_preview_service.py     # <100ms Card preview & full DMDS sequence builder
 │   │   ├── source_chain_service.py       # Composable multi-source Chain-of-Responsibility router
@@ -74,7 +75,9 @@ dmd_media_showcase/
 │   ├── security/                         # 3-Tier Native Vault & Secret Log Redaction
 │   │   ├── vault.py                      # Runtime loader for compiled C extension _prod_vault*.so
 │   │   └── log_redactor.py               # SecretRedactingLogFilter + httpx/httpcore WARNING clamp
-│   ├── scheduler/                        # Bounded async + process/thread worker pool
+│   ├── scheduler/                        # Bounded async + process/thread worker pool & per-DMD process isolation
+│   │   ├── worker_pool.py                # ProcessPoolExecutor (N+1) + isolated OS process groups for *_sync jobs
+│   │   ├── dmd_process_registry.py       # Thread-safe 1..N OS process-group tracker & tree killer per dmd_id
 │   │   ├── executor_lifecycle.py         # Generic BoundedWorkerExecutorMixin[TJob]
 │   │   └── session_batch_manager.py      # HTTP rotation session & batch manager
 │   ├── asyncapi_spec.py                  # Loads canonical docs/asyncapi.yaml from disk
@@ -168,6 +171,10 @@ Append `"custom_retro"` to `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`
      - **`ArcadeMatrix_RPi` (Linux RAM)**: Preloads lossless `.dmdz2.stream` directly into RAM (with automatic fallback to raw `DMDS` when `codec=dmdz2` is omitted).
      - Preserve `shutil.copy2` mtime copying in `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) across `.rgb565.stream` and `.dmdz2.stream` siblings so `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) never re-encodes on cache checkouts.
    - Keep `item_id` formatted as `pkg_<domain>_<12hex>` (`<= 24` chars) across `SlotPreparationService`, `OnDemandQueueService`, and `StudioPreviewService` so embedded clients never allocate heap buffers, and preserve `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` default, `HTTP`, `UDP-PASSIVE` for Mode 2B `:4210`, and optional `MQTT+UDP`).
+9. **Ephemeral `*_sync` Slot Isolation & `1..N` Per-DMD Conversion Process-Tree Abort (`DmdProcessRegistry`)**:
+   - Ephemeral `FrontendSync` client IDs (`is_ephemeral_sync_client_id(dmd_id)` in `app/application/sync_slot_rules.py`, i.e., `*_sync`) must never trigger passive `DualSlotPipeline` `N+1` rotation warming or pollute persistent client profiles.
+   - `WorkerPool.run_transcode(..., dmd_id=...)` executes `*_sync` jobs in dedicated OS process groups (`start_new_session=True` on POSIX, `CREATE_NEW_PROCESS_GROUP` on Windows) outside the shared `ProcessPoolExecutor` and registers every active child PID (`1..N` concurrent workers per `dmd_id` tolerated safely) in `DmdProcessRegistry` (`app/scheduler/dmd_process_registry.py`).
+   - `DELETE /api/v1/clients/{dmd_id}/queue` (`OnDemandQueueService.cancel_all_for_client()`) must atomically drain pending `PriorityPlaybackQueue` entries, cancel in-flight async tasks, and invoke `dmd_process_registry.kill_all_for_dmd(dmd_id)` (`SIGTERM -> SIGKILL` process-group / `taskkill /T /F`) so exiting a game aborts all `1..N` `dmd_show_converter` / `ffmpeg` / `yt-dlp` subtrees immediately without raising `BrokenProcessPool` on background rotation workers.
 
 ---
 

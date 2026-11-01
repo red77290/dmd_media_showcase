@@ -37,8 +37,9 @@ dmd_media_showcase/
 │   │   ├── concurrency.py                # DynamicConcurrencyLimiter & verrous par clé
 │   │   ├── criteria_parser.py            # Normalisation des critères de filtrage par domaine
 │   │   ├── client_registry_service.py    # Enregistrement DMD, client_transports (MQTT+TCP par défaut), LWT & télémétrie
+│   │   ├── sync_slot_rules.py            # Prédicat d'isolation des slots éphémères *_sync (is_ephemeral_sync_client_id)
 │   │   ├── slot_preparation_service.py   # IDs compacts pkg_<domain>_<12hex>, slots Ready/Standby, claim & purge disque
-│   │   ├── on_demand_queue_service.py    # File prioritaire On-Demand & promotion Studio zéro-retranscodage
+│   │   ├── on_demand_queue_service.py    # File prioritaire On-Demand, fallback_query & purge/arrêt processus par DMD
 │   │   ├── passive_director_service.py   # Boucles playlists serveur Modes 2A/2B & contrôles temps réel
 │   │   ├── studio_preview_service.py     # Aperçu fiche <100ms & séquence complète DMDS
 │   │   ├── source_chain_service.py       # Chaîne de responsabilité multi-sources configurable
@@ -74,7 +75,9 @@ dmd_media_showcase/
 │   ├── security/                         # Coffre-fort natif 3 niveaux & caviardage des logs
 │   │   ├── vault.py                      # Chargeur runtime de l'extension native C _prod_vault*.so
 │   │   └── log_redactor.py               # SecretRedactingLogFilter + bridage httpx/httpcore à WARNING
-│   ├── scheduler/                        # Pool borné de workers async + process/thread
+│   ├── scheduler/                        # Pool borné de workers async + process/thread & isolation par DMD
+│   │   ├── worker_pool.py                # ProcessPoolExecutor (N+1) + groupes processus OS isolés pour *_sync
+│   │   ├── dmd_process_registry.py       # Registre thread-safe & tueur d'arbres processus OS 1..N par dmd_id
 │   │   ├── executor_lifecycle.py         # BoundedWorkerExecutorMixin[TJob] générique
 │   │   └── session_batch_manager.py      # Gestionnaire de sessions & batchs HTTP
 │   ├── asyncapi_spec.py                  # Charge docs/asyncapi.yaml directement depuis le disque
@@ -168,6 +171,10 @@ Ajoutez `"custom_retro"` dans `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources
      - **`ArcadeMatrix_RPi` (RAM Linux)** : Pré-charge `.dmdz2.stream` sans perte directement en RAM (avec repli automatique vers `DMDS` brut lorsque `codec=dmdz2` est omis).
      - Conserver la copie `shutil.copy2` préservant les `st_mtime` dans `FileOnDemandCacheStore` (`app/infrastructure/persistence/on_demand_cache_store.py`) pour les fichiers frères `.rgb565.stream` et `.dmdz2.stream` afin que `ensure_dmdz_sibling()` (`dest.stat().st_mtime >= raw.stat().st_mtime`) ne ré-encode jamais lors d'un hit de cache.
    - Maintenir le format `pkg_<domain>_<12hex>` (`<= 24` caractères) pour `item_id` dans `SlotPreparationService`, `OnDemandQueueService` et `StudioPreviewService` (zéro allocation heap côté ESP32), et préserver les profils `ShowcaseRuntimeState.client_transports` (`MQTT+TCP` par défaut, `HTTP`, `UDP-PASSIVE` pour le Mode 2B `:4210`, et `MQTT+UDP` optionnel).
+9. **Isolation des Slots Éphémères `*_sync` & Arrêt d'Arbres de Processus OS `1..N` par DMD (`DmdProcessRegistry`)** :
+   - Les identifiants éphémères `FrontendSync` (`is_ephemeral_sync_client_id(dmd_id)` dans `app/application/sync_slot_rules.py`, c.-à-d. `*_sync`) ne doivent jamais déclencher de pré-chauffage `DualSlotPipeline` `N+1` passif ni polluer les profils clients persistants.
+   - `WorkerPool.run_transcode(..., dmd_id=...)` exécute les conversions `*_sync` dans des groupes de processus OS dédiés (`start_new_session=True` sous POSIX, `CREATE_NEW_PROCESS_GROUP` sous Windows) hors du `ProcessPoolExecutor` partagé et enregistre chaque PID actif (`1..N` processus concurrents tolérés par `dmd_id`) dans `DmdProcessRegistry` (`app/scheduler/dmd_process_registry.py`).
+   - `DELETE /api/v1/clients/{dmd_id}/queue` (`OnDemandQueueService.cancel_all_for_client()`) doit purger atomiquement les entrées en attente de `PriorityPlaybackQueue`, annuler les tâches asynchrones en vol et invoquer `dmd_process_registry.kill_all_for_dmd(dmd_id)` (`SIGTERM -> SIGKILL` du groupe de processus / `taskkill /T /F`) afin que quitter un jeu interrompe immédiatement les `1..N` sous-arbres `dmd_show_converter` / `ffmpeg` / `yt-dlp` sans provoquer de `BrokenProcessPool` sur les rotations en arrière-plan.
 
 ---
 

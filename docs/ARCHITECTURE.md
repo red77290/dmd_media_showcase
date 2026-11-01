@@ -13,26 +13,26 @@ The server enforces a strict **Hexagonal (Ports & Adapters) and Domain-Driven De
 
 - **Domain Layer (`app/domain/`)**: 100% pure Python (zero FastAPI, HTTPX, Pillow, OpenCV, or Infrastructure imports). Houses immutable Entities & Value Objects (`entities.py`, `board_identity.py`, `style_specs.py`, `on_demand_cache_key.py`), generic reusable Domain Aggregates (`app/domain/aggregates/`), the modular multilingual Taxonomy subpackage (`app/domain/taxonomy/` with `66` canonical retro/arcade systems across `55+` platforms), and Hexagonal Port interfaces (`app/domain/ports/`).
 - **Application Layer (`app/application/`)**: Depends strictly on `app/domain/` and Port interfaces. Decomposed into single-responsibility Application Services — including the configurable Chain-of-Responsibility + Strategy router (`DomainSourceChainService`) and Cross-Source Composite Enricher (`CandidateAggregator`) — coordinated by a lightweight `ConsumeOnceOrchestrator` facade (`<= 550` lines) and wired lazily at runtime through the Composition Root (`app/container.py`).
-- **Infrastructure, Security & Scheduler Layers (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Concrete Inbound Adapters (`6` cohesive FastAPI routers under `app/infrastructure/http/routers/` — including lossless HTTP `1.1` `Content-Length` `DMDZ` v2 / `DMDS` streaming & `DELETE` cleanup in `consume_once.py` — externalized ES-module WebUI under `app/infrastructure/web/static/`, and `ShowcaseMqttGateway`), Outbound Adapters (`11` domain scraper adapters & per-source referential strategies, modular HUB75 card/panorama/video/`DMDZ` rendering pipeline including `dmdz_codec.py` and `dmdz_motion.py`, JSON & mtime-preserving `on_demand_cache_store.py` repositories, `DmdConverterAdapter`, and `FfmpegUdpClockStreamer`), and Security Services (`vault.py` 3-tier native C `_prod_vault` loader and `log_redactor.py` `SecretRedactingLogFilter`).
+- **Infrastructure, Security & Scheduler Layers (`app/infrastructure/`, `app/security/`, `app/scheduler/`)**: Concrete Inbound Adapters (`6` cohesive FastAPI routers under `app/infrastructure/http/routers/` — including lossless HTTP `1.1` `Content-Length` `DMDZ` v2 / `DMDS` streaming & `DELETE` cleanup in `consume_once.py`, plus full per-DMD queue + process-tree abort `DELETE /api/v1/clients/{dmd_id}/queue` in `clients_and_queue.py` — externalized ES-module WebUI under `app/infrastructure/web/static/`, and `ShowcaseMqttGateway`), Outbound Adapters (`11` domain scraper adapters & per-source referential strategies, modular HUB75 card/panorama/video/`DMDZ` rendering pipeline including `dmdz_codec.py` and `dmdz_motion.py`, JSON & mtime-preserving `on_demand_cache_store.py` repositories, `DmdConverterAdapter`, and `FfmpegUdpClockStreamer`), Scheduler & Process Isolation (`worker_pool.py` + `dmd_process_registry.py` isolating `*_sync` conversions in OS process groups `1..N` per `dmd_id` outside `ProcessPoolExecutor`), and Security Services (`vault.py` 3-tier native C `_prod_vault` loader and `log_redactor.py` `SecretRedactingLogFilter`).
 
 ```mermaid
 flowchart TD
     subgraph DMD["DMD Clients & Browsers"]
         BROWSER["Control Center Browser\n(HTML5 + CSS + 15+ ES Modules)"]
-        ENG["DMD Engine (ESP32 / ESP32-S3 / RPi)\nCard -> Panoramas -> Video"]
+        ENG["DMD Engine (ESP32 / ESP32-S3 / RPi)\nCard -> Panoramas -> Video + FrontendSync *_sync"]
     end
 
     subgraph INFRA_IN["Inbound Adapters (app/infrastructure/http & mqtt & web)"]
-        ROUTERS["6 FastAPI Routers (:8890)\nsystem_admin, discovery, clients_and_queue,\nstudio, consume_once, rotation_batch"]
+        ROUTERS["6 FastAPI Routers (:8890)\nsystem_admin, discovery, clients_and_queue (DELETE /queue),\nstudio, consume_once, rotation_batch"]
         STATIC["Static Web Assets (/static/*)\nindex.html, css/*.css, js/**/*.js"]
         MQTT["ShowcaseMqttGateway & EmbeddedMqttBroker (:1883)\nRetain=True + LWT"]
     end
 
     subgraph APP["Application Services (app/application/)"]
         ORCH["ConsumeOnceOrchestrator (Facade)"]
-        REG_SVC["ClientRegistryService\n(MQTT+TCP / HTTP / UDP-PASSIVE / MQTT+UDP\n& Live Source Telemetry)"]
+        REG_SVC["ClientRegistryService\n(MQTT+TCP / HTTP / UDP-PASSIVE / MQTT+UDP\n& *_sync Ephemeral Slot Isolation)"]
         PREP_SVC["SlotPreparationService\n(Compact pkg_{domain}_{12hex} IDs)"]
-        QUEUE_SVC["OnDemandQueueService"]
+        QUEUE_SVC["OnDemandQueueService\n(fallback_query + Full Queue & Process Abort)"]
         DIR_SVC["PassivePlaylistDirectorService"]
         STUDIO_SVC["StudioPreviewService"]
         CHAIN["DomainSourceChainService\n(Composable Multi-Source Chain)"]
@@ -46,9 +46,10 @@ flowchart TD
         PORTS["Hexagonal Ports (app/domain/ports/):\nIScraperSource, IScraperRegistryPort, IScraperReferentialStrategy,\nISeenHistoryRepository, IDmdProfileRepository, IMqttControlGateway,\nICardPreviewRenderer, IMediaTranscoderPort, IFrameStreamerPort"]
     end
 
-    subgraph INFRA_OUT["Outbound Adapters & Security (app/infrastructure/ & app/security/)"]
+    subgraph INFRA_OUT["Outbound Adapters, Scheduler & Security (app/infrastructure/, app/scheduler/ & app/security/)"]
         SCRAPERS["11 Scraper Adapters + Referentials\ngames(4): igdb, screenscraper, arcadeitalia, libretro_wikidata\nmovies(2), series(3), anime(2)"]
         RENDER["Modular Rendering Engine (rendering/)\ncard_geometry, card_layout_engine, dmdz_codec,\npanorama_and_static (YOKO/TATE), video_pipeline"]
+        SCHED["WorkerPool & DmdProcessRegistry (scheduler/)\nProcessPoolExecutor (N+1) + Isolated 1..N OS Process Groups (*_sync)"]
         PERSIST["Persistence & 3-Tier Security\nserver_config (source_policies), dmd_profiles, on_demand_cache_store,\nseen_history, _prod_vault, SecretRedactingLogFilter"]
         UDP["FfmpegUdpClockStreamer\n(Mode 2B Passive :4210 & Optional MQTT+UDP DMDF)"]
     end
@@ -64,7 +65,7 @@ flowchart TD
     CHAIN --> AGG_SVC
     REG_SVC & PREP_SVC & QUEUE_SVC & DIR_SVC & STUDIO_SVC --> AGG & VO & PORTS
     CHAIN & AGG_SVC --> TAX & AGG & PORTS
-    PORTS -.->|"Wired via app/container.py"| SCRAPERS & RENDER & PERSIST & UDP
+    PORTS -.->|"Wired via app/container.py"| SCRAPERS & RENDER & SCHED & PERSIST & UDP
     UDP -.->|"UDP DMDF (:4210 Passive / Optional MQTT+UDP)"| ENG
 ```
 
@@ -85,6 +86,8 @@ A core design goal of the architecture is **genericity and reusability** across 
 | `SynonymCatalogResolver` | `app/domain/taxonomy/resolver.py` | Slug-indexed multilingual synonym & substring resolver reusable on any canonical catalog dictionary (`systems`, `games`, `movies`, `series`, `anime`). |
 | `PortProviderRegistry` | `app/domain/ports/default_ports.py` | Lightweight lazy DI registry decoupling Domain/Application services from concrete Infrastructure singletons (`app/container.py`). |
 | `BoundedWorkerExecutorMixin[TJob]` | `app/scheduler/executor_lifecycle.py` | Event-loop-resilient `ProcessPoolExecutor` / `ThreadPoolExecutor` pool controller with live worker scaling (`reconfigure_workers()`). |
+| `DmdProcessRegistry` | `app/scheduler/dmd_process_registry.py` | Thread-safe per-`dmd_id` OS process-group registry tracking `1..N` active child PIDs (`start_new_session` / `CREATE_NEW_PROCESS_GROUP`) so `DELETE /api/v1/clients/{dmd_id}/queue` kills entire `dmd_show_converter` / `ffmpeg` / `yt-dlp` process trees on game exit without poisoning `ProcessPoolExecutor`. |
+| `is_ephemeral_sync_client_id` | `app/application/sync_slot_rules.py` | Pure predicate isolating `*_sync` (`FrontendSync`) client IDs from passive `DualSlotPipeline` `N+1` warming and persistent client lists. |
 | `SecretRedactingLogFilter` | `app/security/log_redactor.py` | Logging filter scrubbing query-string, JSON, and Bearer credentials across `LogRecord.msg` and `httpx`/`httpcore` URL arguments. |
 
 ---
@@ -139,6 +142,8 @@ Instead of static hardcoded `[Primary, Fallback]` pairs, `ScraperRegistry` (`app
 - **`MQTT+UDP` (Optional Legacy `mqtt_udp`)**: Explicit `start_stream` event triggering `FfmpegUdpClockStreamer` `DMDF` `<4sHBBH` UDP chunks to `{udp_ip}:{udp_port}`.
 
 > **Crash & Container-Restart Resilience (`RetainedClientConfigStore`):** Every Mode 1 retained `dmd_showcase/clients/{dmd_id}/config` payload published to the Embedded MQTT Broker (`:1883`) is atomically persisted to `./data/mqtt_retained_clients.json`. On server or Docker restart, `ShowcaseMqttGateway` reloads all persisted DMD rotation slots into `EmbeddedMqttBroker.retained` and triggers `N / N+1` background pre-warming immediately while keeping `online=False` until live client traffic arrives.
+>
+> **Ephemeral `FrontendSync` (`{dmd_id}_sync`) & `1..N` OS Process-Tree Abort on Game Exit:** In-game `FrontendSync` sessions isolate their queue and MQTT `command` channel on `{dmd_id}_sync` (`is_ephemeral_sync_client_id`, `mark_seen: false`, optional `fallback_query` when human title search misses) without triggering passive `N+1` rotation warming. Each `*_sync` transcode runs in its own OS process group (`start_new_session` / `CREATE_NEW_PROCESS_GROUP`) registered in `DmdProcessRegistry`; when the player exits or switches games, `DELETE /api/v1/clients/{dmd_id}_sync/queue` clears pending jobs, cancels async tasks, and kills all `1..N` active `dmd_show_converter` / `ffmpeg` / `yt-dlp` process trees immediately without poisoning `ProcessPoolExecutor` (see full sequence diagram in [`ESP32_INTEGRATION.md`](ESP32_INTEGRATION.md)).
 
 ```mermaid
 sequenceDiagram

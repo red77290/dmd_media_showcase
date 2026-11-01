@@ -968,6 +968,49 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "On-Demand & Voice Assistant"
+        ],
+        "summary": "Clear Dmd Priority Queue",
+        "description": "Idempotently clear all pending/active On-Demand queue items for `dmd_id` and immediately\nterminate any active `dmd_gif_converter` / `ffmpeg` / `yt-dlp` conversion worker processes.",
+        "operationId": "clear_dmd_priority_queue_api_v1_clients__dmd_id__queue_delete",
+        "parameters": [
+          {
+            "name": "dmd_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dmd Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Clear Dmd Priority Queue Api V1 Clients  Dmd Id  Queue Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/clients/{dmd_id}/queue/async": {
@@ -4074,6 +4117,18 @@
             "title": "Query",
             "description": "Direct search query when `candidate_id` is omitted (e.g. FrontendSync game launch or voice command).",
             "default": ""
+          },
+          "fallback_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Query",
+            "description": "Optional human-readable fallback title (e.g. EmulationStation title) tried when `query` (e.g. raw ROM stem) yields no scraper match."
           },
           "systems": {
             "items": {
