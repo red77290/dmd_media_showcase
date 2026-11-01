@@ -68,6 +68,31 @@ Every title automatically assembles a complete multi-chapter RGB565 broadcast ta
 
 ---
 
+## 🔌 Media Sources, Built-in Encrypted Keys & Multi-Source Merging
+
+> [!TIP]
+> **100% Zero-Configuration Out-of-the-Box:** Official builds (`Docker`, `macOS`, `Windows`, `Linux`) ship with **functional encrypted default developer/API keys** (`_prod_vault`) plus **6 completely keyless sources**. **Everything works immediately without touching a single setting** — adding personal keys or reordering sources in the Web UI is purely optional customization.
+
+| Domain & Default Order | Source (`source_id`) | Built-in Default & User Obligation | Optional WebUI Override & Upstream Constraint |
+| :--- | :--- | :--- | :--- |
+| **🕹️ Games `#1`** *(Primary)* | **IGDB API v4** (`igdb`) | 🔐 **Encrypted app keys built-in** (`0` config needed) | `igdb_client_id`, `igdb_client_secret` • ~`4 req/s`, auto `60s` cooldown on `429`. |
+| **🕹️ Games `#2`** *(Secondary)* | **ScreenScraper v2** (`screenscraper`) | 🔐 **Encrypted `devid` built-in** (`0` dev account needed)<br>👤 **Player `SSID`**: optional (*Guest*), **recommended** *(free)* | **Player:** `screenscraper_user` / `pass` *(+ optional `dev_id`)* • **Guest access closes when server CPU > ~60%** (evenings/weekends); a free account on `screenscraper.fr` unlocks ~`20k req/day` on Member slots. Auto `60s` cooldown. |
+| **🕹️ Games `#3`** *(Fallback)* | **ArcadeItalia ADB** (`arcadeitalia`) | 🔓 **100% Keyless** (`0` account, `0` key) | *None* • Authoritative MAME / `CPS-1/2/3` / `Neo-Geo` / `NAOMI` flyers, marquees & snaps. |
+| **🕹️ Games `#4`** *(Fallback)* | **Libretro + Wikidata** (`libretro_wikidata`) | 🔓 **100% Keyless** (`0` account, `0` key) | *None* • Consoles/Handhelds/Computers verified PNG boxarts, Wikipedia synopses & Archive.org clips. |
+| **🎬 Movies `#1`** *(Primary)* | **TMDB Movies** (`tmdb_movies`) | 🔐 **Encrypted API key built-in** (`0` config needed) | `tmdb_api_key` • Localized posters, `16:9` backdrops, synopses & official HD trailers. |
+| **🎬 Movies `#2`** *(Secondary)* | **Apple iTunes** (`itunes_movies`) | 🔓 **100% Keyless** (`0` account, `0` key) | *None* • `1000×1000` posters & **direct CDN `.m4v`/`.mp4` trailer streams** (~`20 req/min`). |
+| **📺 Series `#1`** *(Primary)* | **TMDB Series** (`tmdb_series`) | 🔐 **Encrypted API key built-in** (`0` config needed) | `tmdb_api_key` • Localized TV posters, backdrops, synopses & trailers/openings. |
+| **📺 Series `#2`** *(Secondary)* | **TheTVDB v4** (`tvdb_series`) | 🔐 **Encrypted API key built-in** (`0` config needed) | `tvdb_api_key` • Community multilingual TV translations, series banners & trailers (`23h` JWT cache). |
+| **📺 Series `#3`** *(Fallback)* | **TVMaze** (`tvmaze`) | 🔓 **100% Keyless** (`0` account, `0` key) | *None* • ~`70,000` scripted TV series, HD posters, banners & stills (~`20 req/10s`). |
+| **⛩️ Anime `#1`** *(Primary)* | **Jikan v4 + AnimeThemes** (`jikan`) | 🔓 **100% Keyless** (`0` account, `0` key) | *None* • MyAnimeList catalog + **direct creditless `.webm` `OP`/`ED` streams** (`3 req/s`). |
+| **⛩️ Anime `#2`** *(Secondary)* | **AniList + AnimeThemes** (`anilist`) | 🔓 **100% Keyless** (`0` account, `0` key) | *None* • AniList GraphQL covers, wide `bannerImage` marquees & `.webm` `OP`/`ED`s (~`90 req/min`). |
+
+- **Live Role Inversion & Custom Visuals/Videos (`#1 <-> #2 <-> ...`)**: Reorder or toggle sources live in **`1. Overview`** or **`5. API Keys & Encrypted Vault`** (`0 ms`, no restart) whenever you want different catalog picks, artwork, or video types — e.g. promote **`screenscraper` to `#1`** for short direct `.mp4` gameplay clips & détouré arcade marquees instead of YouTube trailers, **`arcadeitalia` to `#1`** for original MAME cabinet flyers, or **`itunes_movies` to `#1`** for instant direct `.m4v` movie trailers.
+- **Cross-Source Merge (`enrich_missing`, default) & Automatic Fallback**: `#1 Primary` keeps its core title, poster, and video while `CandidateAggregator` (`<= 3.0s`) queries `#2`/`#3` to **fill in only missing DMD assets** (transparent marquees/wheels, pixel-art snaps, direct videos, or human-localized synopses, badged live as `🔗 igdb+screenscraper`) after strict ROM/sequel/year verification. You can also switch to **`fallback_only`**, where `#2`/`#3` are called strictly when `#1` returns `0` matches or enters cooldown.
+- 👉 **[Read the Detailed Sources, Encrypted Vault, ScreenScraper Quotas & Merge Guide (`docs/SOURCES_AND_AGGREGATION.md`)](docs/SOURCES_AND_AGGREGATION.md)**
+
+---
+
 ## 🚀 Quick Installation & Short Example
 
 ### Option 1: Official Multi-Arch Docker Image (`amd64` / `arm64` — Raspberry Pi / NAS / Home-Lab)
@@ -161,8 +186,21 @@ curl -s "http://localhost:8890/api/v1/games/filters?lang=fr" | jq '.systems[0], 
 | Document | 🇬🇧 English | 🇫🇷 Français | 🇪🇸 Español |
 | :--- | :--- | :--- | :--- |
 | **QuickStart & Deployment Guide** | [docs/QUICKSTART.md](docs/QUICKSTART.md) | [docs/QUICKSTART_FR.md](docs/QUICKSTART_FR.md) | [docs/QUICKSTART_ES.md](docs/QUICKSTART_ES.md) |
+| **Media Sources, Vault & Multi-Source Merging** | [docs/SOURCES_AND_AGGREGATION.md](docs/SOURCES_AND_AGGREGATION.md) | [docs/SOURCES_AND_AGGREGATION_FR.md](docs/SOURCES_AND_AGGREGATION_FR.md) | [docs/SOURCES_AND_AGGREGATION_ES.md](docs/SOURCES_AND_AGGREGATION_ES.md) |
 | **ESP32 Integration & Passive Receiver Guide** | [docs/ESP32_INTEGRATION.md](docs/ESP32_INTEGRATION.md) | [docs/ESP32_INTEGRATION_FR.md](docs/ESP32_INTEGRATION_FR.md) | [docs/ESP32_INTEGRATION_ES.md](docs/ESP32_INTEGRATION_ES.md) |
 | **System Architecture & Streaming Pipeline** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE_FR.md](docs/ARCHITECTURE_FR.md) | [docs/ARCHITECTURE_ES.md](docs/ARCHITECTURE_ES.md) |
 | **Developer & Scraper Strategy Guide** | [docs/DEVELOPER.md](docs/DEVELOPER.md) | [docs/DEVELOPER_FR.md](docs/DEVELOPER_FR.md) | [docs/DEVELOPER_ES.md](docs/DEVELOPER_ES.md) |
 | **OpenAPI 3.1 REST Specification** | [docs/openapi.yaml](docs/openapi.yaml) / [docs/openapi.json](docs/openapi.json) | — | — |
 | **AsyncAPI 2.6 MQTT, Lossless HTTP DMDZ v2 & UDP Specification** | [docs/asyncapi.yaml](docs/asyncapi.yaml) | — | — |
+
+---
+
+## 🙏 Acknowledgments — Community Databases & Independent Projects
+
+Special thanks to the independent preservation projects, community-maintained databases, and volunteer contributors who keep arcade, console, cinema, television, and anime history open and accessible through developer APIs:
+
+- **[ScreenScraper.fr](https://www.screenscraper.fr/)** — Community-driven retro-gaming preservation database and volunteer contributors providing developer API access, détouré arcade marquees/wheels, pixel-art captures, localized synopses, and gameplay video snaps *(please consider creating a free player account or supporting their server infrastructure on Tipeee/Patreon)*.
+- **[Arcade Database — ArcadeItalia (ADB)](http://adb.arcadeitalia.net/)** (*Motoschifo* & the ArcadeItalia community) — Authoritative open MAME and arcade cabinet archive preserving original flyers, marquees, hardware history, and attract-mode media.
+- **[Libretro Thumbnails](https://thumbnails.libretro.com/)**, **[Wikidata](https://www.wikidata.org/) / [Wikipedia](https://www.wikipedia.org/)** & **[Internet Archive](https://archive.org/)** — Open community preservation repositories providing verified regional console/handheld artwork, structured taxonomy, and historical video archives.
+- **[The Movie Database (TMDB)](https://www.themoviedb.org/)**, **[TheTVDB](https://thetvdb.com/)** & **[TVMaze](https://www.tvmaze.com/)** — Community-curated cinema and television metadata databases providing developer API access and multilingual artwork/translations.
+- **[Jikan API](https://jikan.moe/)**, **[AnimeThemes.moe](https://animethemes.moe/)** & **[AniList](https://anilist.co/)** — Independent open-source and community anime preservation projects providing structured catalogs and creditless `OP`/`ED` streams.

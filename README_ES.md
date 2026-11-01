@@ -68,6 +68,31 @@ Cada título ensambla automáticamente una emisión RGB565 multicapítulo adapta
 
 ---
 
+## 🔌 Fuentes Multimedia, Claves Cifradas por Defecto y Fusión Multifuente
+
+> [!TIP]
+> **100 % Cero-Configuración Listo para Usar:** Las versiones oficiales (`Docker`, `macOS`, `Windows`, `Linux`) incluyen **claves de desarrollador/API funcionales cifradas** (`_prod_vault`) además de **6 fuentes totalmente sin clave**. **Todo funciona de inmediato sin tocar nada** — añadir claves propias o reordenar las fuentes en la Web UI es únicamente personalización opcional.
+
+| Dominio y Orden por Defecto | Fuente (`source_id`) | Claves por Defecto y Obligación | Anulación Opcional WebUI y Restricción Principal |
+| :--- | :--- | :--- | :--- |
+| **🕹️ Juegos `#1`** *(Primaria)* | **IGDB API v4** (`igdb`) | 🔐 **Claves app cifradas integradas** (`0` conf requerida) | `igdb_client_id`, `igdb_client_secret` • ~`4 req/s`, cooldown auto `60s` ante `429`. |
+| **🕹️ Juegos `#2`** *(Secundaria)* | **ScreenScraper v2** (`screenscraper`) | 🔐 **`devid` cifrado integrado** (`0` cuenta dev requerida)<br>👤 **Cuenta jugador `SSID`**: opcional (*Invitado*), **recomendada** *(gratis)* | **Jugador:** `screenscraper_user` / `pass` *(+ `dev_id` opcional)* • **El acceso Invitado cierra cuando la CPU supera ~60 %** (tardes/fines de semana); una cuenta gratuita en `screenscraper.fr` desbloquea ~`20k req/día` en ranuras de Miembros. Cooldown auto `60s`. |
+| **🕹️ Juegos `#3`** *(Fallback)* | **ArcadeItalia ADB** (`arcadeitalia`) | 🔓 **100 % Sin Clave** (`0` cuenta, `0` clave) | *Ninguna* • Referencia MAME / `CPS-1/2/3` / `Neo-Geo` / `NAOMI` (flyers, marquees y snaps). |
+| **🕹️ Juegos `#4`** *(Fallback)* | **Libretro + Wikidata** (`libretro_wikidata`) | 🔓 **100 % Sin Clave** (`0` cuenta, `0` clave) | *Ninguna* • Consolas/Portátiles/Micros: carátulas PNG verificadas, sinopsis Wikipedia y clips Archive.org. |
+| **🎬 Cine `#1`** *(Primaria)* | **TMDB Movies** (`tmdb_movies`) | 🔐 **Clave API cifrada integrada** (`0` conf requerida) | `tmdb_api_key` • Pósteres localizados, fondos `16:9`, sinopsis y tráilers HD oficiales. |
+| **🎬 Cine `#2`** *(Secundaria)* | **Apple iTunes** (`itunes_movies`) | 🔓 **100 % Sin Clave** (`0` cuenta, `0` clave) | *Ninguna* • Pósteres `1000×1000` y **streams directos `.m4v`/`.mp4` de tráilers** (~`20 req/min`). |
+| **📺 Series `#1`** *(Primaria)* | **TMDB Series** (`tmdb_series`) | 🔐 **Clave API cifrada integrada** (`0` conf requerida) | `tmdb_api_key` • Pósteres de TV localizados, fondos, sinopsis y tráilers/openings. |
+| **📺 Series `#2`** *(Secundaria)* | **TheTVDB v4** (`tvdb_series`) | 🔐 **Clave API cifrada integrada** (`0` conf requerida) | `tvdb_api_key` • Traducciones comunitarias multilingües, banners de series y tráilers (caché JWT `23h`). |
+| **📺 Series `#3`** *(Fallback)* | **TVMaze** (`tvmaze`) | 🔓 **100 % Sin Clave** (`0` cuenta, `0` clave) | *Ninguna* • ~`70.000` series de ficción, pósteres HD, banners y fotos (~`20 req/10s`). |
+| **⛩️ Anime `#1`** *(Primaria)* | **Jikan v4 + AnimeThemes** (`jikan`) | 🔓 **100 % Sin Clave** (`0` cuenta, `0` clave) | *Ninguna* • Catálogo MyAnimeList + **streams directos `.webm` `OP`/`ED` sin créditos** (`3 req/s`). |
+| **⛩️ Anime `#2`** *(Secundaria)* | **AniList + AnimeThemes** (`anilist`) | 🔓 **100 % Sin Clave** (`0` cuenta, `0` clave) | *Ninguna* • Portadas GraphQL AniList, marquees anchos `bannerImage` y `.webm` `OP`/`ED` (~`90 req/min`). |
+
+- **Inversión de Roles y Variación de Arte / Vídeos (`#1 <-> #2 <-> ...`)**: Reordene o active/desactive fuentes en vivo desde **`1. Vista General`** o **`5. Claves API y Bóveda Cifrada`** (`0 ms`, sin reiniciar) para obtener selecciones, pósteres o vídeos diferentes — p. ej. subir **`screenscraper` a `#1`** para priorizar clips cortos `.mp4` directos de gameplay real y marquees recortados en vez de tráilers de YouTube, **`arcadeitalia` a `#1`** para flyers originales de cabinas MAME, o **`itunes_movies` a `#1`** para tráilers `.m4v` directos.
+- **Fusión entre Fuentes (`enrich_missing`, por defecto) y Fallback Automático**: `#1 Primaria` mantiene su título, póster y vídeo mientras `CandidateAggregator` (`<= 3.0s`) consulta `#2`/`#3` para **rellenar solo los activos DMD faltantes** (marquees/wheels recortados, capturas pixel-art, vídeos directos o sinopsis traducidas humanamente, mostrados en vivo como `🔗 igdb+screenscraper`) tras validar ROM, número de secuela y año. También puede elegir **`fallback_only`**, donde `#2`/`#3` solo intervienen si `#1` devuelve `0` resultados o entra en cooldown.
+- 👉 **[Leer la Guía Detallada de Fuentes, Bóveda Cifrada, Cuotas de ScreenScraper y Fusión Multifuente (`docs/SOURCES_AND_AGGREGATION_ES.md`)](docs/SOURCES_AND_AGGREGATION_ES.md)**
+
+---
+
 ## 🚀 Instalación Rápida y Ejemplo Corto
 
 ### Opción 1: Imagen Docker Oficial Multi-Arch (`amd64` / `arm64` — Raspberry Pi / NAS / Home-Lab)
@@ -161,8 +186,21 @@ curl -s "http://localhost:8890/api/v1/games/filters?lang=es" | jq '.systems[0], 
 | Documento | 🇬🇧 English | 🇫🇷 Français | 🇪🇸 Español |
 | :--- | :--- | :--- | :--- |
 | **Guía de Inicio Rápido (QuickStart)** | [docs/QUICKSTART.md](docs/QUICKSTART.md) | [docs/QUICKSTART_FR.md](docs/QUICKSTART_FR.md) | [docs/QUICKSTART_ES.md](docs/QUICKSTART_ES.md) |
+| **Fuentes Multimedia, Bóveda y Fusión Multifuente** | [docs/SOURCES_AND_AGGREGATION.md](docs/SOURCES_AND_AGGREGATION.md) | [docs/SOURCES_AND_AGGREGATION_FR.md](docs/SOURCES_AND_AGGREGATION_FR.md) | [docs/SOURCES_AND_AGGREGATION_ES.md](docs/SOURCES_AND_AGGREGATION_ES.md) |
 | **Guía de Integración ESP32 y Receptor Pasivo** | [docs/ESP32_INTEGRATION.md](docs/ESP32_INTEGRATION.md) | [docs/ESP32_INTEGRATION_FR.md](docs/ESP32_INTEGRATION_FR.md) | [docs/ESP32_INTEGRATION_ES.md](docs/ESP32_INTEGRATION_ES.md) |
 | **Arquitectura del Sistema y Pipeline de Streaming** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE_FR.md](docs/ARCHITECTURE_FR.md) | [docs/ARCHITECTURE_ES.md](docs/ARCHITECTURE_ES.md) |
 | **Guía para Desarrolladores y Scrapers** | [docs/DEVELOPER.md](docs/DEVELOPER.md) | [docs/DEVELOPER_FR.md](docs/DEVELOPER_FR.md) | [docs/DEVELOPER_ES.md](docs/DEVELOPER_ES.md) |
 | **Especificación REST OpenAPI 3.1** | [docs/openapi.yaml](docs/openapi.yaml) / [docs/openapi.json](docs/openapi.json) | — | — |
 | **Especificación MQTT, HTTP DMDZ v2 Sin Pérdidas y UDP AsyncAPI 2.6** | [docs/asyncapi.yaml](docs/asyncapi.yaml) | — | — |
+
+---
+
+## 🙏 Agradecimientos — Bases Comunitarias y Proyectos Independientes
+
+Un agradecimiento especial a los proyectos independientes de preservación, bases de datos comunitarias y colaboradores voluntarios que mantienen abierta y accesible la historia del arcade, las consolas, el cine, la televisión y el anime mediante sus APIs para desarrolladores:
+
+- **[ScreenScraper.fr](https://www.screenscraper.fr/)** — Base de datos comunitaria de preservación retrogaming y sus voluntarios por el acceso API de desarrollador, marquees/wheels recortados, capturas pixel-art, sinopsis localizadas y vídeos de gameplay *(le animamos a crear una cuenta gratuita de jugador o apoyar sus servidores en Tipeee/Patreon)*.
+- **[Arcade Database — ArcadeItalia (ADB)](http://adb.arcadeitalia.net/)** (*Motoschifo* y la comunidad de ArcadeItalia) — Archivo abierto de referencia para MAME y máquinas recreativas que preserva flyers originales, marquees, historia del hardware y vídeos attract-mode.
+- **[Libretro Thumbnails](https://thumbnails.libretro.com/)**, **[Wikidata](https://www.wikidata.org/) / [Wikipedia](https://es.wikipedia.org/)** e **[Internet Archive](https://archive.org/)** — Repositorios comunitarios abiertos que preservan carátulas regionales verificadas de consolas/portátiles, taxonomía estructurada y archivos históricos de vídeo.
+- **[The Movie Database (TMDB)](https://www.themoviedb.org/)**, **[TheTVDB](https://thetvdb.com/)** y **[TVMaze](https://www.tvmaze.com/)** — Bases comunitarias de cine y televisión que ofrecen acceso API para desarrolladores, pósteres y traducciones multilingües.
+- **[Jikan API](https://jikan.moe/)**, **[AnimeThemes.moe](https://animethemes.moe/)** y **[AniList](https://anilist.co/)** — Proyectos independientes y de código abierto dedicados al anime que ofrecen catálogos estructurados y streams `OP`/`ED` sin créditos.
