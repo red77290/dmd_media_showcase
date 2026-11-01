@@ -236,6 +236,22 @@ async def add_to_dmd_priority_queue_async(
     }
 
 
+@router.delete("/api/v1/clients/{dmd_id}/queue", tags=["On-Demand & Voice Assistant"])
+async def clear_dmd_priority_queue(dmd_id: str) -> Dict[str, Any]:
+    """
+    Idempotently clear all pending/active On-Demand queue items for `dmd_id` and immediately
+    terminate any active `dmd_gif_converter` / `ffmpeg` / `yt-dlp` conversion worker processes.
+    """
+    co = get_orchestrator()
+    cleared = await co.clear_queue(dmd_id)
+    return {
+        "status": "cleared",
+        "dmd_id": dmd_id,
+        "cleared_count": cleared,
+        "queue": co.list_queue(dmd_id),
+    }
+
+
 @router.delete("/api/v1/clients/{dmd_id}/queue/{queue_id}", tags=["On-Demand & Voice Assistant"])
 async def remove_from_dmd_priority_queue(
     dmd_id: str,

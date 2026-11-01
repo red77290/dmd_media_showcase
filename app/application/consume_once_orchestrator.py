@@ -149,6 +149,7 @@ class ConsumeOnceOrchestrator:
             schedule_hook=lambda dmd_id, dom: self._schedule_preparation(dmd_id, dom),
             pop_claimed_priority_fn=self.queue.pop_claimed_priority_entry,
             take_next_priority_pkg_fn=self.queue.take_next_ready_priority_package_for_slot,
+            clear_queue_fn=self.queue.clear_dmd_queue,
         )
         self.director = PassivePlaylistDirectorService(
             state=self.state,
@@ -405,6 +406,9 @@ class ConsumeOnceOrchestrator:
     async def remove_queue_item(self, dmd_id: str, queue_id: str) -> bool:
         return await self.queue.remove_queue_item(dmd_id, queue_id)
 
+    async def clear_queue(self, dmd_id: str) -> int:
+        return await self.queue.clear_dmd_queue(dmd_id)
+
     async def enqueue_on_demand(self, dmd_id: str, req: Any) -> Dict[str, Any]:
         return await self.queue.enqueue_on_demand(
             dmd_id, req, parse_criteria_fn=self._parse_domain_criteria
@@ -449,6 +453,10 @@ class ConsumeOnceOrchestrator:
             }
 
         await self.streamer.stop_stream(clean_id)
+        self.transcoder.abort_conversions_for_dmd(clean_id)
+        await self.queue.clear_dmd_queue(clean_id)
+        if not clean_id.lower().endswith("_sync"):
+            await self.queue.clear_dmd_queue(f"{clean_id}_sync")
         profile_deleted = self.profile_store.delete_profile(clean_id)
         purged_slots = self.state.purge_dmd_state_and_cache(clean_id)
         retained_cleared = await self.mqtt.purge_client_retained(clean_id)

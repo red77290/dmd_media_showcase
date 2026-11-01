@@ -98,7 +98,11 @@ class ClientRegistryService:
         """
         For Mode 1 multi-engine boards (e.g. `esp32_games_128x32` + `esp32_movies_128x32`),
         map `(dmd_id, domain)` to the matching per-domain runner ID when registered.
+        Dedicated `*_sync` (`FrontendSync`) client IDs remain strictly isolated so they never
+        overwrite or trigger retained `ready` broadcasts on rotation slots.
         """
+        if str(dmd_id or "").strip().lower().endswith("_sync"):
+            return dmd_id
         if (
             (dmd_id, domain) in self.state.client_configs
             or dmd_id in self.state.server_managed_ids
@@ -113,7 +117,7 @@ class ClientRegistryService:
                 return sibling
         board_key = canonical_dmd_board_key(dmd_id, self.state.client_udp_ips.get(dmd_id, ""))
         for (other_id, other_dom) in self.state.client_configs:
-            if other_dom == domain:
+            if other_dom == domain and not other_id.lower().endswith("_sync"):
                 other_board = canonical_dmd_board_key(
                     other_id, self.state.client_udp_ips.get(other_id, "")
                 )

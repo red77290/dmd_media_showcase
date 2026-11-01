@@ -615,6 +615,10 @@ class QueueAddRequest(BaseModel):
         default="",
         description="Direct search query when `candidate_id` is omitted (e.g. FrontendSync game launch or voice command).",
     )
+    fallback_query: Optional[str] = Field(
+        default=None,
+        description="Optional human-readable fallback title (e.g. EmulationStation title) tried when `query` (e.g. raw ROM stem) yields no scraper match.",
+    )
     systems: List[str] = Field(default_factory=list)
     genres: List[str] = Field(default_factory=list)
     decades: List[str] = Field(default_factory=list)

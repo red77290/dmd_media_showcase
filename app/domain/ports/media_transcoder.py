@@ -11,6 +11,10 @@ from typing import Dict
 from app.domain.entities import FilterCriteria, MediaCandidate, PanelGeometry
 
 
+class ConversionAbortedError(Exception):
+    """Raised when an in-flight media conversion for a DMD client is explicitly aborted."""
+
+
 class IMediaTranscoderPort(ABC):
     """
     Transcodes clean HD master assets (posters, marquees, snapshots, and 720p/1080p trailers)
@@ -30,3 +34,10 @@ class IMediaTranscoderPort(ABC):
         `Marquee` -> `Snapshots`), video clip (`Auto-Action` + `Smart Color Boost`), and the
         unified `.rgb565.stream` + `.mp4` sequence ready for `ffmpeg -re` UDP streaming.
         """
+
+    def abort_conversions_for_dmd(self, dmd_id: str) -> int:
+        """
+        Terminate all active converter processes and child subprocesses associated with `dmd_id`.
+        Returns the number of terminated worker process groups.
+        """
+        return 0

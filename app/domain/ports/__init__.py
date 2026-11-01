@@ -6,7 +6,7 @@ from app.domain.ports.card_renderer import ICardPreviewRendererPort
 from app.domain.ports.control_gateway import IMqttControlGatewayPort
 from app.domain.ports.default_ports import PortProviderRegistry, default_port_registry
 from app.domain.ports.frame_streamer import IFrameStreamerPort
-from app.domain.ports.media_transcoder import IMediaTranscoderPort
+from app.domain.ports.media_transcoder import ConversionAbortedError, IMediaTranscoderPort
 from app.domain.ports.on_demand_cache import CachedOnDemandPackage, IOnDemandCachePort
 from app.domain.ports.profile_repository import IDmdProfileRepository
 from app.domain.ports.referential_strategy import IScraperReferentialStrategy
@@ -16,6 +16,7 @@ from app.domain.ports.seen_repository import ISeenHistoryRepository
 
 __all__ = [
     "CachedOnDemandPackage",
+    "ConversionAbortedError",
     "ICardPreviewRendererPort",
     "IDmdProfileRepository",
     "IFrameStreamerPort",

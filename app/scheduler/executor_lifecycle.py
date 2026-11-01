@@ -129,6 +129,9 @@ class BoundedWorkerExecutorMixin(Generic[TJob]):
             idx: loop.create_task(self._worker_loop(idx)) for idx in range(max_w)
         }
         self._worker_tasks = list(self._worker_task_map.values())
+        from app.scheduler.dmd_process_registry import dmd_process_registry
+
+        dmd_process_registry.on_pool_started()
         logger.info(
             "[POOL] SessionBatchManager started with %d bounded worker(s) (cache_dir=%s)",
             max_w,
@@ -239,6 +242,9 @@ class BoundedWorkerExecutorMixin(Generic[TJob]):
 
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
+        from app.scheduler.dmd_process_registry import dmd_process_registry
+
+        dmd_process_registry.shutdown_all()
 
     @property
     def active_workers(self) -> int:

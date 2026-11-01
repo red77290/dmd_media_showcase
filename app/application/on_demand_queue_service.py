@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-import inspect
 import logging
 import shutil
 from typing import Any, Callable, Dict, List, Optional
@@ -20,6 +19,12 @@ from app.application.criteria_parser import assemble_prepared_package, parse_dom
 from app.application.showcase_state import QueuedOnDemandEntry, ShowcaseRuntimeState
 from app.application.source_chain_service import DomainSourceChainService
 from app.application.studio_preview_service import StudioPreviewService
+from app.application.sync_slot_rules import (
+    is_sync_dmd_id,
+    resolve_donor_style_dmd_id,
+    search_candidate_with_fallback,
+    strip_sync_suffix,
+)
 from app.config import settings
 from app.domain.entities import (
     DomainType,
@@ -34,6 +39,7 @@ from app.domain.on_demand_cache_key import (
     candidate_to_cache_dict,
 )
 from app.domain.ports import (
+    ConversionAbortedError,
     IDmdProfileRepository,
     IFrameStreamerPort,
     IMediaTranscoderPort,
@@ -42,6 +48,34 @@ from app.domain.ports import (
 )
 
 logger = logging.getLogger("dmd_showcase.application.priority_queue")
+
+_STYLE_OVERRIDE_FIELDS = (
+    "include_card_intro",
+    "card_layout",
+    "card_theme",
+    "card_font",
+    "card_accent_color",
+    "show_badge",
+    "show_year",
+    "show_rating",
+    "card_hold_s",
+    "include_poster",
+    "include_synopsis",
+    "text_scroll_speed",
+    "jacket_panorama",
+    "marquee_panorama",
+    "snapshot_panorama_count",
+    "panorama_duration_s",
+    "include_video",
+    "video_max_duration_s",
+    "video_fps",
+    "video_mode",
+    "color_boost",
+)
+
+
+def _style_dict_from_criteria(crit: FilterCriteria) -> Dict[str, Any]:
+    return {name: getattr(crit, name) for name in _STYLE_OVERRIDE_FIELDS}
 
 
 class OnDemandQueueService:
@@ -106,6 +140,68 @@ class OnDemandQueueService:
                     return entry.package
         return None
 
+    def _cleanup_entry_package(self, entry: QueuedOnDemandEntry) -> Optional[PreparedShowcasePackage]:
+        AsyncTaskSupervisor.safe_cancel_task(entry.prep_task)
+        pkg = entry.package
+        if pkg is None:
+            return None
+        self.state.package_mark_seen.pop(pkg.item_id, None)
+        self.state.priority_item_ids.discard(pkg.item_id)
+        self.state.active_packages.pop(pkg.item_id, None)
+        shutil.rmtree(pkg.item_dir, ignore_errors=True)
+        return pkg
+
+    async def clear_dmd_queue(self, dmd_id: str) -> int:
+        """
+        Atomically terminate all active conversion processes (`1..N`) for `dmd_id`, cancel all
+        pending/ready priority queue entries, stop any active stream, and purge temporary files.
+        """
+        clean_id = str(dmd_id or "").strip()
+        if not clean_id:
+            return 0
+        self.transcoder.abort_conversions_for_dmd(clean_id)
+        q = self.state.priority_queues.pop(clean_id, None)
+        entries = list(q) if q else []
+        affected_slots: Dict[tuple[str, DomainType], PreparedShowcasePackage] = {}
+        for entry in entries:
+            slot_key = (entry.target_slot_dmd_id, entry.domain)
+            pkg = self._cleanup_entry_package(entry)
+            if (
+                pkg is not None
+                and slot_key in self.state.client_configs
+                and self.state.ready_packages.get(slot_key) is pkg
+            ):
+                affected_slots[slot_key] = pkg
+
+        for (slot_dmd, dom), _pkg in affected_slots.items():
+            self.state.ready_packages.pop((slot_dmd, dom), None)
+            standby_pkg = self.state.standby_packages.pop((slot_dmd, dom), None)
+            if standby_pkg is not None and not standby_pkg.consumed:
+                self.state.ready_packages[(slot_dmd, dom)] = standby_pkg
+                await self.mqtt.publish_json(
+                    f"dmd_showcase/clients/{slot_dmd}/{dom}/ready",
+                    {"ready": True, "item_id": standby_pkg.item_id, "domain": dom, "card": standby_pkg.card.to_dict()},
+                    retain=True,
+                )
+            else:
+                await self.mqtt.publish_json(
+                    f"dmd_showcase/clients/{slot_dmd}/{dom}/ready",
+                    {"ready": False, "item_id": "", "domain": dom},
+                    retain=True,
+                )
+            self._schedule_hook(slot_dmd, dom)
+
+        await self.streamer.stop_stream(clean_id)
+        if is_sync_dmd_id(clean_id) and not any(k[0] == clean_id for k in self.state.client_configs):
+            for aid, apkg in list(self.state.active_packages.items()):
+                if apkg.dmd_id == clean_id:
+                    self.state.active_packages.pop(aid, None)
+                    self.state.package_mark_seen.pop(aid, None)
+                    self.state.priority_item_ids.discard(aid)
+                    shutil.rmtree(apkg.item_dir, ignore_errors=True)
+            shutil.rmtree(settings.cache_dir / "consume_once" / clean_id, ignore_errors=True)
+        return len(entries)
+
     async def remove_queue_item(self, dmd_id: str, queue_id: str) -> bool:
         q = self.state.priority_queues.get(dmd_id)
         if not q:
@@ -120,24 +216,25 @@ class OnDemandQueueService:
             return False
 
         AsyncTaskSupervisor.safe_cancel_task(target.prep_task)
+        has_other_preparing = any(e.status in ("queued", "preparing") for e in q)
+        if target.status in ("queued", "preparing") and not has_other_preparing:
+            self.transcoder.abort_conversions_for_dmd(dmd_id)
+            if target.target_slot_dmd_id != dmd_id:
+                self.transcoder.abort_conversions_for_dmd(target.target_slot_dmd_id)
+
         if target.package is not None:
             pkg = target.package
             self.state.package_mark_seen.pop(pkg.item_id, None)
             self.state.priority_item_ids.discard(pkg.item_id)
             slot_key = (target.target_slot_dmd_id, target.domain)
-            if self.state.ready_packages.get(slot_key) is pkg:
+            if slot_key in self.state.client_configs and self.state.ready_packages.get(slot_key) is pkg:
                 self.state.ready_packages.pop(slot_key, None)
                 standby_pkg = self.state.standby_packages.pop(slot_key, None)
                 if standby_pkg is not None and not standby_pkg.consumed:
                     self.state.ready_packages[slot_key] = standby_pkg
                     await self.mqtt.publish_json(
                         f"dmd_showcase/clients/{target.target_slot_dmd_id}/{target.domain}/ready",
-                        {
-                            "ready": True,
-                            "item_id": standby_pkg.item_id,
-                            "domain": target.domain,
-                            "card": standby_pkg.card.to_dict(),
-                        },
+                        {"ready": True, "item_id": standby_pkg.item_id, "domain": target.domain, "card": standby_pkg.card.to_dict()},
                         retain=True,
                     )
                 else:
@@ -147,13 +244,10 @@ class OnDemandQueueService:
                         retain=True,
                     )
                 self._schedule_hook(target.target_slot_dmd_id, target.domain)
-            if not pkg.consumed:
-                self.state.active_packages.pop(pkg.item_id, None)
-                shutil.rmtree(pkg.item_dir, ignore_errors=True)
-            else:
+            if pkg.consumed:
                 await self.streamer.stop_stream(target.target_slot_dmd_id)
-                self.state.active_packages.pop(pkg.item_id, None)
-                shutil.rmtree(pkg.item_dir, ignore_errors=True)
+            self.state.active_packages.pop(pkg.item_id, None)
+            shutil.rmtree(pkg.item_dir, ignore_errors=True)
         return True
 
     async def activate_ready_priority_entry(
@@ -167,6 +261,25 @@ class OnDemandQueueService:
         self.state.active_packages[pkg.item_id] = pkg
         entry.package = pkg
         entry.status = "ready"
+
+        slot_key = (entry.target_slot_dmd_id, entry.domain)
+        is_ephemeral_sync = (
+            is_sync_dmd_id(entry.dmd_id) or is_sync_dmd_id(entry.target_slot_dmd_id)
+        ) and slot_key not in self.state.client_configs
+        if is_ephemeral_sync:
+            await self.mqtt.publish_json(
+                f"dmd_showcase/clients/{entry.dmd_id}/command",
+                {
+                    "action": "play_now",
+                    "queue_id": entry.queue_id,
+                    "domain": entry.domain,
+                    "item_id": pkg.item_id,
+                    "cache_hit": entry.cache_hit,
+                    "card": pkg.card.to_dict(),
+                },
+                retain=False,
+            )
+            return
 
         if is_server_managed:
             if entry.mode == "play_now":
@@ -248,6 +361,11 @@ class OnDemandQueueService:
         parse_criteria_fn: Callable[[DomainType, Dict[str, Any], str], FilterCriteria] = parse_domain_criteria,
     ) -> Dict[str, Any]:
         """Enqueue (`enqueue_next`) or immediately preempt (`play_now`) a media item on `dmd_id`."""
+        is_sync_slot = is_sync_dmd_id(dmd_id)
+        if is_sync_slot:
+            # Guarantee at most 1 conversion process & queue entry on `FrontendSync` (`*_sync`) slots.
+            await self.clear_dmd_queue(dmd_id)
+
         preview_id = str(getattr(req, "preview_id", "") or "")
         cached_sim = self.state.studio_previews.get(preview_id) if preview_id else None
         eff_domain: DomainType = (
@@ -259,18 +377,28 @@ class OnDemandQueueService:
             (prof and prof.get("config_source") == "server")
             or dmd_id in self.state.server_managed_ids
         )
-        if prof is None and dmd_id.endswith("_sync"):
-            prof = self.profile_store.get_profile(dmd_id[:-5])
+        donor_id = (
+            resolve_donor_style_dmd_id(
+                dmd_id, eff_domain, self.state.client_configs, self.state.client_udp_ips
+            )
+            if is_sync_slot
+            else dmd_id
+        )
+        if prof is None and is_sync_slot:
+            prof = self.profile_store.get_profile(strip_sync_suffix(dmd_id)) or (
+                self.profile_store.get_profile(donor_id) if donor_id else None
+            )
         target_slot_dmd_id = (
             dmd_id
-            if is_server_managed
+            if (is_server_managed or is_sync_slot)
             else self._resolve_target_slot(dmd_id, eff_domain)
         )
 
-        existing_cfg = self.state.client_configs.get((target_slot_dmd_id, eff_domain))
+        style_lookup_id = donor_id if is_sync_slot else target_slot_dmd_id
+        existing_cfg = self.state.client_configs.get((style_lookup_id, eff_domain))
         if existing_cfg is None:
             for (oid, _odom), pair in self.state.client_configs.items():
-                if oid == target_slot_dmd_id or oid == dmd_id:
+                if oid in (style_lookup_id, target_slot_dmd_id, dmd_id):
                     existing_cfg = pair
                     break
 
@@ -306,27 +434,7 @@ class OnDemandQueueService:
                 "decades": list(base_crit.decades),
                 "min_rating": base_crit.min_rating,
                 "video_type": base_crit.video_type,
-                "include_card_intro": base_crit.include_card_intro,
-                "card_layout": base_crit.card_layout,
-                "card_theme": base_crit.card_theme,
-                "card_font": base_crit.card_font,
-                "card_accent_color": base_crit.card_accent_color,
-                "show_badge": base_crit.show_badge,
-                "show_year": base_crit.show_year,
-                "show_rating": base_crit.show_rating,
-                "card_hold_s": base_crit.card_hold_s,
-                "include_poster": base_crit.include_poster,
-                "include_synopsis": base_crit.include_synopsis,
-                "text_scroll_speed": base_crit.text_scroll_speed,
-                "jacket_panorama": base_crit.jacket_panorama,
-                "marquee_panorama": base_crit.marquee_panorama,
-                "snapshot_panorama_count": base_crit.snapshot_panorama_count,
-                "panorama_duration_s": base_crit.panorama_duration_s,
-                "include_video": base_crit.include_video,
-                "video_max_duration_s": base_crit.video_max_duration_s,
-                "video_fps": base_crit.video_fps,
-                "video_mode": base_crit.video_mode,
-                "color_boost": base_crit.color_boost,
+                **_style_dict_from_criteria(base_crit),
             }
             render_card = base_crit.render_card_in_stream
         else:
@@ -341,31 +449,7 @@ class OnDemandQueueService:
             render_card = bool(cached_sim is not None)
 
         if cached_sim is not None:
-            raw_merged.update(
-                {
-                    "include_card_intro": cached_sim.criteria.include_card_intro,
-                    "card_layout": cached_sim.criteria.card_layout,
-                    "card_theme": cached_sim.criteria.card_theme,
-                    "card_font": cached_sim.criteria.card_font,
-                    "card_accent_color": cached_sim.criteria.card_accent_color,
-                    "show_badge": cached_sim.criteria.show_badge,
-                    "show_year": cached_sim.criteria.show_year,
-                    "show_rating": cached_sim.criteria.show_rating,
-                    "card_hold_s": cached_sim.criteria.card_hold_s,
-                    "include_poster": cached_sim.criteria.include_poster,
-                    "include_synopsis": cached_sim.criteria.include_synopsis,
-                    "text_scroll_speed": cached_sim.criteria.text_scroll_speed,
-                    "jacket_panorama": cached_sim.criteria.jacket_panorama,
-                    "marquee_panorama": cached_sim.criteria.marquee_panorama,
-                    "snapshot_panorama_count": cached_sim.criteria.snapshot_panorama_count,
-                    "panorama_duration_s": cached_sim.criteria.panorama_duration_s,
-                    "include_video": cached_sim.criteria.include_video,
-                    "video_max_duration_s": cached_sim.criteria.video_max_duration_s,
-                    "video_fps": cached_sim.criteria.video_fps,
-                    "video_mode": cached_sim.criteria.video_mode,
-                    "color_boost": cached_sim.criteria.color_boost,
-                }
-            )
+            raw_merged.update(_style_dict_from_criteria(cached_sim.criteria))
 
         override_render_card = getattr(req, "render_card_in_stream", None)
         if override_render_card is not None:
@@ -374,6 +458,9 @@ class OnDemandQueueService:
         raw_merged["lang"] = base_lang
         raw_merged["render_card_in_stream"] = render_card
         req_query = str(getattr(req, "query", "") or "")
+        req_fallback_query = str(getattr(req, "fallback_query", "") or "").strip()
+        if not req_query.strip() and req_fallback_query:
+            req_query = req_fallback_query
         req_systems = getattr(req, "systems", None)
         req_genres = getattr(req, "genres", None)
         req_decades = getattr(req, "decades", None)
@@ -394,29 +481,7 @@ class OnDemandQueueService:
         if req_video_type and req_video_type != "any":
             raw_merged["video_type"] = req_video_type
 
-        for field_name in (
-            "include_card_intro",
-            "card_layout",
-            "card_theme",
-            "card_font",
-            "card_accent_color",
-            "show_badge",
-            "show_year",
-            "show_rating",
-            "card_hold_s",
-            "include_poster",
-            "include_synopsis",
-            "text_scroll_speed",
-            "jacket_panorama",
-            "marquee_panorama",
-            "snapshot_panorama_count",
-            "panorama_duration_s",
-            "include_video",
-            "video_max_duration_s",
-            "video_fps",
-            "video_mode",
-            "color_boost",
-        ):
+        for field_name in _STYLE_OVERRIDE_FIELDS:
             override_val = getattr(req, field_name, None)
             if override_val is not None:
                 raw_merged[field_name] = override_val
@@ -426,6 +491,7 @@ class OnDemandQueueService:
 
         if (
             not is_server_managed
+            and not is_sync_dmd_id(target_slot_dmd_id)
             and (target_slot_dmd_id, eff_domain) not in self.state.client_configs
         ):
             self.state.client_configs[(target_slot_dmd_id, eff_domain)] = (geometry, criteria)
@@ -575,7 +641,7 @@ class OnDemandQueueService:
             placeholder_cand = MediaCandidate(
                 id="pending",
                 domain=eff_domain,
-                title=req_query.strip(),
+                title=req_fallback_query or req_query.strip(),
                 year="",
                 badge=eff_domain.upper(),
                 badge_color="#FF6D00",
@@ -596,17 +662,14 @@ class OnDemandQueueService:
                 mark_seen=req_mark_seen,
                 from_studio_sim=from_studio,
                 raw_query=req_query.strip(),
+                fallback_query=req_fallback_query,
                 cache_key=req_cache_key,
                 render_signature=req_render_sig,
                 status="preparing",
             )
             q = self.state.priority_queues.setdefault(dmd_id, deque())
-            if req_mode == "play_now":
-                q.appendleft(entry)
-            else:
-                q.append(entry)
-            loop = asyncio.get_running_loop()
-            entry.prep_task = loop.create_task(
+            q.appendleft(entry) if req_mode == "play_now" else q.append(entry)
+            entry.prep_task = asyncio.get_running_loop().create_task(
                 self.prepare_priority_entry(entry, is_server_managed=is_server_managed)
             )
             return entry.to_dict()
@@ -616,31 +679,13 @@ class OnDemandQueueService:
                 raise ValueError(
                     f"Candidate '{req_candidate_id}' expired or not found; please run /search again."
                 )
-            found = await self.chain_service.search_candidates(
-                criteria=criteria,
-                query=req_query,
-                limit=1,
+            cand = await search_candidate_with_fallback(
+                self.chain_service, eff_domain, criteria, req_query, req_fallback_query
             )
-            if not found and req_query.strip():
-                od_sig = inspect.signature(self.chain_service.search_on_demand)
-                if "criteria" in od_sig.parameters:
-                    one = await self.chain_service.search_on_demand(
-                        domain=eff_domain,
-                        query=req_query.strip(),
-                        lang=criteria.lang,
-                        criteria=criteria,
-                    )
-                else:
-                    one = await self.chain_service.search_on_demand(
-                        domain=eff_domain, query=req_query.strip(), lang=criteria.lang
-                    )
-                if one is not None:
-                    found = [one]
-            if not found:
+            if cand is None:
                 raise ValueError(
                     f"No matching media found in '{eff_domain}' for query='{req_query}' (lang='{criteria.lang}')."
                 )
-            cand = found[0]
 
         entry = QueuedOnDemandEntry(
             queue_id=f"q_{uuid.uuid4().hex[:10]}",
@@ -654,18 +699,14 @@ class OnDemandQueueService:
             mark_seen=req_mark_seen,
             from_studio_sim=from_studio,
             raw_query=req_query.strip(),
+            fallback_query=req_fallback_query,
             cache_key=req_cache_key,
             render_signature=req_render_sig,
             status="preparing",
         )
         q = self.state.priority_queues.setdefault(dmd_id, deque())
-        if req_mode == "play_now":
-            q.appendleft(entry)
-        else:
-            q.append(entry)
-
-        loop = asyncio.get_running_loop()
-        entry.prep_task = loop.create_task(
+        q.appendleft(entry) if req_mode == "play_now" else q.append(entry)
+        entry.prep_task = asyncio.get_running_loop().create_task(
             self.prepare_priority_entry(entry, is_server_managed=is_server_managed)
         )
         try:
@@ -681,43 +722,29 @@ class OnDemandQueueService:
     ) -> None:
         try:
             if entry.candidate.id == "pending" and entry.raw_query:
-                found = await self.chain_service.search_candidates(
-                    criteria=entry.criteria,
-                    query=entry.raw_query,
-                    limit=1,
+                found_cand = await search_candidate_with_fallback(
+                    self.chain_service,
+                    entry.domain,
+                    entry.criteria,
+                    entry.raw_query,
+                    entry.fallback_query,
                 )
-                if not found:
-                    od_sig = inspect.signature(self.chain_service.search_on_demand)
-                    if "criteria" in od_sig.parameters:
-                        one = await self.chain_service.search_on_demand(
-                            domain=entry.domain,
-                            query=entry.raw_query,
-                            lang=entry.criteria.lang,
-                            criteria=entry.criteria,
-                        )
-                    else:
-                        one = await self.chain_service.search_on_demand(
-                            domain=entry.domain,
-                            query=entry.raw_query,
-                            lang=entry.criteria.lang,
-                        )
-                    if one is not None:
-                        found = [one]
                 q_now = self.state.priority_queues.get(entry.dmd_id)
-                if not found or q_now is None or entry not in q_now:
+                if found_cand is None or q_now is None or entry not in q_now:
                     if q_now is not None and entry in q_now:
                         q_now.remove(entry)
                     logger.info(
-                        "[ORCHESTRATOR] Async On-Demand query '%s' yielded no match (queue_id='%s')",
+                        "[ORCHESTRATOR] Async On-Demand query '%s' (fallback='%s') yielded no match (queue_id='%s')",
                         entry.raw_query,
+                        entry.fallback_query,
                         entry.queue_id,
                     )
                     return
-                entry.candidate = found[0]
+                entry.candidate = found_cand
 
             pkg = await self.state.build_package_from_candidate(
                 transcoder=self.transcoder,
-                dmd_id=entry.target_slot_dmd_id,
+                dmd_id=entry.dmd_id if is_sync_dmd_id(entry.dmd_id) else entry.target_slot_dmd_id,
                 domain=entry.domain,
                 cand=entry.candidate,
                 geometry=entry.geometry,
@@ -755,7 +782,7 @@ class OnDemandQueueService:
             await self.activate_ready_priority_entry(
                 entry, pkg, is_server_managed=is_server_managed
             )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, ConversionAbortedError):
             logger.info("[ORCHESTRATOR] Cancelled priority queue prep '%s'", entry.queue_id)
         except Exception as exc:
             logger.error(

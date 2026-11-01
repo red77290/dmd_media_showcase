@@ -20,6 +20,7 @@ from app.application.concurrency import AsyncTaskSupervisor
 from app.application.criteria_parser import assemble_prepared_package, parse_domain_criteria
 from app.application.showcase_state import ShowcaseRuntimeState
 from app.application.source_chain_service import DomainSourceChainService
+from app.application.sync_slot_rules import find_companion_sync_dmd_ids, invoke_transcoder_for_dmd
 from app.config import settings
 from app.domain.board_identity import canonical_dmd_board_key, select_best_udp_ip
 from app.domain.entities import (
@@ -30,6 +31,7 @@ from app.domain.entities import (
     PreparedShowcasePackage,
 )
 from app.domain.ports import (
+    ConversionAbortedError,
     IDmdProfileRepository,
     IFrameStreamerPort,
     IMediaTranscoderPort,
@@ -58,6 +60,7 @@ class SlotPreparationService:
         take_next_priority_pkg_fn: Callable[
             [str, DomainType], Optional[PreparedShowcasePackage]
         ],
+        clear_queue_fn: Optional[Callable[[str], Awaitable[int]]] = None,
     ) -> None:
         self.state = state
         self.chain_service = chain_service
@@ -69,6 +72,7 @@ class SlotPreparationService:
         self._schedule_hook = schedule_hook
         self._pop_claimed_priority = pop_claimed_priority_fn
         self._take_next_priority_pkg = take_next_priority_pkg_fn
+        self._clear_queue = clear_queue_fn
 
     async def apply_runtime_limits(self) -> int:
         """Enforce updated server-wide duration/FPS ceilings across unconsumed N / N+1 slots."""
@@ -425,8 +429,8 @@ class SlotPreparationService:
                     iid = f"pkg_{domain}_{uuid.uuid4().hex[:12]}"
                     idir = settings.cache_dir / "consume_once" / dmd_id / domain / iid
                     try:
-                        fmap = await self.transcoder.transcode_candidate(
-                            cand_found, criteria, geometry, idir
+                        fmap = await invoke_transcoder_for_dmd(
+                            self.transcoder, cand_found, criteria, geometry, idir, dmd_id
                         )
                     except BaseException:
                         shutil.rmtree(idir, ignore_errors=True)
@@ -512,7 +516,7 @@ class SlotPreparationService:
                         chosen_pkg.card.has_video,
                         chosen_pkg.card.stream_frames,
                     )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, ConversionAbortedError):
             logger.info(
                 "[ORCHESTRATOR] Cancelled outdated preparation task for %s/%s", dmd_id, domain
             )
@@ -760,6 +764,15 @@ class SlotPreparationService:
             if abort_ev is not None:
                 abort_ev.set()
             await self.cleanup_abandoned_active_packages(dmd_id)
+            if self._clear_queue is not None:
+                for sync_id in find_companion_sync_dmd_ids(
+                    dmd_id, list(self.state.priority_queues.keys()), self.state.client_udp_ips
+                ):
+                    await self._clear_queue(sync_id)
+
+        elif ev_type in ("cancel_queue", "abort_sync"):
+            if self._clear_queue is not None:
+                await self._clear_queue(dmd_id)
 
         elif ev_type == "client_online":
             self.state.client_online[dmd_id] = True

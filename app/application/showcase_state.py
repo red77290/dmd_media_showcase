@@ -20,6 +20,7 @@ import uuid
 
 from app.application.concurrency import AsyncTaskSupervisor, DynamicAsyncLimiter, WorkerMetricsTracker
 from app.application.criteria_parser import assemble_prepared_package
+from app.application.sync_slot_rules import invoke_transcoder_for_dmd
 from app.config import settings
 from app.domain.entities import (
     DomainType,
@@ -62,6 +63,7 @@ class QueuedOnDemandEntry:
     from_studio_sim: bool = False
     cache_hit: bool = False
     raw_query: str = ""
+    fallback_query: str = ""
     cache_key: str = ""
     render_signature: str = ""
     status: Literal["queued", "preparing", "ready", "playing"] = "queued"
@@ -247,7 +249,9 @@ class ShowcaseRuntimeState:
         self.preparing_sources[slot_key] = cand.source_id or ""
         try:
             files_map = await self.execute_with_transcode_gate(
-                lambda: transcoder.transcode_candidate(cand, criteria, geometry, item_dir),
+                lambda: invoke_transcoder_for_dmd(
+                    transcoder, cand, criteria, geometry, item_dir, dmd_id
+                ),
                 should_count_completion=lambda _res: True,
             )
         except BaseException:
