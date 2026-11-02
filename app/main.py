@@ -45,6 +45,7 @@ from app.infrastructure.http.routers import (
     clients_and_queue,
     consume_once,
     discovery,
+    e2e_fixtures,
     rotation_batch,
     studio,
     system_admin,
@@ -139,6 +140,7 @@ OPENAPI_TAGS = [
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     server_config_store.apply_to_settings()
+    e2e_fixtures.ensure_e2e_scraper_registered(scraper_registry)
     apply_live_log_level(settings.log_level)
     logger.info(
         "[STARTUP] Starting DMD Media Showcase Server v%s (dmd_gif_converter v%s, max_workers=%d)",
@@ -205,6 +207,7 @@ app.include_router(clients_and_queue.router)
 app.include_router(studio.router)
 app.include_router(consume_once.router)
 app.include_router(rotation_batch.router)
+e2e_fixtures.install_e2e_routes_and_middleware(app, scraper_registry)
 
 
 def run() -> None:

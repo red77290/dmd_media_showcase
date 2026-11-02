@@ -1,0 +1,303 @@
+{
+  "generated_at_utc": "2026-11-02T20:14:34.259498+00:00",
+  "network_isolation": "docker bridge (internal: true, zero internet access)",
+  "total_scenarios": 8,
+  "passed": 8,
+  "failed": 0,
+  "suite_duration_s": 137.93,
+  "exit_status": 0,
+  "scenarios": [
+    {
+      "id": "E2E-01",
+      "dmd": "ArcadeMatrix (ESP32)",
+      "os": "recalbox",
+      "game": "neogeo/mslug",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "broker_target": "dmd-showcase:1883 (showcase)",
+      "sync_client_id": "esp32_ut0001_games_128x32_sync",
+      "browse_marquee_rgb": {
+        "tl": [
+          255,
+          0,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          0
+        ],
+        "bot": [
+          0,
+          80,
+          255
+        ]
+      },
+      "marquee_latency_ms": 3.3,
+      "marquee_rgb_samples": {
+        "tl": [
+          255,
+          0,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          0
+        ],
+        "bot": [
+          0,
+          80,
+          255
+        ]
+      },
+      "showcase_stream_codec": "dmdz2",
+      "presented_stream_frames": 405,
+      "distinct_stream_crcs": 291,
+      "status": "PASSED",
+      "duration_s": 36.032
+    },
+    {
+      "id": "E2E-02",
+      "dmd": "ArcadeMatrix (ESP32)",
+      "os": "batocera",
+      "game": "snes/smw",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "broker_target": "dmd-showcase:1883 (showcase)",
+      "sync_client_id": "esp32_ut0001_games_128x32_sync",
+      "marquee_latency_ms": 34.8,
+      "marquee_rgb_samples": {
+        "tl": [
+          255,
+          255,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          255
+        ],
+        "bot": [
+          255,
+          0,
+          255
+        ]
+      },
+      "showcase_stream_codec": "dmdz2",
+      "presented_stream_frames": 407,
+      "distinct_stream_crcs": 278,
+      "status": "PASSED",
+      "duration_s": 31.152
+    },
+    {
+      "id": "E2E-03",
+      "dmd": "ArcadeMatrix (ESP32)",
+      "os": "retropie",
+      "game": "megadrive/sonic",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "broker_target": "dmd-showcase:1883 (showcase)",
+      "sync_client_id": "esp32_ut0001_games_128x32_sync",
+      "marquee_latency_ms": 417.8,
+      "marquee_rgb_samples": {
+        "tl": [
+          0,
+          121,
+          255
+        ],
+        "tr": [
+          255,
+          255,
+          255
+        ],
+        "bot": [
+          0,
+          222,
+          82
+        ]
+      },
+      "showcase_stream_codec": "dmdz2",
+      "presented_stream_frames": 400,
+      "distinct_stream_crcs": 286,
+      "status": "PASSED",
+      "duration_s": 34.951
+    },
+    {
+      "id": "E2E-04",
+      "dmd": "ArcadeMatrix (ESP32)",
+      "os": "batocera (local broker fallback)",
+      "game": "neogeo/mslug",
+      "marquee_verified": true,
+      "showcase_verified": "N/A (local broker fallback mode)",
+      "cleanup_verified": true,
+      "broker_target": "172.18.0.7:1883 (local)",
+      "marquee_rgb_samples": {
+        "tl": [
+          255,
+          0,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          0
+        ],
+        "bot": [
+          0,
+          80,
+          255
+        ]
+      },
+      "status": "PASSED",
+      "duration_s": 0.551
+    },
+    {
+      "id": "E2E-05",
+      "dmd": "ArcadeMatrix_RPi (Rust)",
+      "os": "recalbox",
+      "game": "neogeo/mslug",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "broker_target": "172.18.0.5:1883 (showcase)",
+      "sync_client_id": "rpi_24bcfb_games_128x32_sync",
+      "browse_marquee_rgb": {
+        "tl": [
+          255,
+          0,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          0
+        ],
+        "bot": [
+          0,
+          80,
+          255
+        ]
+      },
+      "marquee_latency_ms": 3.4,
+      "marquee_rgb_samples": {
+        "tl": [
+          255,
+          0,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          0
+        ],
+        "bot": [
+          0,
+          80,
+          255
+        ]
+      },
+      "showcase_stream_codec": "dmdz2",
+      "distinct_crcs": 68,
+      "status": "PASSED",
+      "duration_s": 12.3
+    },
+    {
+      "id": "E2E-06",
+      "dmd": "ArcadeMatrix_RPi (Rust)",
+      "os": "batocera",
+      "game": "snes/smw",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "broker_target": "172.18.0.5:1883 (showcase)",
+      "sync_client_id": "rpi_24bcfb_games_128x32_sync",
+      "marquee_latency_ms": 66.9,
+      "marquee_rgb_samples": {
+        "tl": [
+          255,
+          255,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          255
+        ],
+        "bot": [
+          255,
+          0,
+          255
+        ]
+      },
+      "showcase_stream_codec": "dmdz2",
+      "distinct_crcs": 37,
+      "status": "PASSED",
+      "duration_s": 8.58
+    },
+    {
+      "id": "E2E-07",
+      "dmd": "ArcadeMatrix_RPi (Rust)",
+      "os": "retropie",
+      "game": "megadrive/sonic",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "broker_target": "172.18.0.5:1883 (showcase)",
+      "sync_client_id": "rpi_24bcfb_games_128x32_sync",
+      "marquee_latency_ms": 414.5,
+      "marquee_rgb_samples": {
+        "tl": [
+          0,
+          121,
+          255
+        ],
+        "tr": [
+          255,
+          255,
+          255
+        ],
+        "bot": [
+          0,
+          222,
+          82
+        ]
+      },
+      "showcase_stream_codec": "dmdz2",
+      "distinct_crcs": 84,
+      "status": "PASSED",
+      "duration_s": 13.39
+    },
+    {
+      "id": "E2E-08",
+      "dmd": "ArcadeMatrix_RPi (Rust)",
+      "os": "batocera (rapid preemption mslug -> smw)",
+      "game": "neogeo/mslug -> snes/smw",
+      "marquee_verified": true,
+      "showcase_verified": true,
+      "cleanup_verified": true,
+      "marquee_rgb_samples": {
+        "tl": [
+          255,
+          255,
+          0
+        ],
+        "tr": [
+          0,
+          255,
+          255
+        ],
+        "bot": [
+          255,
+          0,
+          255
+        ]
+      },
+      "status": "PASSED",
+      "duration_s": 0.781
+    }
+  ]
+}

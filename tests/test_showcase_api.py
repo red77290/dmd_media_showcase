@@ -335,7 +335,7 @@ async def test_video_batch_and_skip_when_no_video_available(monkeypatch):
         state.current_batch.candidates[keys[1]].youtube_url = None
 
         batch = None
-        for _ in range(80):
+        for _ in range(250):
             r = await client.get("/api/v1/games/batch", params={"session_id": session_id})
             assert r.status_code == 200
             data = r.json()

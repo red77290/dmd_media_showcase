@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +61,12 @@ class Settings(BaseSettings):
     ssl_certfile: str = ""
     ssl_keyfile: str = ""
     trust_proxy_headers: bool = True
+
+    # Optional offline deterministic E2E fixture catalog directory (disabled when empty)
+    e2e_fixtures_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices("DMD_E2E_FIXTURES_DIR", "E2E_FIXTURES_DIR"),
+    )
 
     @property
     def detected_cpu_cores(self) -> int:
