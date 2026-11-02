@@ -14,3 +14,4 @@ docs/*
 !docs/asyncapi.yaml
 tests
 .env
+e2e/reports

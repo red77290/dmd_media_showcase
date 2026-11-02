@@ -1,0 +1,133 @@
+name: dmd-frontend-showcase-e2e
+
+services:
+  dmd-showcase:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.showcase
+      additional_contexts:
+        dmd_gif_converter: ../../dmd_gif_converter
+    hostname: dmd-showcase
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8890"
+      MQTT_PORT: "1883"
+      DMD_E2E_FIXTURES_DIR: "/e2e_fixtures"
+    networks:
+      - dmd_e2e_net
+
+  dmd-arcadematrix-esp32:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.cpp_targets
+      additional_contexts:
+        arcadematrix: ../../ArcadeMatrix
+    hostname: dmd-arcadematrix-esp32
+    environment:
+      DMD_TARGET_KIND: "arcadematrix_esp32"
+      AM_SD_ROOT: "/sd"
+      AM_HTTP_PORT: "80"
+      AM_LOCAL_BROKER_PORT: "1883"
+      AM_USE_SHOWCASE_BROKER: "1"
+      SHOWCASE_HOST: "dmd-showcase"
+      SHOWCASE_PORT: "8890"
+    depends_on:
+      dmd-showcase:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "2", "http://127.0.0.1:80/api/e2e/state"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+    networks:
+      - dmd_e2e_net
+
+  dmd-arcadematrix-rpi:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.rpi
+      additional_contexts:
+        arcadematrix_rpi: ../../ArcadeMatrix_RPi
+    hostname: dmd-arcadematrix-rpi
+    environment:
+      ARCADEMATRIX_MOCK_MATRIX: "1"
+      ARCADEMATRIX_E2E_INSPECT: "1"
+      ARCADEMATRIX_HTTP_PORT: "80"
+    depends_on:
+      dmd-showcase:
+        condition: service_healthy
+    networks:
+      - dmd_e2e_net
+
+  os-recalbox:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.os
+      additional_contexts:
+        arcadematrix: ../../ArcadeMatrix
+        arcadematrix_rpi: ../../ArcadeMatrix_RPi
+    hostname: os-recalbox
+    environment:
+      OS_FLAVOR: "recalbox"
+      OS_AGENT_PORT: "9000"
+    networks:
+      - dmd_e2e_net
+
+  os-batocera:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.os
+      additional_contexts:
+        arcadematrix: ../../ArcadeMatrix
+        arcadematrix_rpi: ../../ArcadeMatrix_RPi
+    hostname: os-batocera
+    environment:
+      OS_FLAVOR: "batocera"
+      OS_AGENT_PORT: "9000"
+    networks:
+      - dmd_e2e_net
+
+  os-retropie:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.os
+      additional_contexts:
+        arcadematrix: ../../ArcadeMatrix
+        arcadematrix_rpi: ../../ArcadeMatrix_RPi
+    hostname: os-retropie
+    environment:
+      OS_FLAVOR: "retropie"
+      OS_AGENT_PORT: "9000"
+    networks:
+      - dmd_e2e_net
+
+  e2e-runner:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.runner
+    hostname: e2e-runner
+    environment:
+      E2E_REPORT_DIR: "/reports"
+    volumes:
+      - ./reports:/reports
+    depends_on:
+      dmd-showcase:
+        condition: service_healthy
+      dmd-arcadematrix-esp32:
+        condition: service_healthy
+      dmd-arcadematrix-rpi:
+        condition: service_healthy
+      os-recalbox:
+        condition: service_healthy
+      os-batocera:
+        condition: service_healthy
+      os-retropie:
+        condition: service_healthy
+    networks:
+      - dmd_e2e_net
+
+networks:
+  dmd_e2e_net:
+    driver: bridge
+    internal: true

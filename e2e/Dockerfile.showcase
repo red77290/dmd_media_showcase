@@ -1,0 +1,54 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOST=0.0.0.0 \
+    PORT=8890 \
+    MQTT_PORT=1883 \
+    DMD_DATA_DIR=/app/data \
+    CACHE_DIR=/tmp/dmd_media_showcase_cache \
+    DMD_E2E_FIXTURES_DIR=/e2e_fixtures
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        curl \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        gcc \
+        libc6-dev \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install local dmd_gif_converter from sibling repository context
+COPY --from=dmd_gif_converter pyproject.toml README.md /opt/dmd_gif_converter/
+COPY --from=dmd_gif_converter dmd_gif_converter /opt/dmd_gif_converter/dmd_gif_converter
+COPY --from=dmd_gif_converter src /opt/dmd_gif_converter/src
+RUN pip install --upgrade pip setuptools && \
+    pip install /opt/dmd_gif_converter
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY app ./app
+COPY docs/asyncapi.yaml ./docs/asyncapi.yaml
+COPY scripts/compile_prod_vault.py ./scripts/compile_prod_vault.py
+
+RUN python3 scripts/compile_prod_vault.py && \
+    rm -rf scripts build && \
+    sed -i 's|"dmd-gif-converter @ git+https://github.com/red77290/dmd_gif_converter.git@latest"|"dmd-gif-converter>=8.0.0"|g' pyproject.toml && \
+    pip install . && \
+    python3 -c "from src.plugins.detectors.detector import _ensure_yolo_model; _ensure_yolo_model()" && \
+    apt-get purge -y --auto-remove gcc libc6-dev python3-dev && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /app/data /tmp/dmd_media_showcase_cache
+
+COPY e2e/fixtures/generate_fixtures.py ./e2e/fixtures/generate_fixtures.py
+RUN python3 e2e/fixtures/generate_fixtures.py --mode showcase --out /e2e_fixtures
+
+EXPOSE 8890 1883 5353/udp
+
+HEALTHCHECK --interval=2s --timeout=3s --start-period=3s --retries=15 \
+    CMD curl -fsS --max-time 2 http://127.0.0.1:8890/api/v1/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8890"]

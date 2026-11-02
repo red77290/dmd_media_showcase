@@ -33,6 +33,7 @@ from app.domain.ports import (
     IMqttControlGatewayPort,
     ISeenHistoryRepository,
 )
+from app.domain.ports.media_transcoder import ConversionAbortedError
 from app.domain.style_specs import VALID_DOMAINS
 
 logger = logging.getLogger("dmd_showcase.application.director")
@@ -332,203 +333,228 @@ class PassivePlaylistDirectorService:
         wake_ev = self.state.director_wake_events.setdefault(dmd_id, asyncio.Event())
         try:
             while dmd_id in self.state.server_managed_ids:
-                prof = self.profile_store.get_profile(dmd_id)
-                if prof is None or prof.get("config_source") != "server":
-                    return
+                try:
+                    prof = self.profile_store.get_profile(dmd_id)
+                    if prof is None or prof.get("config_source") != "server":
+                        return
 
-                supports_local_card = bool(prof.get("supports_local_card", True))
-                has_priority = bool(self.state.priority_queues.get(dmd_id))
-                if not has_priority and dmd_id not in self.state.director_prefetched:
-                    prefetched = await self.prepare_next_playlist_package(dmd_id, prof)
-                    if prefetched is not None:
-                        self.state.director_prefetched[dmd_id] = prefetched
+                    supports_local_card = bool(prof.get("supports_local_card", True))
+                    has_priority = bool(self.state.priority_queues.get(dmd_id))
+                    if not has_priority and dmd_id not in self.state.director_prefetched:
+                        prefetched = await self.prepare_next_playlist_package(dmd_id, prof)
+                        if prefetched is not None:
+                            self.state.director_prefetched[dmd_id] = prefetched
 
-                prof = self.profile_store.get_profile(dmd_id) or prof
-                udp_ip = select_best_udp_ip(
-                    str(prof.get("udp_ip") or ""),
-                    self.state.client_udp_ips.get(dmd_id),
-                    "",
-                )
-                udp_port = int(
-                    prof.get("udp_port") or self.state.client_udp_ports.get(dmd_id, 4210)
-                )
-                is_online = self.state.client_online.get(dmd_id, False) or bool(
-                    prof.get("always_stream_udp", False)
-                )
-                can_play = (not bool(prof.get("paused", False))) and is_online
-
-                if not can_play:
-                    wake_ev.clear()
-                    prof_recheck = self.profile_store.get_profile(dmd_id) or prof
-                    still_blocked = bool(prof_recheck.get("paused", False)) or not (
-                        self.state.client_online.get(dmd_id, False)
-                        or bool(prof_recheck.get("always_stream_udp", False))
+                    prof = self.profile_store.get_profile(dmd_id) or prof
+                    udp_ip = select_best_udp_ip(
+                        str(prof.get("udp_ip") or ""),
+                        self.state.client_udp_ips.get(dmd_id),
+                        "",
                     )
-                    if still_blocked:
-                        await wake_ev.wait()
-                    continue
-
-                prio_pair = await self.pop_next_ready_priority_for_director(dmd_id)
-                if prio_pair is not None:
-                    _entry, pkg = prio_pair
-                else:
-                    pkg = self.state.director_prefetched.pop(dmd_id, None)
-                    if pkg is None or not pkg.item_dir.exists():
-                        pkg = await self.prepare_next_playlist_package(dmd_id, prof)
-
-                if pkg is None:
-                    wake_ev.clear()
-                    try:
-                        await asyncio.wait_for(wake_ev.wait(), timeout=2.5)
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-
-                loop = asyncio.get_running_loop()
-                if (
-                    dmd_id not in self.state.director_prefetched
-                    and not AsyncTaskSupervisor.is_task_live(
-                        self.state.director_prefetch_tasks.get(dmd_id), loop
+                    udp_port = int(
+                        prof.get("udp_port") or self.state.client_udp_ports.get(dmd_id, 4210)
                     )
-                ):
-
-                    async def _bg_prefetch() -> None:
-                        cur_prof = self.profile_store.get_profile(dmd_id)
-                        if cur_prof and cur_prof.get("config_source") == "server":
-                            nxt = await self.prepare_next_playlist_package(dmd_id, cur_prof)
-                            if nxt is not None and dmd_id not in self.state.director_prefetched:
-                                self.state.director_prefetched[dmd_id] = nxt
-
-                    self.state.director_prefetch_tasks[dmd_id] = loop.create_task(
-                        _bg_prefetch()
+                    is_online = self.state.client_online.get(dmd_id, False) or bool(
+                        prof.get("always_stream_udp", False)
                     )
+                    can_play = (not bool(prof.get("paused", False))) and is_online
 
-                abort_ev = asyncio.Event()
-                self.state.director_play_abort_events[dmd_id] = abort_ev
-                now_ts = time.time()
-                self.state.client_last_seen[(dmd_id, pkg.domain)] = now_ts
-                self.state.last_played_titles[(dmd_id, pkg.domain)] = pkg.card.title
-                self.state.last_played_sources[(dmd_id, pkg.domain)] = (
-                    pkg.card.source_used or pkg.candidate.source_id or ""
-                )
+                    if not can_play:
+                        wake_ev.clear()
+                        prof_recheck = self.profile_store.get_profile(dmd_id) or prof
+                        still_blocked = bool(prof_recheck.get("paused", False)) or not (
+                            self.state.client_online.get(dmd_id, False)
+                            or bool(prof_recheck.get("always_stream_udp", False))
+                        )
+                        if still_blocked:
+                            await wake_ev.wait()
+                        continue
 
-                if not supports_local_card:
-                    pkg.consumed = True
-                    should_mark = self.state.package_mark_seen.pop(pkg.item_id, True)
-                    self.state.priority_item_ids.discard(pkg.item_id)
-                    if should_mark:
-                        self.seen_repo.mark_consumed(pkg.domain, pkg.candidate.id)
+                    prio_pair = await self.pop_next_ready_priority_for_director(dmd_id)
+                    if prio_pair is not None:
+                        _entry, pkg = prio_pair
+                    else:
+                        pkg = self.state.director_prefetched.pop(dmd_id, None)
+                        if pkg is None or not pkg.item_dir.exists():
+                            pkg = await self.prepare_next_playlist_package(dmd_id, prof)
 
-                    started_msg = {
-                        "event": "stream_started",
-                        "action": "play_stream",
-                        "mode": "passive_udp",
-                        "dmd_id": dmd_id,
-                        "domain": pkg.domain,
-                        "item_id": pkg.item_id,
-                        "title": pkg.card.title,
-                        "lang": pkg.card.lang,
-                        "frames": pkg.card.stream_frames,
-                        "fps": pkg.card.stream_fps,
-                    }
-                    await self.mqtt.publish_json(
-                        f"dmd_showcase/clients/{dmd_id}/command", started_msg, retain=False
-                    )
-                    await self.mqtt.publish_json(
-                        f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=False
-                    )
+                    if pkg is None:
+                        wake_ev.clear()
+                        try:
+                            await asyncio.wait_for(wake_ev.wait(), timeout=2.5)
+                        except asyncio.TimeoutError:
+                            pass
+                        continue
 
+                    loop = asyncio.get_running_loop()
                     if (
-                        pkg.unified_stream_path is not None
-                        and pkg.unified_stream_path.exists()
-                        and pkg.card.stream_frames > 0
+                        dmd_id not in self.state.director_prefetched
+                        and not AsyncTaskSupervisor.is_task_live(
+                            self.state.director_prefetch_tasks.get(dmd_id), loop
+                        )
                     ):
-                        self.state.last_claimed_until[(dmd_id, pkg.domain)] = (
-                            now_ts + max(3.0, float(pkg.card.stream_duration_s or 0.0) + 2.0)
+
+                        async def _bg_prefetch() -> None:
+                            try:
+                                cur_prof = self.profile_store.get_profile(dmd_id)
+                                if cur_prof and cur_prof.get("config_source") == "server":
+                                    nxt = await self.prepare_next_playlist_package(dmd_id, cur_prof)
+                                    if nxt is not None and dmd_id not in self.state.director_prefetched:
+                                        self.state.director_prefetched[dmd_id] = nxt
+                            except (ConversionAbortedError, asyncio.CancelledError):
+                                return
+                            except Exception as bg_exc:
+                                logger.warning(
+                                    "[ORCHESTRATOR] Background prefetch skipped for '%s': %s",
+                                    dmd_id,
+                                    bg_exc,
+                                )
+
+                        self.state.director_prefetch_tasks[dmd_id] = loop.create_task(
+                            _bg_prefetch()
                         )
 
-                        async def _on_passive_eof(
-                            client_dmd_id: str, finished_item_id: str, _ok: bool
-                        ) -> None:
-                            self.state.last_claimed_until.pop(
-                                (client_dmd_id, pkg.domain), None
-                            )
-                            eof_payload = {
-                                "event": "stream_eof",
-                                "item_id": finished_item_id,
-                                "domain": pkg.domain,
-                            }
-                            await self.mqtt.publish_json(
-                                f"dmd_showcase/clients/{client_dmd_id}/stream_state",
-                                eof_payload,
-                                retain=False,
-                            )
-                            abort_ev.set()
-
-                        await self.streamer.start_udp_clock_stream(
-                            dmd_id=dmd_id,
-                            item_id=pkg.item_id,
-                            stream_path=pkg.unified_stream_path,
-                            width=pkg.geometry.width,
-                            height=pkg.geometry.height,
-                            fps=pkg.card.stream_fps,
-                            udp_ip=udp_ip,
-                            udp_port=udp_port,
-                            on_eof=_on_passive_eof,
-                        )
-                        await abort_ev.wait()
-                        await self.streamer.stop_stream(dmd_id)
-
-                    await self._purge_consumed(pkg.item_id)
-                else:
-                    slot_key = (dmd_id, pkg.domain)
-                    self.state.ready_packages[slot_key] = pkg
-                    card_dict = pkg.card.to_dict()
-                    await self.mqtt.publish_json(
-                        f"dmd_showcase/clients/{dmd_id}/{pkg.domain}/ready",
-                        {
-                            "ready": True,
-                            "item_id": pkg.item_id,
-                            "domain": pkg.domain,
-                            "card": card_dict,
-                        },
-                        retain=True,
+                    abort_ev = asyncio.Event()
+                    self.state.director_play_abort_events[dmd_id] = abort_ev
+                    now_ts = time.time()
+                    self.state.client_last_seen[(dmd_id, pkg.domain)] = now_ts
+                    self.state.last_played_titles[(dmd_id, pkg.domain)] = pkg.card.title
+                    self.state.last_played_sources[(dmd_id, pkg.domain)] = (
+                        pkg.card.source_used or pkg.candidate.source_id or ""
                     )
-                    await self.mqtt.publish_json(
-                        f"dmd_showcase/clients/{dmd_id}/command",
-                        {
-                            "action": "play_card",
-                            "mode": "hybrid",
+
+                    if not supports_local_card:
+                        pkg.consumed = True
+                        should_mark = self.state.package_mark_seen.pop(pkg.item_id, True)
+                        self.state.priority_item_ids.discard(pkg.item_id)
+                        if should_mark:
+                            self.seen_repo.mark_consumed(pkg.domain, pkg.candidate.id)
+
+                        started_msg = {
+                            "event": "stream_started",
+                            "action": "play_stream",
+                            "mode": "passive_udp",
                             "dmd_id": dmd_id,
                             "domain": pkg.domain,
                             "item_id": pkg.item_id,
-                            "card": card_dict,
-                        },
-                        retain=False,
-                    )
-                    max_wait_s = max(12.0, float(pkg.card.stream_duration_s or 0.0) + 20.0)
-                    try:
-                        await asyncio.wait_for(abort_ev.wait(), timeout=max_wait_s)
-                    except asyncio.TimeoutError:
-                        pass
-                    self.state.ready_packages.pop(slot_key, None)
-                    if pkg.item_id in self.state.active_packages:
+                            "title": pkg.card.title,
+                            "lang": pkg.card.lang,
+                            "frames": pkg.card.stream_frames,
+                            "fps": pkg.card.stream_fps,
+                        }
+                        await self.mqtt.publish_json(
+                            f"dmd_showcase/clients/{dmd_id}/command", started_msg, retain=False
+                        )
+                        await self.mqtt.publish_json(
+                            f"dmd_showcase/clients/{dmd_id}/stream_state", started_msg, retain=False
+                        )
+
+                        if (
+                            pkg.unified_stream_path is not None
+                            and pkg.unified_stream_path.exists()
+                            and pkg.card.stream_frames > 0
+                        ):
+                            self.state.last_claimed_until[(dmd_id, pkg.domain)] = (
+                                now_ts + max(3.0, float(pkg.card.stream_duration_s or 0.0) + 2.0)
+                            )
+
+                            async def _on_passive_eof(
+                                client_dmd_id: str, finished_item_id: str, _ok: bool
+                            ) -> None:
+                                self.state.last_claimed_until.pop(
+                                    (client_dmd_id, pkg.domain), None
+                                )
+                                eof_payload = {
+                                    "event": "stream_eof",
+                                    "item_id": finished_item_id,
+                                    "domain": pkg.domain,
+                                }
+                                await self.mqtt.publish_json(
+                                    f"dmd_showcase/clients/{client_dmd_id}/stream_state",
+                                    eof_payload,
+                                    retain=False,
+                                )
+                                abort_ev.set()
+
+                            await self.streamer.start_udp_clock_stream(
+                                dmd_id=dmd_id,
+                                item_id=pkg.item_id,
+                                stream_path=pkg.unified_stream_path,
+                                width=pkg.geometry.width,
+                                height=pkg.geometry.height,
+                                fps=pkg.card.stream_fps,
+                                udp_ip=udp_ip,
+                                udp_port=udp_port,
+                                on_eof=_on_passive_eof,
+                            )
+                            await abort_ev.wait()
+                            await self.streamer.stop_stream(dmd_id)
+
                         await self._purge_consumed(pkg.item_id)
+                    else:
+                        slot_key = (dmd_id, pkg.domain)
+                        self.state.ready_packages[slot_key] = pkg
+                        card_dict = pkg.card.to_dict()
+                        await self.mqtt.publish_json(
+                            f"dmd_showcase/clients/{dmd_id}/{pkg.domain}/ready",
+                            {
+                                "ready": True,
+                                "item_id": pkg.item_id,
+                                "domain": pkg.domain,
+                                "card": card_dict,
+                            },
+                            retain=True,
+                        )
+                        await self.mqtt.publish_json(
+                            f"dmd_showcase/clients/{dmd_id}/command",
+                            {
+                                "action": "play_card",
+                                "mode": "hybrid",
+                                "dmd_id": dmd_id,
+                                "domain": pkg.domain,
+                                "item_id": pkg.item_id,
+                                "card": card_dict,
+                            },
+                            retain=False,
+                        )
+                        max_wait_s = max(12.0, float(pkg.card.stream_duration_s or 0.0) + 20.0)
+                        try:
+                            await asyncio.wait_for(abort_ev.wait(), timeout=max_wait_s)
+                        except asyncio.TimeoutError:
+                            pass
+                        self.state.ready_packages.pop(slot_key, None)
+                        if pkg.item_id in self.state.active_packages:
+                            await self._purge_consumed(pkg.item_id)
 
-                self.state.director_play_abort_events.pop(dmd_id, None)
+                    self.state.director_play_abort_events.pop(dmd_id, None)
 
-                if dmd_id in self.state.director_skip_gap:
-                    self.state.director_skip_gap.discard(dmd_id)
-                    continue
-                cur_prof = self.profile_store.get_profile(dmd_id) or prof
-                gap_s = max(0.0, float(cur_prof.get("inter_item_gap_s") or 0.0))
-                if gap_s > 0.0 and not self.state.priority_queues.get(dmd_id):
-                    wake_ev.clear()
-                    try:
-                        await asyncio.wait_for(wake_ev.wait(), timeout=gap_s)
-                    except asyncio.TimeoutError:
-                        pass
+                    if dmd_id in self.state.director_skip_gap:
+                        self.state.director_skip_gap.discard(dmd_id)
+                        continue
+                    cur_prof = self.profile_store.get_profile(dmd_id) or prof
+                    gap_s = max(0.0, float(cur_prof.get("inter_item_gap_s") or 0.0))
+                    if gap_s > 0.0 and not self.state.priority_queues.get(dmd_id):
+                        wake_ev.clear()
+                        try:
+                            await asyncio.wait_for(wake_ev.wait(), timeout=gap_s)
+                        except asyncio.TimeoutError:
+                            pass
+                except ConversionAbortedError:
+                    self.state.director_play_abort_events.pop(dmd_id, None)
+                    logger.info(
+                        "[ORCHESTRATOR] ServerManagedDirector prefetch interrupted by DMD cancel for '%s'; continuing loop",
+                        dmd_id,
+                    )
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as iter_exc:
+                    self.state.director_play_abort_events.pop(dmd_id, None)
+                    logger.error(
+                        "[ORCHESTRATOR] ServerManagedDirector error for '%s': %s",
+                        dmd_id,
+                        iter_exc,
+                    )
+                    await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             logger.info("[ORCHESTRATOR] Stopped ServerManagedDirector for '%s'", dmd_id)
-        except Exception as exc:
-            logger.error("[ORCHESTRATOR] ServerManagedDirector error for '%s': %s", dmd_id, exc)
