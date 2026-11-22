@@ -8,7 +8,14 @@
 💬 **Comunidad de Telegram:** [https://t.me/+DrSdAO8UMUViNmE0](https://t.me/+DrSdAO8UMUViNmE0)  
 ☕ **Apoya el proyecto en Ko-fi:** [https://ko-fi.com/red1l](https://ko-fi.com/red1l)
 
-**DMD Media Showcase Server** es un microservicio autoalojado de descubrimiento multimedia sin repetición, transcodificación y streaming en tiempo real **MQTT + HTTP `DMDZ` v2 / `DMDS` Sin Pérdidas** (además de UDP pasivo `DMDF`) diseñado para paneles LED HUB75 **[ArcadeMatrix (ESP32 / ESP32-S3)](https://github.com/red77290/ArcadeMatrix)** y **ArcadeMatrix_RPi**.
+**Olvídate de buscar fuentes de vídeo o gestionar miles de GIFs en una tarjeta SD.**  
+**DMD Media Showcase** es la aplicación complementaria lista para usar de **[ArcadeMatrix (ESP32 / ESP32-S3)](https://github.com/red77290/ArcadeMatrix)** y **[ArcadeMatrix_RPi](https://github.com/red77290/ArcadeMatrix_RPI)**: descubre y transmite automáticamente **Juegos Retro, Películas, Series de TV y Anime** **sin repetir nunca un título** en **RGB565 de 16 bits sin pérdidas** (`MQTT + HTTP DMDZ v2 / DMDS` y UDP pasivo `DMDF`), y enriquece en directo el arranque de juegos en **Recalbox / Batocera / RetroPie**.
+
+> [!TIP]
+> ### ⚡ Cero Configuración: ¡Ejecuta el `.exe` o el `.dmg` y Funciona al Instante!
+> 1. **Descarga e inicia** 👉 **[Última Release en GitHub](https://github.com/red77290/dmd_media_showcase/releases/latest)**: haz doble clic en **`dmd-media-showcase.exe`** (Windows `.zip`), abre **`DMD Media Showcase.app`** (macOS `.dmg`), ejecuta `./start_showcase.sh` (Linux `.tar.gz`) o levanta el contenedor **Docker**.
+> 2. **0 configuración, 0 cuentas necesarias**: Python, FFmpeg, el broker MQTT integrado y **todas las claves API cifradas ya vienen incluidas**. Se anuncia automáticamente en tu red local (`dmdmediashowcase.local:8890`) — basta con activar el interruptor Showcase en tu DMD y empieza a transmitir al momento.
+> 3. **Aplicación Web integrada para ir más allá**: abre `http://localhost:8890/` (o `http://dmdmediashowcase.local:8890/`) cuando quieras explorar la **personalización** (Estudio de fichas con simulador LED en vivo, filtros por sistemas/géneros/décadas, búsqueda y reproducción inmediata de títulos, prioridad de fuentes) o la **monitorización en tiempo real** de tus paneles y flujos activos.
 
 ---
 
@@ -95,9 +102,17 @@ Cada título ensambla automáticamente una emisión RGB565 multicapítulo adapta
 
 ## 🚀 Instalación Rápida y Ejemplo Corto
 
-### Opción 1: Imagen Docker Oficial Multi-Arch (`amd64` / `arm64` — Raspberry Pi / NAS / Home-Lab)
+### Opción 1: Aplicaciones Listas para Usar — Windows (`.exe`), macOS (`.dmg`) y Linux (`.tar.gz`) *(Recomendado — 0 instalación, 0 config)*
 
-#### A. Docker Compose (Recomendado — sin `git clone` ni compilación local)
+Descargue el paquete para su sistema desde **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)** (sin necesidad de instalar Python, FFmpeg ni MQTT — las claves API cifradas ya vienen integradas):
+- **Windows (`x64`)**: Extraiga **`DMD_Media_Showcase_Windows_x64.zip`** y ejecute directamente **`dmd-media-showcase.exe`** (o `Start_Showcase_Windows.bat`).
+- **macOS (Apple Silicon `arm64`)**: Abra **`DMD_Media_Showcase_macOS_arm64.dmg`**, arrastre **`DMD Media Showcase.app`** a **`Applications`** e iníciela (el icono `▣ DMD` aparece en la barra de menús de macOS y abre automáticamente la aplicación Web en `http://localhost:8890/`). *(Primer inicio sin notarización de Apple: Clic derecho → **Abrir**, o ejecute `xattr -cr "/Applications/DMD Media Showcase.app"` una vez).*
+- **Linux (`x64`)**: Extraiga **`DMD_Media_Showcase_Linux_x64.tar.gz`** y ejecute `./start_showcase.sh`.
+- **¡Funciona al instante!** Basta con activar el interruptor Showcase en la Web UI de su DMD (`Settings -> Showcase Server`, ya prerrellenado con `http://dmdmediashowcase.local:8890`), comprobar **`🟢 Comunicación OK`** y abrir `http://localhost:8890/` si desea explorar la **personalización** (Estudio de fichas, etiquetas, búsqueda bajo demanda, fuentes) o la **monitorización** en vivo.
+
+### Opción 2: Imagen Docker Oficial Multi-Arch (`amd64` / `arm64` — NAS / Raspberry Pi / Home Assistant / Home-Lab)
+
+#### A. Docker Compose (sin `git clone` ni compilación local)
 
 Descargue el archivo [`docker-compose.yml`](docker-compose.yml) listo para usar e inicie el servidor:
 
@@ -157,17 +172,10 @@ docker run -d \
 
 > **Persistencia de Datos (`/app/data`)**: Almacena `server_config.json` (credenciales de scrapers, ajustes de runtime y políticas multifuente `source_policies`), `dmd_profiles.json` (perfiles DMD gestionados en el servidor e idioma de emisión), `seen_history.json` y `referentials/`. El montaje `${DMD_DATA_PATH:-./data}:/app/data` apunta a un directorio del host (personalizable mediante `DMD_DATA_PATH` en `.env`) **protegido frente a `docker compose down -v`**, mientras que `-v dmd_showcase_data:/app/data` utiliza un volumen gestionado por Docker ideal para Portainer.
 
-- **Panel Web de Administración**: `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/` — ordene cadenas multifuente, configure claves opcionales de IGDB / ScreenScraper / TMDB / TheTVDB y restablezca `seen_history.json`)
+- **Aplicación Web (Personalización y Monitorización)**: `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/` — Estudio de fichas, filtros, cola bajo demanda, monitorización en vivo, cadenas multifuente, claves opcionales y reinicio de `seen_history.json`)
 - **Swagger UI Interactivo**: `http://dmdmediashowcase.local:8890/docs`
 - **Broker MQTT Integrado**: `mqtt://dmdmediashowcase.local:1883`
 - **Autodescubrimiento en Red Local (mDNS)**: Anuncia automáticamente `dmdmediashowcase.local` (`224.0.0.251:5353`) para que su DMD (`ArcadeMatrix` ESP32 o `ArcadeMatrix_RPi`) lo detecte sin introducir una IP. Basta con activar el interruptor Showcase en la Web UI del DMD (`Settings -> Showcase Server`), verificar el indicador **`🟢 Comunicación OK`** y añadir los motores Showcase a su rotación.
-
-### Opción 2: Instaladores Nativos y Paquetes Portátiles (macOS `.dmg` / Windows `.zip` / Linux `.tar.gz`)
-
-Descargue el paquete para su sistema desde **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)** (sin necesidad de Python ni FFmpeg en el equipo):
-- **macOS (Apple Silicon `arm64`)**: Abra **`DMD_Media_Showcase_macOS_arm64.dmg`**, arrastre **`DMD Media Showcase.app`** a **`Applications`** e iníciela (el icono `▣ DMD` aparece en la barra de menús de macOS y abre `http://localhost:8890/`). *(Primer inicio sin notarización de Apple: Clic derecho → **Abrir**, o ejecute `xattr -cr "/Applications/DMD Media Showcase.app"` una vez).*
-- **Windows (`x64`)**: Extraiga **`DMD_Media_Showcase_Windows_x64.zip`** y ejecute `Start_Showcase_Windows.bat`.
-- **Linux (`x64`)**: Extraiga **`DMD_Media_Showcase_Linux_x64.tar.gz`** y ejecute `./start_showcase.sh`.
 
 ### Ejemplo Rápido de Verificación
 

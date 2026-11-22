@@ -8,7 +8,14 @@
 💬 **Telegram Community:** [https://t.me/+DrSdAO8UMUViNmE0](https://t.me/+DrSdAO8UMUViNmE0)  
 ☕ **Support the Project on Ko-fi:** [https://ko-fi.com/red1l](https://ko-fi.com/red1l)
 
-**DMD Media Showcase Server** is a self-hosted, zero-repetition media discovery, transcoding, and real-time **MQTT + Lossless HTTP `DMDZ` v2 / `DMDS`** (plus passive UDP `DMDF`) streaming microservice designed for **[ArcadeMatrix (ESP32 / ESP32-S3)](https://github.com/red77290/ArcadeMatrix)** and **ArcadeMatrix_RPi** HUB75 LED matrix displays.
+**No more hunting for video sources or managing thousands of static GIFs on an SD card.**  
+**DMD Media Showcase** is the turnkey companion application for **[ArcadeMatrix (ESP32 / ESP32-S3)](https://github.com/red77290/ArcadeMatrix)** and **[ArcadeMatrix_RPi](https://github.com/red77290/ArcadeMatrix_RPI)** HUB75 LED displays: it automatically discovers and streams **Retro Games, Movies, TV Series, and Anime** **with zero repetition** in **lossless 16-bit RGB565** (`MQTT + HTTP DMDZ v2 / DMDS` and passive UDP `DMDF`), and enriches live game launches on **Recalbox / Batocera / RetroPie**.
+
+> [!TIP]
+> ### ⚡ Zero Configuration: Launch the `.exe` or `.dmg` and It Runs Out of the Box!
+> 1. **Download and run** 👉 **[Latest GitHub Release](https://github.com/red77290/dmd_media_showcase/releases/latest)**: double-click **`dmd-media-showcase.exe`** (Windows `.zip`), open **`DMD Media Showcase.app`** (macOS `.dmg`), run `./start_showcase.sh` (Linux `.tar.gz`), or start the **Docker** container.
+> 2. **0 config, 0 accounts required**: Python, FFmpeg, the embedded MQTT broker, and **all encrypted API keys are already bundled inside**. It automatically advertises itself on your local network (`dmdmediashowcase.local:8890`) — just flip the Showcase toggle ON in your DMD Web UI and it starts streaming immediately.
+> 3. **Built-in Web App when you want to go further**: open `http://localhost:8890/` (or `http://dmdmediashowcase.local:8890/`) anytime you want to explore **customization** (Card Studio with live LED simulator, system/genre/decade filters, instant title search & on-demand queue, source priority) or **real-time monitoring** of connected matrices and active streams.
 
 ---
 
@@ -95,9 +102,17 @@ Every title automatically assembles a complete multi-chapter RGB565 broadcast ta
 
 ## 🚀 Quick Installation & Short Example
 
-### Option 1: Official Multi-Arch Docker Image (`amd64` / `arm64` — Raspberry Pi / NAS / Home-Lab)
+### Option 1: Turnkey Desktop Apps — Windows (`.exe`), macOS (`.dmg`) & Linux (`.tar.gz`) *(Recommended — 0 install, 0 config)*
 
-#### A. Docker Compose (Recommended — zero `git clone` or local build needed)
+Download the package for your OS from **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)** (`0` host Python, FFmpeg, or MQTT setup required — encrypted API keys are already built in):
+- **Windows (`x64`)**: Extract **`DMD_Media_Showcase_Windows_x64.zip`** and run **`dmd-media-showcase.exe`** directly (or `Start_Showcase_Windows.bat`).
+- **macOS (Apple Silicon `arm64`)**: Open **`DMD_Media_Showcase_macOS_arm64.dmg`**, drag **`DMD Media Showcase.app`** to **`Applications`**, and launch it (`▣ DMD` appears in the macOS Menu Bar and automatically opens the Web App at `http://localhost:8890/`). *(First launch without Apple Developer notarization: Right-click `DMD Media Showcase.app` → **Open**, or run `xattr -cr "/Applications/DMD Media Showcase.app"` once).*
+- **Linux (`x64`)**: Extract **`DMD_Media_Showcase_Linux_x64.tar.gz`** and run `./start_showcase.sh`.
+- **It runs immediately!** Simply toggle Showcase **ON** in your DMD Web UI (`Settings -> Showcase Server`, already pre-filled as `http://dmdmediashowcase.local:8890`), verify **`🟢 Communication OK`**, and open `http://localhost:8890/` whenever you want to explore **customization** (Card Studio, tags, on-demand search, sources) or live **monitoring**.
+
+### Option 2: Official Multi-Arch Docker Image (`amd64` / `arm64` — NAS / Raspberry Pi / Home Assistant / Home-Lab)
+
+#### A. Docker Compose (zero `git clone` or local build needed)
 
 Download the ready-to-use [`docker-compose.yml`](docker-compose.yml) and start the stack:
 
@@ -157,17 +172,10 @@ docker run -d \
 
 > **Persistent State (`/app/data`)**: Stores `server_config.json` (scraper credentials, runtime tuning & per-domain `source_policies`), `dmd_profiles.json` (server-managed DMD profiles & broadcast language), `seen_history.json`, and `referentials/`. Using `${DMD_DATA_PATH:-./data}:/app/data` binds a host folder (customizable via `DMD_DATA_PATH` in `.env`) that is **never erased by `docker compose down -v`**, whereas `-v dmd_showcase_data:/app/data` uses a Docker-managed named volume suited for Portainer.
 
-- **Web Admin Dashboard**: `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/` — reorder multi-source chains, configure optional IGDB / ScreenScraper / TMDB / TheTVDB credentials & reset `seen_history.json`)
+- **Web App (Customization & Live Monitoring)**: `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/` — Card Studio, filters, on-demand queue, live monitoring, multi-source chains, optional credentials & `seen_history.json` reset)
 - **Interactive Swagger UI**: `http://dmdmediashowcase.local:8890/docs`
 - **Embedded MQTT Broker**: `mqtt://dmdmediashowcase.local:1883`
 - **Automatic Local Network Discovery (mDNS)**: Automatically advertises `dmdmediashowcase.local` (`224.0.0.251:5353`) so your DMD (`ArcadeMatrix` ESP32 or `ArcadeMatrix_RPi`) finds it without typing an IP address. Simply toggle Showcase **ON** in the DMD Web UI (`Settings -> Showcase Server`), verify the **`🟢 Communication OK`** badge, and add the Showcase engines to your rotation!
-
-### Option 2: Native Desktop Installers & Portable Packages (macOS `.dmg` / Windows `.zip` / Linux `.tar.gz`)
-
-Download the package for your OS from **[GitHub Releases](https://github.com/red77290/dmd_media_showcase/releases/latest)** (`0` host Python or FFmpeg installation required):
-- **macOS (Apple Silicon `arm64`)**: Open **`DMD_Media_Showcase_macOS_arm64.dmg`**, drag **`DMD Media Showcase.app`** to **`Applications`**, and launch it (`▣ DMD` appears in the macOS Menu Bar and automatically opens `http://localhost:8890/`). *(First launch without Apple Developer notarization: Right-click `DMD Media Showcase.app` → **Open**, or run `xattr -cr "/Applications/DMD Media Showcase.app"` once).*
-- **Windows (`x64`)**: Extract **`DMD_Media_Showcase_Windows_x64.zip`** and double-click `Start_Showcase_Windows.bat`.
-- **Linux (`x64`)**: Extract **`DMD_Media_Showcase_Linux_x64.tar.gz`** and run `./start_showcase.sh`.
 
 ### Quick Verification Example
 
