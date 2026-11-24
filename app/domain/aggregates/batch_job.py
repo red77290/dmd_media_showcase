@@ -55,6 +55,22 @@ class BatchArtifactDescriptor:
             "companion_size_bytes": self.companion_size_bytes,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> "BatchArtifactDescriptor":
+        return cls(
+            seq=int(data.get("seq") or 0),  # type: ignore[arg-type]
+            rel_dir=str(data.get("rel_dir") or ""),
+            filename=str(data.get("filename") or ""),
+            media_type=str(data.get("media_type") or "image/gif"),
+            size_bytes=max(0, int(data.get("size_bytes") or 0)),  # type: ignore[arg-type]
+            title=str(data.get("title") or ""),
+            system=str(data.get("system") or ""),
+            genre=str(data.get("genre") or ""),
+            duration_s=float(data.get("duration_s") or 0.0),  # type: ignore[arg-type]
+            companion_relpath=str(data.get("companion_relpath") or ""),
+            companion_size_bytes=max(0, int(data.get("companion_size_bytes") or 0)),  # type: ignore[arg-type]
+        )
+
 
 @dataclass
 class BatchScrapeJob(Generic[TJobMeta]):
@@ -68,10 +84,11 @@ class BatchScrapeJob(Generic[TJobMeta]):
     total_target: int
     max_workers: int = 2
     max_unacked_items: int = 8
-    max_unacked_bytes: int = 64 * 1024 * 1024  # 64 MB hard spool ceiling
+    max_unacked_bytes: int = 64 * 1024 * 1024  # 64 MB default ceiling (overridden per job)
     planned_directories: List[str] = field(default_factory=list)
     status: BatchJobStatus = "queued"
     created_at: float = field(default_factory=time.monotonic)
+    created_wall_ts: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     paused_accum_s: float = 0.0
@@ -86,6 +103,7 @@ class BatchScrapeJob(Generic[TJobMeta]):
     bytes_produced: int = 0
     bytes_acked: int = 0
     last_error: str = ""
+    completed_relpaths: List[str] = field(default_factory=list)
 
     _next_seq: int = 1
     _unacked: Dict[int, BatchArtifactDescriptor] = field(default_factory=dict)
@@ -142,7 +160,7 @@ class BatchScrapeJob(Generic[TJobMeta]):
     def update_max_workers(self, workers: int) -> int:
         clamped = max(1, min(8, int(workers)))
         self.max_workers = clamped
-        self.max_unacked_items = max(4, min(16, clamped * 3))
+        self.max_unacked_items = max(self.max_unacked_items, max(4, min(16, clamped * 3)))
         return clamped
 
     def has_spool_capacity(self) -> bool:
@@ -211,6 +229,7 @@ class BatchScrapeJob(Generic[TJobMeta]):
         self._unacked_bytes += total_item_bytes
         self.succeeded_count += 1
         self.bytes_produced += total_item_bytes
+        self.completed_relpaths.append(desc.relpath)
         self._recent_completed.appendleft(desc.to_dict())
         return desc
 
@@ -249,7 +268,6 @@ class BatchScrapeJob(Generic[TJobMeta]):
         done = self.processed_count
         total = max(1, self.total_target)
         pct = min(100.0, round((done * 100.0) / total, 1)) if self.total_target > 0 else 100.0
-        # Exclude instant skipped-existing items from live conversion throughput / ETA
         converted_or_failed = self.succeeded_count + self.failed_count
         rate_per_min = round((converted_or_failed * 60.0) / elapsed, 2) if (elapsed >= 0.5 and converted_or_failed > 0) else 0.0
         remaining = max(0, self.total_target - done)
@@ -259,9 +277,13 @@ class BatchScrapeJob(Generic[TJobMeta]):
         elif rate_per_min > 0.05:
             eta_s = int(round((remaining / rate_per_min) * 60.0))
 
+        summary_fn = getattr(self.meta, "public_summary", None)
+        config_summary = summary_fn() if callable(summary_fn) else {}
+
         return {
             "job_id": self.job_id,
             "status": self.status,
+            "created_wall_ts": round(float(self.created_wall_ts), 2),
             "total_target": self.total_target,
             "processed_count": done,
             "succeeded_count": self.succeeded_count,
@@ -277,10 +299,108 @@ class BatchScrapeJob(Generic[TJobMeta]):
             "unacked_count": len(self._unacked),
             "unacked_bytes": self._unacked_bytes,
             "max_unacked_bytes": self.max_unacked_bytes,
+            "spool_backpressured": not self.has_spool_capacity(),
             "bytes_produced": self.bytes_produced,
             "bytes_acked": self.bytes_acked,
             "last_seq": self._next_seq - 1,
             "last_error": self.last_error,
             "planned_directories": list(self.planned_directories),
             "recent_items": list(self._recent_completed),
+            "config_summary": config_summary,
         }
+
+    def to_persisted_state(self, meta_dict: Dict[str, object], extra: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+        return {
+            "job_id": self.job_id,
+            "status": self.status,
+            "created_wall_ts": round(float(self.created_wall_ts), 2),
+            "elapsed_s": round(self.active_elapsed_seconds(), 2),
+            "total_target": self.total_target,
+            "max_workers": self.max_workers,
+            "max_unacked_items": self.max_unacked_items,
+            "max_unacked_bytes": self.max_unacked_bytes,
+            "planned_directories": list(self.planned_directories),
+            "succeeded_count": self.succeeded_count,
+            "acked_count": self.acked_count,
+            "skipped_existing_count": self.skipped_existing_count,
+            "failed_count": self.failed_count,
+            "bytes_produced": self.bytes_produced,
+            "bytes_acked": self.bytes_acked,
+            "last_error": self.last_error,
+            "next_seq": self._next_seq,
+            "completed_relpaths": list(self.completed_relpaths),
+            "unacked": [d.to_dict() for d in self.unacked_after(0)],
+            "recent_items": list(self._recent_completed),
+            "meta": meta_dict,
+            "extra": extra or {},
+        }
+
+    @classmethod
+    def restore_from_persisted_state(
+        cls,
+        data: Dict[str, object],
+        meta: TJobMeta,
+        valid_unacked_seqs: Optional[Sequence[int]] = None,
+    ) -> "BatchScrapeJob[TJobMeta]":
+        now_mono = time.monotonic()
+        raw_status = str(data.get("status") or "paused")
+        restored_status: BatchJobStatus = (
+            "paused"
+            if raw_status in ("queued", "running", "paused")
+            else (raw_status if raw_status in ("completed", "cancelled", "failed") else "completed")  # type: ignore[assignment]
+        )
+        saved_elapsed = max(0.0, float(data.get("elapsed_s") or 0.0))  # type: ignore[arg-type]
+        started_at = max(0.001, now_mono - saved_elapsed)
+        finished_at = now_mono if restored_status in ("completed", "cancelled", "failed") else None
+        paused_since = now_mono if restored_status == "paused" else None
+
+        allowed_seqs = set(int(s) for s in valid_unacked_seqs) if valid_unacked_seqs is not None else None
+        unacked_map: Dict[int, BatchArtifactDescriptor] = {}
+        unacked_bytes_sum = 0
+        for raw_d in (data.get("unacked") or []):  # type: ignore[attr-defined]
+            if not isinstance(raw_d, dict):
+                continue
+            desc = BatchArtifactDescriptor.from_dict(raw_d)
+            if desc.seq <= 0:
+                continue
+            if allowed_seqs is not None and desc.seq not in allowed_seqs:
+                continue
+            unacked_map[desc.seq] = desc
+            unacked_bytes_sum += desc.size_bytes + desc.companion_size_bytes
+
+        recent_dq: Deque[Dict[str, object]] = deque(maxlen=16)
+        for r_it in (data.get("recent_items") or []):  # type: ignore[attr-defined]
+            if isinstance(r_it, dict):
+                recent_dq.append(dict(r_it))
+
+        job = cls(
+            job_id=str(data.get("job_id") or ""),
+            meta=meta,
+            total_target=max(1, int(data.get("total_target") or 1)),  # type: ignore[arg-type]
+            max_workers=max(1, min(8, int(data.get("max_workers") or 2))),  # type: ignore[arg-type]
+            max_unacked_items=max(4, int(data.get("max_unacked_items") or 256)),  # type: ignore[arg-type]
+            max_unacked_bytes=max(1024, int(data.get("max_unacked_bytes") or (512 * 1024 * 1024))),  # type: ignore[arg-type]
+            planned_directories=[str(p) for p in (data.get("planned_directories") or [])],  # type: ignore[attr-defined]
+            status=restored_status,
+            created_at=started_at,
+            created_wall_ts=float(data.get("created_wall_ts") or time.time()),  # type: ignore[arg-type]
+            started_at=started_at,
+            finished_at=finished_at,
+            paused_accum_s=0.0,
+            _paused_since=paused_since,
+            dispatched_count=max(0, int(data.get("succeeded_count") or 0) + int(data.get("failed_count") or 0)),  # type: ignore[arg-type]
+            active_workers=0,
+            succeeded_count=max(0, int(data.get("succeeded_count") or 0)),  # type: ignore[arg-type]
+            acked_count=max(0, int(data.get("acked_count") or 0)),  # type: ignore[arg-type]
+            skipped_existing_count=max(0, int(data.get("skipped_existing_count") or 0)),  # type: ignore[arg-type]
+            failed_count=max(0, int(data.get("failed_count") or 0)),  # type: ignore[arg-type]
+            bytes_produced=max(0, int(data.get("bytes_produced") or 0)),  # type: ignore[arg-type]
+            bytes_acked=max(0, int(data.get("bytes_acked") or 0)),  # type: ignore[arg-type]
+            last_error=str(data.get("last_error") or ""),
+            completed_relpaths=[str(p) for p in (data.get("completed_relpaths") or [])],  # type: ignore[attr-defined]
+            _next_seq=max(1, int(data.get("next_seq") or 1)),  # type: ignore[arg-type]
+            _unacked=unacked_map,
+            _unacked_bytes=unacked_bytes_sum,
+            _recent_completed=recent_dq,
+        )
+        return job

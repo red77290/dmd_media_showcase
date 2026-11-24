@@ -250,10 +250,19 @@ async def control_batch_scraper_job(job_id: str, req: BatchJobControlRequest) ->
     return {"ok": True, "job": snap}
 
 
-@router.get("/jobs/{job_id}/events", summary="Event-driven SSE stream for background Web Worker delivery")
+@router.delete("/jobs/{job_id}", summary="Dismiss and purge a Batch Scraper job and its staged files")
+async def dismiss_batch_scraper_job(job_id: str) -> Dict[str, Any]:
+    removed = await batch_scraper_service.dismiss_job(job_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Batch job not found")
+    return {"ok": True, "dismissed": job_id}
+
+
+@router.get("/jobs/{job_id}/events", summary="Event-driven SSE stream for background Web Worker or UI recovery")
 async def stream_batch_job_events(
     job_id: str,
     after_seq: int = Query(default=0, ge=0),
+    status_only: bool = Query(default=False),
 ) -> StreamingResponse:
     if batch_scraper_service.get_job_snapshot(job_id) is None:
         raise HTTPException(status_code=404, detail="Batch job not found")
@@ -268,14 +277,19 @@ async def stream_batch_job_events(
             )
             if snap is None:
                 break
-            if ready:
+            if ready and not status_only:
+                cursor = max(cursor, max(r.seq for r in ready))
+            elif ready and status_only:
                 cursor = max(cursor, max(r.seq for r in ready))
             payload = {
                 "snapshot": snap,
-                "ready": [r.to_dict() for r in ready],
+                "ready": [] if status_only else [r.to_dict() for r in ready],
             }
             yield f"event: batch_update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-            if (
+            if status_only:
+                if snap["status"] in ("completed", "cancelled", "failed"):
+                    break
+            elif (
                 snap["status"] in ("completed", "cancelled", "failed")
                 and int(snap["unacked_count"]) == 0  # type: ignore[arg-type]
                 and not ready

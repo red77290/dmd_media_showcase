@@ -21,7 +21,7 @@ info:
     \ and preloaded into RAM on `ArcadeMatrix_RPi`,\n  2. **Passive UDP `DMDF` (`:4210`,\
     \ `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full\
     \ AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
-  version: 1.2.0
+  version: 1.2.1
 paths:
   /api/v1/asyncapi.yaml:
     get:
@@ -1148,6 +1148,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Batch Scraper & Offline Packs
+      summary: Dismiss and purge a Batch Scraper job and its staged files
+      operationId: dismiss_batch_scraper_job_api_v1_batch_scraper_jobs__job_id__delete
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Dismiss Batch Scraper Job Api V1 Batch Scraper Jobs  Job
+                  Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/batch-scraper/jobs/{job_id}/control:
     post:
       tags:
@@ -1187,7 +1215,7 @@ paths:
     get:
       tags:
       - Batch Scraper & Offline Packs
-      summary: Event-driven SSE stream for background Web Worker delivery
+      summary: Event-driven SSE stream for background Web Worker or UI recovery
       operationId: stream_batch_job_events_api_v1_batch_scraper_jobs__job_id__events_get
       parameters:
       - name: job_id
@@ -1204,6 +1232,13 @@ paths:
           minimum: 0
           default: 0
           title: After Seq
+      - name: status_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Status Only
       responses:
         '200':
           description: Successful Response

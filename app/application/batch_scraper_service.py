@@ -30,6 +30,7 @@ from app.domain.gamelist_catalog import GamelistGameEntry, parse_recalbox_gameli
 from app.domain.ports import (
     ConversionAbortedError,
     IBatchGifComposerPort,
+    IBatchJobRepositoryPort,
     IEphemeralArtifactQueuePort,
     IMediaTranscoderPort,
     StagedBatchFiles,
@@ -45,6 +46,17 @@ def _normalize_relpath_key(relpath: str) -> str:
     return (relpath or "").replace("\\", "/").strip("/").lower()
 
 
+class _InMemoryBatchJobRepo(IBatchJobRepositoryPort):
+    def __init__(self) -> None:
+        self._records: List[Dict[str, object]] = []
+
+    def save_jobs(self, records: Sequence[Dict[str, object]]) -> None:
+        self._records = [dict(r) for r in records]
+
+    def load_jobs(self) -> List[Dict[str, object]]:
+        return [dict(r) for r in self._records]
+
+
 class _ActiveJobContext:
     def __init__(
         self,
@@ -58,7 +70,7 @@ class _ActiveJobContext:
 
 
 class BatchScraperService:
-    """Orchestrates concurrent Batch Scraper jobs with bounded ephemeral streaming."""
+    """Orchestrates persistent concurrent Batch Scraper jobs across browser disconnects & restarts."""
 
     def __init__(
         self,
@@ -66,11 +78,14 @@ class BatchScraperService:
         composer_port: Optional[IBatchGifComposerPort] = None,
         artifact_queue: Optional[IEphemeralArtifactQueuePort] = None,
         transcoder_port: Optional[IMediaTranscoderPort] = None,
+        job_repository: Optional[IBatchJobRepositoryPort] = None,
     ) -> None:
         self._chain = chain_service
         self._composer = composer_port
         self._queue = artifact_queue
         self._transcoder = transcoder_port
+        # Isolate ad-hoc test instances that pass a custom artifact_queue without a job_repository
+        self._job_repo = job_repository or (_InMemoryBatchJobRepo() if artifact_queue is not None else None)
         self._jobs: Dict[str, _ActiveJobContext] = {}
 
     @property
@@ -88,6 +103,55 @@ class BatchScraperService:
     @property
     def transcoder(self) -> IMediaTranscoderPort:
         return self._transcoder or default_port_registry.resolve("media_transcoder")
+
+    @property
+    def job_repository(self) -> IBatchJobRepositoryPort:
+        return self._job_repo or default_port_registry.resolve("batch_job_repository")
+
+    def _persist_jobs_state(self) -> None:
+        records = [
+            ctx.job.to_persisted_state(
+                meta_dict=ctx.job.meta.to_persisted_dict(),
+                extra={"gamelist_entries": [g.to_dict() for g in ctx.gamelist_entries]},
+            )
+            for ctx in self._jobs.values()
+        ]
+        self.job_repository.save_jobs(records)
+
+    async def restore_persisted_jobs(self) -> int:
+        """Rehydrate persisted Batch jobs on server startup so tasks survive restarts."""
+        records = self.job_repository.load_jobs()
+        restored_count = 0
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            job_id = str(rec.get("job_id") or "")
+            meta_raw = rec.get("meta")
+            if not job_id or job_id in self._jobs or not isinstance(meta_raw, dict):
+                continue
+            cfg = BatchScrapeConfig.from_persisted_dict(meta_raw)
+            rehydrated_slots = self.artifact_queue.rehydrate_job_artifacts(job_id)
+            job = BatchScrapeJob.restore_from_persisted_state(
+                rec,
+                meta=cfg,
+                valid_unacked_seqs=list(rehydrated_slots.keys()),
+            )
+            extra = rec.get("extra") if isinstance(rec.get("extra"), dict) else {}
+            raw_gl = extra.get("gamelist_entries") if isinstance(extra.get("gamelist_entries"), list) else []
+            g_entries = [GamelistGameEntry.from_dict(g) for g in raw_gl if isinstance(g, dict)]
+            ctx = _ActiveJobContext(job=job, gamelist_entries=g_entries)
+            self._jobs[job_id] = ctx
+            if job.status == "paused" and job.processed_count < job.total_target:
+                ctx.runner_task = asyncio.create_task(self._run_job_supervisor(ctx))
+            elif job.status == "paused" and job.processed_count >= job.total_target:
+                job.mark_completed()
+            restored_count += 1
+        self._prune_finished_jobs()
+        self.artifact_queue.cleanup_orphan_jobs(set(self._jobs.keys()))
+        if restored_count:
+            self._persist_jobs_state()
+            logger.info("[BATCH] Restored %d persisted batch job(s) from disk.", restored_count)
+        return restored_count
 
     def parse_gamelists_preview(
         self,
@@ -138,19 +202,27 @@ class BatchScraperService:
         g_systems = sorted({e.system for e in g_entries}) if g_entries else None
         planned_dirs = FolderNamingPolicy.plan_initial_directories(norm_cfg, gamelist_systems=g_systems)
 
-        is_zip_mode = norm_cfg.delivery_mode == "zip_stream"
+        # Persistent disk spool (`/app/data/.batch_spool/`): allows jobs to run autonomously to 100%
+        # even if the user closes their browser window, while still bounding disk usage (<= 512 MiB).
+        eff_max_items = (
+            norm_cfg.spool_max_items
+            if norm_cfg.spool_max_items > 0
+            else max(256, min(2000, norm_cfg.target_count))
+        )
+        eff_max_bytes = (
+            norm_cfg.spool_max_bytes
+            if norm_cfg.spool_max_bytes > 0
+            else (512 * 1024 * 1024)
+        )
+
         job_id = f"batch_{uuid.uuid4().hex[:12]}"
         job: BatchScrapeJob[BatchScrapeConfig] = BatchScrapeJob(
             job_id=job_id,
             meta=norm_cfg,
             total_target=norm_cfg.target_count,
             max_workers=max_w,
-            max_unacked_items=(
-                max(128, min(1500, norm_cfg.target_count))
-                if is_zip_mode
-                else max(4, min(16, max_w * 3))
-            ),
-            max_unacked_bytes=(256 * 1024 * 1024) if is_zip_mode else (64 * 1024 * 1024),
+            max_unacked_items=eff_max_items,
+            max_unacked_bytes=eff_max_bytes,
             planned_directories=planned_dirs,
         )
         ctx = _ActiveJobContext(job=job, gamelist_entries=g_entries)
@@ -158,6 +230,7 @@ class BatchScraperService:
         self._prune_finished_jobs()
 
         job.start()
+        self._persist_jobs_state()
         ctx.runner_task = asyncio.create_task(self._run_job_supervisor(ctx))
         return job.snapshot()
 
@@ -167,7 +240,8 @@ class BatchScraperService:
 
     def list_active_jobs(self) -> List[Dict[str, object]]:
         self._prune_finished_jobs()
-        return [ctx.job.snapshot() for ctx in self._jobs.values()]
+        ordered = sorted(self._jobs.values(), key=lambda c: c.job.created_wall_ts, reverse=True)
+        return [ctx.job.snapshot() for ctx in ordered]
 
     async def pause_job(self, job_id: str) -> Optional[Dict[str, object]]:
         ctx = self._jobs.get(job_id)
@@ -176,6 +250,7 @@ class BatchScraperService:
         async with ctx.cond:
             ctx.job.pause()
             ctx.cond.notify_all()
+        self._persist_jobs_state()
         return ctx.job.snapshot()
 
     async def resume_job(self, job_id: str) -> Optional[Dict[str, object]]:
@@ -185,6 +260,9 @@ class BatchScraperService:
         async with ctx.cond:
             ctx.job.resume()
             ctx.cond.notify_all()
+        if (ctx.runner_task is None or ctx.runner_task.done()) and ctx.job.status == "running":
+            ctx.runner_task = asyncio.create_task(self._run_job_supervisor(ctx))
+        self._persist_jobs_state()
         return ctx.job.snapshot()
 
     async def update_workers(self, job_id: str, max_workers: int) -> Optional[Dict[str, object]]:
@@ -194,6 +272,7 @@ class BatchScraperService:
         async with ctx.cond:
             ctx.job.update_max_workers(max_workers)
             ctx.cond.notify_all()
+        self._persist_jobs_state()
         return ctx.job.snapshot()
 
     async def cancel_job(self, job_id: str) -> Optional[Dict[str, object]]:
@@ -210,7 +289,20 @@ class BatchScraperService:
         if ctx.runner_task and not ctx.runner_task.done():
             ctx.runner_task.cancel()
         self.artifact_queue.purge_job(job_id)
+        self._persist_jobs_state()
         return ctx.job.snapshot()
+
+    async def dismiss_job(self, job_id: str) -> bool:
+        """Cancel if active, purge all staged disk files, and remove the job record."""
+        ctx = self._jobs.get(job_id)
+        if ctx is None:
+            return False
+        if ctx.job.status in ("queued", "running", "paused"):
+            await self.cancel_job(job_id)
+        self.artifact_queue.purge_job(job_id)
+        self._jobs.pop(job_id, None)
+        self._persist_jobs_state()
+        return True
 
     def get_staged_artifact(self, job_id: str, seq: int) -> Optional[StagedBatchFiles]:
         return self.artifact_queue.get_staged(job_id, seq)
@@ -223,6 +315,7 @@ class BatchScraperService:
         async with ctx.cond:
             ctx.job.ack_artifact(seq)
             ctx.cond.notify_all()
+        self._persist_jobs_state()
         return ctx.job.snapshot()
 
     async def ack_all_up_to(self, job_id: str, max_seq: int) -> Optional[Dict[str, object]]:
@@ -238,6 +331,7 @@ class BatchScraperService:
             for s in seqs:
                 ctx.job.ack_artifact(s)
             ctx.cond.notify_all()
+        self._persist_jobs_state()
         return ctx.job.snapshot()
 
     async def wait_for_next_events(
@@ -263,7 +357,7 @@ class BatchScraperService:
                 ready = list(ctx.job.unacked_after(after_seq))
             return ctx.job.snapshot(), ready
 
-    def _prune_finished_jobs(self, max_kept: int = 6, max_idle_s: float = 1800.0) -> None:
+    def _prune_finished_jobs(self, max_kept: int = 8, acked_idle_s: float = 3600.0, unacked_ttl_s: float = 86400.0) -> None:
         import time as _time
 
         now_mono = _time.monotonic()
@@ -272,16 +366,25 @@ class BatchScraperService:
             for jid, c in self._jobs.items()
             if c.job.status in ("completed", "cancelled", "failed")
         ]
+        pruned_any = False
         for jid in list(finished):
             c = self._jobs.get(jid)
-            if c and c.job.finished_at and (now_mono - c.job.finished_at) > max_idle_s:
+            if not c or not c.job.finished_at:
+                continue
+            ttl = unacked_ttl_s if c.job.unacked_count > 0 else acked_idle_s
+            if (now_mono - c.job.finished_at) > ttl:
                 self.artifact_queue.purge_job(jid)
                 self._jobs.pop(jid, None)
                 finished.remove(jid)
-        while len(self._jobs) > max_kept and finished:
-            old_id = finished.pop(0)
+                pruned_any = True
+        acked_finished = [jid for jid in finished if self._jobs.get(jid) and self._jobs[jid].job.unacked_count == 0]
+        while len(self._jobs) > max_kept and acked_finished:
+            old_id = acked_finished.pop(0)
             self.artifact_queue.purge_job(old_id)
             self._jobs.pop(old_id, None)
+            pruned_any = True
+        if pruned_any:
+            self._persist_jobs_state()
 
     def _build_random_buckets(self, cfg: BatchScrapeConfig) -> List[FilterCriteria]:
         base = cfg.to_filter_criteria()
@@ -441,13 +544,15 @@ class BatchScraperService:
             async with ctx.cond:
                 ctx.job.on_worker_exit()
                 ctx.cond.notify_all()
+            self._persist_jobs_state()
 
     async def _run_job_supervisor(self, ctx: _ActiveJobContext) -> None:
         cfg = ctx.job.meta
         is_tate = cfg.encoding.is_tate
         existing_set = {_normalize_relpath_key(p) for p in (cfg.existing_relpaths or frozenset())}
+        already_done_in_job = {_normalize_relpath_key(p) for p in ctx.job.completed_relpaths}
         in_flight_tasks: Set[asyncio.Task[None]] = set()
-        used_relpaths: Set[str] = set(existing_set)
+        used_relpaths: Set[str] = set(existing_set) | already_done_in_job
 
         try:
             if cfg.mode == "recalbox_gamelist":
@@ -475,6 +580,8 @@ class BatchScraperService:
                             entry.system, entry.rom_stem, is_tate=is_tate
                         )
                         target_rel = _normalize_relpath_key(f"{sc_dir}/{gif_name}")
+                        if target_rel in already_done_in_job:
+                            continue
                         if target_rel in existing_set:
                             ctx.job.record_skipped_existing(1)
                             ctx.cond.notify_all()
@@ -602,6 +709,8 @@ class BatchScraperService:
                     filename = f"{base_stem}.gif"
                     norm_target = _normalize_relpath_key(f"{rel_dir}/{filename}")
 
+                    if norm_target in already_done_in_job:
+                        continue
                     if norm_target in existing_set:
                         async with ctx.cond:
                             ctx.job.record_skipped_existing(1)
@@ -639,17 +748,20 @@ class BatchScraperService:
                 if ctx.job.status not in ("cancelled", "failed"):
                     ctx.job.mark_completed()
                 ctx.cond.notify_all()
+            self._persist_jobs_state()
         except asyncio.CancelledError:
             for t in list(in_flight_tasks):
                 t.cancel()
             async with ctx.cond:
                 ctx.job.cancel()
                 ctx.cond.notify_all()
+            self._persist_jobs_state()
         except Exception as exc:
             logger.exception("[BATCH] Supervisor crashed for %s: %s", ctx.job.job_id, exc)
             async with ctx.cond:
                 ctx.job.mark_failed(str(exc))
                 ctx.cond.notify_all()
+            self._persist_jobs_state()
 
 
 batch_scraper_service = BatchScraperService()

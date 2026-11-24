@@ -135,3 +135,5 @@ On phones and tablets, **iOS (Safari)** and **Android (Chrome)** block websites 
   **No!** **🚀 Let Me Handle It** (enabled by default) automatically applies AI action-framing and smart HUB75 LED color boost in full **24-bit `RGB888`**. Open **Advanced Options** only if you want to tweak parallel CPU workers, card themes (*Neon Border*, *Amber Pinball*...), screenshot counts, or FPS.
 - **"Will a large batch scrape disturb my live LED display?"**
   **Never.** Batch Scraper runs in an isolated queue: it never alters your live Consume-Once history (`seen_history.json`) and never interrupts connected displays.
+- **"What happens if I accidentally close my browser window or lose Wi-Fi?"**
+  **Nothing stops!** Every Batch Scraper run is a **persistent server task** (`batch_jobs.json`): it keeps scraping and converting in the background even if your browser is closed. As soon as you reopen `http://...:8890` (even from another tab or your phone), the top banner and progress console re-attach automatically so you can reconnect your target folder in 1 click or download the ready `.zip` pack!

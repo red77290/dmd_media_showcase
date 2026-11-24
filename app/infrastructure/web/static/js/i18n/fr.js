@@ -452,5 +452,12 @@ export const I18N_FR = {
     batch_th_size: "Taille",
     batch_starting: "⏳ Création de l'arborescence et lancement des workers...",
     batch_err_no_xml: "Sélectionne au moins un fichier gamelist.xml valide.",
-    batch_err_need_gamelist: "Charge d'abord au moins un fichier gamelist.xml Recalbox."
+    batch_err_need_gamelist: "Charge d'abord au moins un fichier gamelist.xml Recalbox.",
+    btn_batch_dismiss: "🗑️ Fermer",
+    btn_batch_reconnect_dir: "📂 Reconnecter le Dossier",
+    btn_batch_pick_other_dir: "📂 Choisir un Dossier...",
+    batch_reattach_prompt_fmt: "📂 Tâche persistante retrouvée ({n} fichier(s) prêts sur le serveur) : clique sur Reconnecter pour reprendre l'écriture directe vers « {name} », ou télécharge le .zip.",
+    batch_reattach_no_handle_fmt: "📂 Tâche persistante retrouvée ({n} fichier(s) prêts sur le serveur) : choisis un dossier cible pour écrire directement, ou télécharge le .zip.",
+    batch_reattach_streaming_ok: "🔄 Tâche persistante reconnectée automatiquement — écriture directe vers « {name} ».",
+    batch_banner_ready_fmt: "✅ Pack Batch terminé : {done}/{total} ({unacked} fichier(s) à récupérer)"
 };

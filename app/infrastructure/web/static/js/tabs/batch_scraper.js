@@ -1,39 +1,56 @@
 /**
- * Tab #7 Controller: Batch Scraper & Offline Packs (`static/js/tabs/batch_scraper.js`).
+ * Tab #7 Controller: Batch Scraper & Persistent Offline Packs (`static/js/tabs/batch_scraper.js`).
  *
  * Supports:
- * - 3-Click Simple Mode + Full À-La-Carte Advanced Accordion
+ * - 3-Click Simple Mode (1-click bubbles + Studio visual wireframes) + Full À-La-Carte Accordion
  * - Mode A: Random Filter Batch (`<system>_<genre>/*.gif` + `index.txt` + `playlists.json`)
  * - Mode B: Recalbox / Batocera `gamelist.xml` Offline Showcase (`showcase[_tate]/<system>/<rom>.gif`)
- * - Universal Direct-to-Folder Streaming via Dedicated Web Worker (`batch_worker.js`) + Keep-Alive
- *   (with automatic native `stream.zip` fallback when `showDirectoryPicker` is unavailable).
+ * - Persistent server-side jobs surviving window/tab closure, F5 reloads, LAN device switches,
+ *   and server restarts (`batch_session_recovery.js` + `IndexedDB` handle re-attachment).
  */
 
 import { apiFetch, clampFloatInput, clampIntInput, esc, getActiveApiKey } from '../api.js';
 import { getSelectedBatchFilters, setBatchFilterCatalog } from '../batch_bubbles.js';
 import {
   acquireBatchBackgroundKeepAlive,
-  releaseBatchBackgroundKeepAlive,
-  updateBatchDocumentTitleProgress
+  releaseBatchBackgroundKeepAlive
 } from '../batch_keepalive.js';
+import {
+  buildBatchJobRequestPayload,
+  buildZipDownloadHref,
+  fetchRecoverableBatchJobFromServer,
+  hideBatchProgressCardAndBanner,
+  loadBatchFolderHandle,
+  markJobLocallyDismissed,
+  persistBatchFolderHandle,
+  queryDirectoryReadWritePermission,
+  removeBatchFolderHandle,
+  renderBatchProgressCardAndBanner,
+  requestDirectoryReadWritePermission,
+  startStatusOnlySseObserver
+} from '../batch_session_recovery.js';
 import { getCurrentUiLang, t } from '../i18n/index.js';
 import { ensureDomainFilterCatalog } from '../state.js';
 
 const batchRuntime = {
   initialized: false,
+  recoveryBooted: false,
   mode: 'random_filter',
   preset: 'full_showcase',
   cardLayout: 'classic_split',
   dirHandle: null,
   dirName: '',
+  pendingSavedHandle: null,
+  pendingSavedFolderName: '',
   existingRelpaths: [],
   gamelistFiles: [],
   gamelistPreview: null,
   worker: null,
+  isWorkerStreaming: false,
+  statusObserver: null,
   activeJobId: '',
   lastSnapshot: null,
-  writtenOnDisk: 0,
-  zipFallbackPollTimer: null
+  writtenOnDisk: 0
 };
 
 const RESOLUTION_PRESETS = {
@@ -54,6 +71,80 @@ function ensureBatchWorker() {
   return w;
 }
 
+function stopStatusObserver() {
+  if (batchRuntime.statusObserver) {
+    batchRuntime.statusObserver.stop();
+    batchRuntime.statusObserver = null;
+  }
+}
+
+function renderCurrentProgress(snap) {
+  if (!snap) return;
+  batchRuntime.lastSnapshot = snap;
+  renderBatchProgressCardAndBanner(snap, {
+    writtenOnDisk: batchRuntime.writtenOnDisk,
+    isWorkerStreaming: batchRuntime.isWorkerStreaming,
+    pendingSavedFolderName: batchRuntime.pendingSavedFolderName,
+    supportsDirectFolder: supportsDirectFolderStream()
+  });
+}
+
+function ensureStatusObserverForJob(jobId) {
+  stopStatusObserver();
+  if (!jobId) return;
+  batchRuntime.statusObserver = startStatusOnlySseObserver(
+    jobId,
+    snap => {
+      batchRuntime.writtenOnDisk = Math.max(batchRuntime.writtenOnDisk, Number(snap.acked_count || 0));
+      renderCurrentProgress(snap);
+      if (['completed', 'cancelled', 'failed'].includes(snap.status)) {
+        releaseBatchBackgroundKeepAlive();
+        if (snap.status === 'completed' && isMobileOrTabletBrowser()) {
+          setBatchStatusMsg(t('batch_mobile_ready_toast'), false);
+        }
+      }
+    },
+    () => {
+      batchRuntime.statusObserver = null;
+    }
+  );
+}
+
+function startDirectWorkerStream(snap, dirHandle) {
+  if (!snap || !dirHandle) return;
+  stopStatusObserver();
+  const summary = snap.config_summary || {};
+  const isTate = summary.is_tate != null
+    ? Boolean(summary.is_tate)
+    : (clampIntInput('batch-height', 16, 512, 32) > clampIntInput('batch-width', 16, 512, 128));
+  const isClockMode = (summary.mode || batchRuntime.mode) !== 'recalbox_gamelist';
+  const wrapOrientationRoot = summary.wrap_orientation_root != null
+    ? Boolean(summary.wrap_orientation_root)
+    : Boolean(document.getElementById('batch-wrap-orient')?.checked);
+
+  batchRuntime.dirHandle = dirHandle;
+  batchRuntime.dirName = dirHandle.name || batchRuntime.dirName || 'Selected Folder';
+  batchRuntime.pendingSavedHandle = null;
+  batchRuntime.pendingSavedFolderName = '';
+  batchRuntime.isWorkerStreaming = true;
+  renderCurrentProgress(snap);
+
+  const worker = ensureBatchWorker();
+  if (!worker) return;
+  worker.postMessage({
+    type: 'START_STREAM',
+    jobId: snap.job_id,
+    baseUrl: window.location.origin,
+    apiKey: getActiveApiKey(),
+    dirHandle,
+    plannedDirs: snap.planned_directories || [],
+    isClockMode,
+    isTate,
+    wrapOrientationRoot,
+    alreadyAckedCount: Number(snap.acked_count || 0)
+  });
+}
+
 export function supportsDirectFolderStream() {
   return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
 }
@@ -62,7 +153,6 @@ export function isMobileOrTabletBrowser() {
   if (typeof navigator === 'undefined') return false;
   const ua = String(navigator.userAgent || '');
   if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
-  // iPadOS 13+ desktop-class UA reports MacIntel with multi-touch points
   return navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1;
 }
 
@@ -73,6 +163,103 @@ export async function initBatchScraperIfNeeded() {
     await loadBatchFilterOptions();
     syncBatchPresetUi(batchRuntime.preset);
   }
+  await reattachActiveBatchJobOnLoad();
+}
+
+export async function reattachActiveBatchJobOnLoad() {
+  if (batchRuntime.activeJobId && (batchRuntime.isWorkerStreaming || batchRuntime.statusObserver)) {
+    if (batchRuntime.lastSnapshot) renderCurrentProgress(batchRuntime.lastSnapshot);
+    return;
+  }
+  const snap = await fetchRecoverableBatchJobFromServer();
+  if (!snap || !snap.job_id) return;
+
+  batchRuntime.activeJobId = snap.job_id;
+  batchRuntime.writtenOnDisk = Number(snap.acked_count || 0);
+  const isActive = ['running', 'paused', 'queued'].includes(snap.status);
+  const hasUnacked = Number(snap.unacked_count || 0) > 0;
+  const wasDirect = snap.config_summary && snap.config_summary.delivery_mode === 'direct_folder';
+
+  if (supportsDirectFolderStream() && wasDirect && (isActive || hasUnacked)) {
+    const savedRec = await loadBatchFolderHandle(snap.job_id);
+    if (savedRec && savedRec.handle) {
+      const perm = await queryDirectoryReadWritePermission(savedRec.handle);
+      if (perm === 'granted') {
+        setBatchStatusMsg(t('batch_reattach_streaming_ok', { name: savedRec.name }), false);
+        startDirectWorkerStream(snap, savedRec.handle);
+        return;
+      }
+      batchRuntime.pendingSavedHandle = savedRec.handle;
+      batchRuntime.pendingSavedFolderName = savedRec.name || 'Folder';
+    }
+  }
+
+  renderCurrentProgress(snap);
+  if (isActive) {
+    ensureStatusObserverForJob(snap.job_id);
+  }
+}
+
+export async function reconnectSavedBatchFolder() {
+  const handle = batchRuntime.pendingSavedHandle || batchRuntime.dirHandle;
+  if (!handle || !batchRuntime.activeJobId) {
+    await attachNewFolderToActiveBatchJob();
+    return;
+  }
+  acquireBatchBackgroundKeepAlive();
+  const perm = await requestDirectoryReadWritePermission(handle);
+  if (perm !== 'granted') {
+    releaseBatchBackgroundKeepAlive();
+    return;
+  }
+  await persistBatchFolderHandle(batchRuntime.activeJobId, handle);
+  const freshRes = await apiFetch(`/api/v1/batch-scraper/jobs/${encodeURIComponent(batchRuntime.activeJobId)}`);
+  const snap = freshRes.ok ? await freshRes.json() : batchRuntime.lastSnapshot;
+  if (snap) {
+    setBatchStatusMsg(t('batch_reattach_streaming_ok', { name: handle.name || 'Folder' }), false);
+    startDirectWorkerStream(snap, handle);
+  }
+}
+
+export async function attachNewFolderToActiveBatchJob() {
+  if (!supportsDirectFolderStream() || !batchRuntime.activeJobId) return;
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    acquireBatchBackgroundKeepAlive();
+    await persistBatchFolderHandle(batchRuntime.activeJobId, handle);
+    const freshRes = await apiFetch(`/api/v1/batch-scraper/jobs/${encodeURIComponent(batchRuntime.activeJobId)}`);
+    const snap = freshRes.ok ? await freshRes.json() : batchRuntime.lastSnapshot;
+    if (snap) {
+      setBatchStatusMsg(t('batch_reattach_streaming_ok', { name: handle.name || 'Folder' }), false);
+      startDirectWorkerStream(snap, handle);
+    }
+  } catch (err) {
+    if (err && err.name !== 'AbortError') {
+      setBatchStatusMsg(String(err.message || err), true);
+    }
+  }
+}
+
+export async function dismissActiveBatchJob() {
+  const jobId = batchRuntime.activeJobId;
+  stopStatusObserver();
+  if (batchRuntime.worker && batchRuntime.isWorkerStreaming) {
+    batchRuntime.worker.postMessage({ type: 'STOP_STREAM' });
+  }
+  batchRuntime.isWorkerStreaming = false;
+  releaseBatchBackgroundKeepAlive();
+  if (jobId) {
+    markJobLocallyDismissed(jobId);
+    await removeBatchFolderHandle(jobId);
+    try {
+      await apiFetch(`/api/v1/batch-scraper/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    } catch (_) {}
+  }
+  batchRuntime.activeJobId = '';
+  batchRuntime.lastSnapshot = null;
+  batchRuntime.pendingSavedHandle = null;
+  batchRuntime.pendingSavedFolderName = '';
+  hideBatchProgressCardAndBanner();
 }
 
 function updateDestinationCapabilitiesUi() {
@@ -102,6 +289,7 @@ export async function selectBatchOutputFolder() {
     batchRuntime.dirHandle = handle;
     batchRuntime.dirName = handle.name || 'Selected Folder';
     batchRuntime.existingRelpaths = [];
+    await persistBatchFolderHandle(batchRuntime.activeJobId, handle);
     setBatchStatusMsg(t('batch_scanning_folder'), false);
     const worker = ensureBatchWorker();
     if (worker) {
@@ -249,11 +437,7 @@ async function ingestGamelistFileObjects(files) {
     const r = await apiFetch('/api/v1/batch-scraper/gamelist/parse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        files: payloads,
-        skip_hidden: true,
-        skip_bios: true
-      })
+      body: JSON.stringify({ files: payloads, skip_hidden: true, skip_bios: true })
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
@@ -268,64 +452,6 @@ async function ingestGamelistFileObjects(files) {
   }
 }
 
-function collectBatchJobRequest() {
-  const w = clampIntInput('batch-width', 16, 512, 128);
-  const h = clampIntInput('batch-height', 16, 512, 32);
-  const fps = clampIntInput('batch-fps', 6, 30, 15);
-  const dur = clampFloatInput('batch-video-dur', 2.0, 120.0, 8.0);
-  const lmh = Boolean(document.getElementById('batch-let-me-handle')?.checked);
-  const dom = document.getElementById('batch-domain')?.value || 'games';
-  const lang = document.getElementById('batch-lang')?.value || getCurrentUiLang();
-
-  const { systems, genres, decades } = getSelectedBatchFilters();
-
-  const useDirectFolder = Boolean(supportsDirectFolderStream() && batchRuntime.dirHandle);
-  return {
-    mode: batchRuntime.mode,
-    delivery_mode: useDirectFolder ? 'direct_folder' : 'zip_stream',
-    domain: dom,
-    lang,
-    systems,
-    genres,
-    decades,
-    target_count: clampIntInput('batch-target-count', 1, 10000, 100),
-    max_workers: clampIntInput('batch-workers', 0, 8, 0),
-    ffmpeg_threads_per_worker: clampIntInput('batch-ffmpeg-threads', 1, 4, 1),
-    folder_template: document.getElementById('batch-folder-tpl')?.value || 'system_genre',
-    safe_ascii_folders: Boolean(document.getElementById('batch-safe-ascii')?.checked),
-    wrap_orientation_root: Boolean(document.getElementById('batch-wrap-orient')?.checked),
-    include_marquee_png_companion: Boolean(document.getElementById('batch-marquee-png')?.checked),
-    preset: batchRuntime.preset,
-    chapters: {
-      include_card: Boolean(document.getElementById('batch-chk-card')?.checked),
-      include_poster_in_card: Boolean(document.getElementById('batch-chk-poster')?.checked),
-      include_description: Boolean(document.getElementById('batch-chk-desc')?.checked),
-      card_layout: batchRuntime.cardLayout || 'classic_split',
-      card_theme: document.getElementById('batch-card-theme')?.value || 'tinted',
-      include_jacket: Boolean(document.getElementById('batch-chk-jacket')?.checked),
-      jacket_mode: document.getElementById('batch-jacket-mode')?.value || 'panorama',
-      include_marquee: Boolean(document.getElementById('batch-chk-marquee')?.checked),
-      snapshot_count: clampIntInput('batch-snap-count', 0, 4, 1),
-      panorama_duration_s: clampFloatInput('batch-pan-dur', 1.5, 15.0, 4.0),
-      include_video: Boolean(document.getElementById('batch-chk-video')?.checked)
-    },
-    encoding: {
-      width: w,
-      height: h,
-      fps,
-      video_max_duration_s: dur,
-      let_me_handle_it: lmh,
-      video_mode: document.getElementById('batch-video-mode')?.value || 'auto_action',
-      content_mode: document.getElementById('batch-content-mode')?.value || 'auto',
-      dither: document.getElementById('batch-dither')?.value || 'none',
-      palette_mode: document.getElementById('batch-palette-mode')?.value || 'per_scene_rgb888',
-      reject_threshold: clampIntInput('batch-reject-score', 0, 95, 0)
-    },
-    existing_relpaths: batchRuntime.existingRelpaths || [],
-    gamelist_files: batchRuntime.mode === 'recalbox_gamelist' ? batchRuntime.gamelistFiles : []
-  };
-}
-
 export async function startBatchScrapeJob() {
   if (supportsDirectFolderStream() && !batchRuntime.dirHandle) {
     await selectBatchOutputFolder();
@@ -336,10 +462,11 @@ export async function startBatchScrapeJob() {
     return;
   }
 
-  // Acquire WakeLock + Web Lock + Silent Web Audio Keep-Alive synchronously inside user click gesture!
   acquireBatchBackgroundKeepAlive();
-
-  const payload = collectBatchJobRequest();
+  const payload = buildBatchJobRequestPayload(
+    batchRuntime,
+    Boolean(supportsDirectFolderStream() && batchRuntime.dirHandle)
+  );
   setBatchStatusMsg(t('batch_starting'), false);
 
   try {
@@ -354,31 +481,22 @@ export async function startBatchScrapeJob() {
     const snap = d.job;
     batchRuntime.activeJobId = snap.job_id;
     batchRuntime.writtenOnDisk = 0;
-    renderBatchProgressUi(snap);
-
-    const isTate = payload.encoding.height > payload.encoding.width;
-    const isClockMode = payload.mode === 'random_filter';
 
     if (supportsDirectFolderStream() && batchRuntime.dirHandle) {
-      const worker = ensureBatchWorker();
-      worker.postMessage({
-        type: 'START_STREAM',
-        jobId: snap.job_id,
-        baseUrl: window.location.origin,
-        apiKey: getActiveApiKey(),
-        dirHandle: batchRuntime.dirHandle,
-        plannedDirs: snap.planned_directories || [],
-        isClockMode,
-        isTate,
-        wrapOrientationRoot: payload.wrap_orientation_root
-      });
+      await persistBatchFolderHandle(snap.job_id, batchRuntime.dirHandle);
+      startDirectWorkerStream(snap, batchRuntime.dirHandle);
     } else {
-      // On Mobile (iOS Safari / Android), avoid synthetic post-await a.click() which WebKit blocks
-      // or severs on app-switch; user taps the native #btn-batch-download-zip button anytime or at 100%!
+      batchRuntime.isWorkerStreaming = false;
+      renderCurrentProgress(snap);
       if (!isMobileOrTabletBrowser()) {
-        triggerStreamingZipDownload(snap.job_id);
+        const a = document.createElement('a');
+        a.href = buildZipDownloadHref(snap.job_id);
+        a.download = `dmd_pack_${snap.job_id}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       }
-      startFallbackProgressMonitor(snap.job_id);
+      ensureStatusObserverForJob(snap.job_id);
     }
   } catch (err) {
     releaseBatchBackgroundKeepAlive();
@@ -386,46 +504,11 @@ export async function startBatchScrapeJob() {
   }
 }
 
-function buildZipDownloadHref(jobId) {
-  const key = getActiveApiKey();
-  const q = key ? `?api_key=${encodeURIComponent(key)}` : '';
-  return `/api/v1/batch-scraper/jobs/${encodeURIComponent(jobId)}/stream.zip${q}`;
-}
-
-function triggerStreamingZipDownload(jobId) {
-  const a = document.createElement('a');
-  a.href = buildZipDownloadHref(jobId);
-  a.download = `dmd_pack_${jobId}.zip`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-function startFallbackProgressMonitor(jobId) {
-  if (batchRuntime.zipFallbackPollTimer) clearInterval(batchRuntime.zipFallbackPollTimer);
-  batchRuntime.zipFallbackPollTimer = setInterval(async () => {
-    try {
-      const r = await apiFetch(`/api/v1/batch-scraper/jobs/${encodeURIComponent(jobId)}`);
-      if (!r.ok) return;
-      const snap = await r.json();
-      batchRuntime.writtenOnDisk = Number(snap.acked_count || 0);
-      renderBatchProgressUi(snap);
-      if (['completed', 'cancelled', 'failed'].includes(snap.status)) {
-        clearInterval(batchRuntime.zipFallbackPollTimer);
-        batchRuntime.zipFallbackPollTimer = null;
-        releaseBatchBackgroundKeepAlive();
-        if (snap.status === 'completed' && isMobileOrTabletBrowser()) {
-          setBatchStatusMsg(t('batch_mobile_ready_toast'), false);
-        }
-      }
-    } catch (_) {}
-  }, 1500);
-}
-
 export async function controlActiveBatchJob(action) {
   if (!batchRuntime.activeJobId) return;
   if (action === 'cancel' && batchRuntime.worker) {
     batchRuntime.worker.postMessage({ type: 'STOP_STREAM' });
+    batchRuntime.isWorkerStreaming = false;
   }
   try {
     const r = await apiFetch(`/api/v1/batch-scraper/jobs/${encodeURIComponent(batchRuntime.activeJobId)}/control`, {
@@ -435,9 +518,12 @@ export async function controlActiveBatchJob(action) {
     });
     if (r.ok) {
       const d = await r.json();
-      renderBatchProgressUi(d.job);
+      renderCurrentProgress(d.job);
       if (action === 'pause' || action === 'cancel') releaseBatchBackgroundKeepAlive();
-      if (action === 'resume') acquireBatchBackgroundKeepAlive();
+      if (action === 'resume') {
+        acquireBatchBackgroundKeepAlive();
+        if (!batchRuntime.isWorkerStreaming) ensureStatusObserverForJob(d.job.job_id);
+      }
     }
   } catch (err) {
     setBatchStatusMsg(String(err.message || err), true);
@@ -457,7 +543,7 @@ export async function onBatchWorkersLiveChange() {
     });
     if (r.ok) {
       const d = await r.json();
-      renderBatchProgressUi(d.job);
+      renderCurrentProgress(d.job);
     }
   } catch (_) {}
 }
@@ -478,99 +564,15 @@ function handleBatchWorkerMessage(msg) {
   }
   if (msg.type === 'SNAPSHOT' && msg.snapshot) {
     batchRuntime.writtenOnDisk = Number(msg.writtenTotal || msg.snapshot.acked_count || 0);
-    renderBatchProgressUi(msg.snapshot);
+    renderCurrentProgress(msg.snapshot);
     return;
   }
   if (msg.type === 'STREAM_DONE') {
+    batchRuntime.isWorkerStreaming = false;
     releaseBatchBackgroundKeepAlive();
     if (batchRuntime.lastSnapshot) {
-      renderBatchProgressUi(batchRuntime.lastSnapshot);
+      renderCurrentProgress(batchRuntime.lastSnapshot);
     }
-  }
-}
-
-function formatEta(etaSec) {
-  if (etaSec == null) return '—';
-  const s = Math.max(0, Math.round(Number(etaSec)));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m ${rem}s`;
-}
-
-function renderBatchProgressUi(snap) {
-  if (!snap) return;
-  batchRuntime.lastSnapshot = snap;
-  const pct = Number(snap.progress_pct || 0);
-  const isRunning = snap.status === 'running';
-  const isPaused = snap.status === 'paused';
-  const doneCount = Math.max(
-    batchRuntime.writtenOnDisk,
-    Number(snap.succeeded_count || 0) + Number(snap.skipped_existing_count || 0)
-  );
-  updateBatchDocumentTitleProgress(pct, isRunning || isPaused);
-
-  const card = document.getElementById('batch-progress-card');
-  if (card) card.style.display = '';
-
-  const zipBtn = document.getElementById('btn-batch-download-zip');
-  if (zipBtn) {
-    const showZip = !(supportsDirectFolderStream() && batchRuntime.dirHandle) && Boolean(snap.job_id);
-    zipBtn.style.display = showZip ? 'inline-flex' : 'none';
-    if (showZip) {
-      zipBtn.href = buildZipDownloadHref(snap.job_id);
-      zipBtn.download = `dmd_pack_${snap.job_id}.zip`;
-      const isReady = snap.status === 'completed' && Number(snap.unacked_count || 0) > 0;
-      zipBtn.classList.toggle('ready', isReady);
-      zipBtn.textContent = isReady ? t('btn_batch_dl_zip_ready') : t('btn_batch_dl_zip');
-    }
-  }
-
-  const fill = document.getElementById('batch-progress-fill');
-  if (fill) fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-
-  const statsEl = document.getElementById('batch-progress-stats');
-  if (statsEl) {
-    statsEl.textContent = `${doneCount} / ${snap.total_target} (${pct.toFixed(1)}%) • ${snap.items_per_min || 0}/min • ETA ${formatEta(snap.eta_s)}`;
-  }
-
-  const pillsEl = document.getElementById('batch-progress-pills');
-  if (pillsEl) {
-    const spoolMb = ((Number(snap.unacked_bytes || 0)) / (1024 * 1024)).toFixed(1);
-    pillsEl.innerHTML =
-      `<span class="pill ${isRunning ? 'ok' : (isPaused ? 'warn' : '')}">${esc(snap.status.toUpperCase())}</span> ` +
-      `<span class="badge">✓ ${Number(snap.succeeded_count || 0)}</span> ` +
-      `<span class="badge">⏭ ${Number(snap.skipped_existing_count || 0)}</span> ` +
-      `<span class="badge">✕ ${Number(snap.failed_count || 0)}</span> ` +
-      `<span class="badge">⚙ ${Number(snap.active_workers || 0)}/${Number(snap.max_workers || 1)} workers</span> ` +
-      `<span class="badge">Spool: ${spoolMb} MB</span>`;
-  }
-
-  const pauseBtn = document.getElementById('btn-batch-pause');
-  const resumeBtn = document.getElementById('btn-batch-resume');
-  if (pauseBtn) pauseBtn.style.display = isRunning ? '' : 'none';
-  if (resumeBtn) resumeBtn.style.display = isPaused ? '' : 'none';
-
-  const recentTbody = document.getElementById('batch-recent-tbody');
-  if (recentTbody && Array.isArray(snap.recent_items)) {
-    recentTbody.innerHTML = snap.recent_items.length
-      ? snap.recent_items.map(it => (
-          `<tr><td><code>${esc(it.rel_dir)}</code></td><td>${esc(it.filename)}</td>` +
-          `<td>${esc(it.duration_s)}s</td><td>${(Number(it.size_bytes || 0) / 1024).toFixed(0)} KB</td></tr>`
-        )).join('')
-      : `<tr><td colspan="4" style="color:var(--muted)">—</td></tr>`;
-  }
-
-  // Persistent Cross-Tab Header Mini-Banner so user sees live progress from ANY tab
-  const banner = document.getElementById('batch-global-banner');
-  const bannerTxt = document.getElementById('batch-global-banner-text');
-  const bannerFill = document.getElementById('batch-global-banner-fill');
-  if (banner) {
-    banner.style.display = (isRunning || isPaused) ? 'flex' : 'none';
-    if (bannerTxt) {
-      bannerTxt.textContent = `⚡ Batch: ${doneCount}/${snap.total_target} (${pct.toFixed(0)}%) • ETA ${formatEta(snap.eta_s)}`;
-    }
-    if (bannerFill) bannerFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
   }
 }
 

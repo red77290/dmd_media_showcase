@@ -135,3 +135,5 @@ En teléfonos y tablets, **iOS (Safari)** y **Android (Chrome)** impiden por seg
   **¡No!** La casilla **🚀 Let Me Handle It** (activada por defecto) aplica automáticamente el encuadre inteligente por IA y el realce de color LED HUB75 en **24 bits `RGB888`**. Abre **Modo Avanzado** solo si deseas ajustar los hilos paralelos (`Workers`), temas de tarjeta (*Neon Border*, *Amber Pinball*...), número de capturas o FPS.
 - **« ¿Un scraping grande afectará a mi pantalla LED en directo? »**
   **Nunca.** El Batch Scraper trabaja en una cola totalmente aislada: no altera tu historial `seen_history.json` ni interrumpe ninguna matriz conectada.
+- **« ¿Qué ocurre si cierro la ventana del navegador por error o pierdo el Wi-Fi? »**
+  **¡Nada se detiene!** Cada ejecución es una **tarea persistente en el servidor** (`batch_jobs.json`): el scraping y la conversión continúan en segundo plano aunque cierres el navegador. Al volver a abrir `:8890` (incluso desde otro dispositivo o tu móvil), el aviso superior y la consola de progreso reaparecen automáticamente para reconectar tu carpeta en 1 clic o descargar el paquete `.zip` listo.

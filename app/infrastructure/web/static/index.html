@@ -1505,9 +1505,17 @@
             <a id="btn-batch-download-zip" href="#" class="btn-zip-dl" style="display:none" download data-i18n="btn_batch_dl_zip">📥 Download Pack (.zip)</a>
             <button type="button" id="btn-batch-pause" class="secondary mini-btn" onclick="controlActiveBatchJob('pause')" data-i18n="btn_batch_pause">⏸ Pause</button>
             <button type="button" id="btn-batch-resume" class="secondary mini-btn" style="display:none" onclick="controlActiveBatchJob('resume')" data-i18n="btn_batch_resume">▶ Resume</button>
-            <button type="button" class="danger mini-btn" onclick="controlActiveBatchJob('cancel')" data-i18n="btn_batch_cancel">⏹ Stop Job</button>
+            <button type="button" id="btn-batch-cancel" class="danger mini-btn" onclick="controlActiveBatchJob('cancel')" data-i18n="btn_batch_cancel">⏹ Stop Job</button>
+            <button type="button" id="btn-batch-dismiss" class="secondary mini-btn" style="display:none" onclick="dismissActiveBatchJob()" data-i18n="btn_batch_dismiss">🗑️ Dismiss</button>
           </div>
         </h2>
+        <div id="batch-reconnect-bar" class="batch-reconnect-bar" style="display:none">
+          <span id="batch-reconnect-text"></span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" id="btn-batch-reconnect-dir" class="mini-btn" onclick="reconnectSavedBatchFolder()" data-i18n="btn_batch_reconnect_dir">📂 Reconnect Saved Folder</button>
+            <button type="button" class="secondary mini-btn" onclick="attachNewFolderToActiveBatchJob()" data-i18n="btn_batch_pick_other_dir">📂 Choose Target Folder...</button>
+          </div>
+        </div>
         <div id="batch-progress-stats" style="font-size:0.9rem;font-weight:600;color:#fff">0 / 0 (0.0%)</div>
         <div class="batch-progress-track">
           <div id="batch-progress-fill" class="batch-progress-fill"></div>

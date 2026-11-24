@@ -21,7 +21,8 @@ dmd_media_showcase/
 │   │   │   ├── artifact_cache.py         # BoundedTtlCache[TKey, TVal]
 │   │   │   ├── slot_pipeline.py          # DualSlotPipeline[TKey, TItem] (Ready N + Standby N+1)
 │   │   │   ├── priority_queue.py         # PriorityPlaybackQueue (enqueue_next vs play_now)
-│   │   │   └── playlist_cursor.py        # WeightedPlaylistCursor (multi-domain slot quotas)
+│   │   │   ├── playlist_cursor.py        # WeightedPlaylistCursor (multi-domain slot quotas)
+│   │   │   └── batch_job.py              # Persistent BatchScrapeJob state machine & sequence spool
 │   │   ├── taxonomy/                     # Modular multilingual Taxonomy & SynonymCatalogResolver
 │   │   │   ├── common.py                 # Slug normalizers, fingerprints & decade helpers
 │   │   │   ├── systems.py                # Unified 66-system RETRO_SYSTEM_CATALOG (55+ platforms)
@@ -42,18 +43,19 @@ dmd_media_showcase/
 │   │   ├── on_demand_queue_service.py    # Priority playback queue, fallback_query & full per-DMD queue/process abort
 │   │   ├── passive_director_service.py   # Server-managed Mode 2A/2B playlist loops & live controls
 │   │   ├── studio_preview_service.py     # <100ms Card preview & full DMDS sequence builder
+│   │   ├── batch_scraper_service.py      # Persistent autonomous Batch Scraper orchestrator & startup recovery
 │   │   ├── source_chain_service.py       # Composable multi-source Chain-of-Responsibility router
 │   │   ├── candidate_aggregator.py       # <=3.0s Cross-Source Composite Enricher (enrich_missing)
 │   │   ├── update_checker.py             # Cached OS-aware GitHub Release checker
 │   │   └── consume_once_orchestrator.py  # Thin orchestration facade
 │   ├── container.py                      # Composition Root wiring Infrastructure adapters to Domain ports
 │   ├── infrastructure/                   # Inbound & Outbound Concrete Adapters
-│   │   ├── http/                         # FastAPI middleware, runtime reloader & 6 modular routers
-│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, rotation_batch
+│   │   ├── http/                         # FastAPI middleware, runtime reloader & 7 modular routers
+│   │   │   └── routers/                  # system_admin, discovery, clients_and_queue, studio, rotation_batch, batch_scraper
 │   │   │       └── consume_once.py       # Lossless HTTP Content-Length DMDZ v2 / DMDS stream + DELETE cleanup
 │   │   ├── web/                          # Externalized Control Center WebUI (zero HTML/JS in Python)
 │   │   │   ├── dashboard_loader.py       # Portable resource loader for index.html, CSS & ES modules
-│   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (15+ ES modules)
+│   │   │   └── static/                   # index.html, css/{dashboard,studio,responsive}.css, js/ (18+ ES modules)
 │   │   ├── rendering/                    # Modular HUB75 RGB565LE rendering pipeline
 │   │   │   ├── card_geometry.py          # Adaptive YOKO/Square/TATE geometry solver
 │   │   │   ├── card_layout_engine.py     # 5 card layouts, bitmap fonts & DMDS card renderer
@@ -63,7 +65,8 @@ dmd_media_showcase/
 │   │   │   ├── panorama_and_static.py    # Deterministic TATE (L->R) / YOKO (T->B) zoom-to-cover panoramas
 │   │   │   └── video_pipeline.py         # Action-window detection & direct RGB565 trailer stream encoding
 │   │   ├── mqtt/                         # EmbeddedMqttBroker (:1883) & ShowcaseMqttGateway
-│   │   ├── persistence/                  # JsonSeenHistoryRepository, DmdProfileStore, ServerConfigStore (source_policies)
+│   │   ├── persistence/                  # JsonSeenHistoryRepository, DmdProfileStore, ServerConfigStore, JsonBatchJobRepository
+│   │   │   ├── ephemeral_batch_queue.py  # Bounded disk spool (.batch_spool/) with atomic slot.json rehydration
 │   │   │   └── on_demand_cache_store.py  # shutil.copy2 mtime-preserving .rgb565.stream + .dmdz2.stream sibling cache
 │   │   ├── scrapers/                     # 11 domain adapters + ScraperRegistry + per-source referentials
 │   │   │   ├── games/                    # igdb_adapter, screenscraper_adapter, arcadeitalia_adapter, libretro_wikidata_adapter, arcade_aliases
@@ -175,6 +178,10 @@ Append `"custom_retro"` to `DEFAULT_SOURCE_POLICIES["games"]["ordered_sources"]`
    - Ephemeral `FrontendSync` client IDs (`is_ephemeral_sync_client_id(dmd_id)` in `app/application/sync_slot_rules.py`, i.e., `*_sync`) must never trigger passive `DualSlotPipeline` `N+1` rotation warming or pollute persistent client profiles.
    - `WorkerPool.run_transcode(..., dmd_id=...)` executes `*_sync` jobs in dedicated OS process groups (`start_new_session=True` on POSIX, `CREATE_NEW_PROCESS_GROUP` on Windows) outside the shared `ProcessPoolExecutor` and registers every active child PID (`1..N` concurrent workers per `dmd_id` tolerated safely) in `DmdProcessRegistry` (`app/scheduler/dmd_process_registry.py`).
    - `DELETE /api/v1/clients/{dmd_id}/queue` (`OnDemandQueueService.cancel_all_for_client()`) must atomically drain pending `PriorityPlaybackQueue` entries, cancel in-flight async tasks, and invoke `dmd_process_registry.kill_all_for_dmd(dmd_id)` (`SIGTERM -> SIGKILL` process-group / `taskkill /T /F`) so exiting a game aborts all `1..N` `dmd_show_converter` / `ffmpeg` / `yt-dlp` subtrees immediately without raising `BrokenProcessPool` on background rotation workers.
+10. **Persistent Autonomous Batch Scraper Jobs (`IBatchJobRepositoryPort` + `EphemeralBatchArtifactQueue` + `IndexedDB`)**:
+    - Batch Scraper jobs (`BatchScraperService`) run autonomously on the server to `100%` even when all browser tabs/windows close (`max_unacked_items = max(256, min(2000, target_count))`, bounded to `<= 512 MiB` under `./data/.batch_spool/<job_id>/ready/seq_*`).
+    - Job state (`BatchScrapeJob.to_persisted_state()` including `completed_relpaths` and `config_summary`) is atomically persisted via `IBatchJobRepositoryPort` (`JsonBatchJobRepository` -> `./data/batch_jobs.json`), while `EphemeralBatchArtifactQueue` writes atomic `slot.json` descriptors per ready sequence and rehydrates unacked files on startup (`restore_persisted_jobs()` in `app/main.py` lifespan) with zero duplicate conversion work on resume and `24h` (`86400s`) retention for uncollected artifacts (`DELETE /api/v1/batch-scraper/jobs/{job_id}` dismisses explicitly).
+    - On page boot (`app.js`), `reattachActiveBatchJobOnLoad()` (`js/batch_session_recovery.js` + `js/tabs/batch_scraper.js`) queries `GET /api/v1/batch-scraper/jobs`, opens a `status_only=true` SSE stream, and restores saved `FileSystemDirectoryHandle` entries from `IndexedDB` (`dmd_showcase_batch_fs`) with `alreadyAckedCount` offset preservation.
 
 ---
 

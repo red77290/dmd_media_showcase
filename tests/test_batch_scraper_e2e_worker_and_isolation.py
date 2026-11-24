@@ -365,6 +365,7 @@ async def test_ephemeral_spool_backpressure_blocks_workers_until_client_acks(
         genres=("platformer",),
         target_count=7,
         max_workers=1,
+        spool_max_items=4,
         chapters=ChapterSelectionSpec.from_preset("poster_only"),
         encoding=GifEncodingSpec(width=64, height=32, fps=10),
     )
@@ -829,3 +830,324 @@ console.log(JSON.stringify({{ finalMsg, jobId: job.job_id, eventCount: events.le
     finally:
         uv_server.should_exit = True
         srv_thread.join(timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_persistent_batch_job_survives_window_loss_and_server_restart_without_duplicate_work(
+    tmp_path: Path,
+    media_assets_patch: Dict[str, str],
+) -> None:
+    """
+    Proves that Batch Scraper jobs are true first-class persistent server tasks:
+    1. A `direct_folder` job of 6 items runs all the way to `completed` (6/6) even if the user
+       closes their browser window immediately (`0` ACKs sent while running).
+    2. Across a full server restart (`JsonBatchJobRepository` + `EphemeralBatchArtifactQueue`
+       rehydrated from disk), an interrupted `recalbox_gamelist` job preserves its already-staged
+       `.gif` files on disk, restores as `paused`, and upon `resume_job()` completes only the
+       remaining entries with zero duplicate work before `dismiss_job()` cleans up 100% of disk files.
+    """
+    from app.domain.gamelist_catalog import GamelistGameEntry
+    from app.infrastructure.persistence.json_batch_job_repository import JsonBatchJobRepository
+
+    pool = [
+        MediaCandidate(
+            id=f"persist_snes_{i}",
+            domain="games",
+            title=f"Persistent Quest {i}",
+            year="1994",
+            badge="SNES",
+            badge_color="#7C4DFF",
+            subtitle="RPG",
+            rating="9.0",
+            synopsis="Persistent quest.",
+            poster_url=media_assets_patch["poster"],
+            extra_meta={"system": "snes", "genre": "rpg"},
+        )
+        for i in range(1, 10)
+    ]
+    spool_dir = tmp_path / ".batch_spool"
+    jobs_json = tmp_path / "batch_jobs.json"
+
+    svc1 = BatchScraperService(
+        chain_service=_ConfigurableCatalogChain({"games": pool}),  # type: ignore[arg-type]
+        composer_port=_InProcessComposer(artificial_delay_s=0.01),
+        artifact_queue=EphemeralBatchArtifactQueue(spool_root=spool_dir),
+        job_repository=JsonBatchJobRepository(file_path=jobs_json),
+    )
+
+    # Part 1: Direct-folder job with NO browser worker connected -> finishes 6/6 without stalling!
+    cfg_headless = BatchScrapeConfig(
+        mode="random_filter",
+        delivery_mode="direct_folder",
+        domain="games",
+        systems=("snes",),
+        genres=("rpg",),
+        target_count=6,
+        max_workers=2,
+        chapters=ChapterSelectionSpec.from_preset("poster_only"),
+        encoding=GifEncodingSpec(width=64, height=32, fps=10),
+    )
+    snap_hl = await svc1.start_job(cfg_headless)
+    hl_id = str(snap_hl["job_id"])
+    for _ in range(100):
+        cur = svc1.get_job_snapshot(hl_id)
+        assert cur is not None
+        if cur["status"] == "completed":
+            break
+        await asyncio.sleep(0.03)
+    final_hl = svc1.get_job_snapshot(hl_id)
+    assert final_hl is not None
+    assert final_hl["status"] == "completed"
+    assert final_hl["succeeded_count"] == 6
+    assert final_hl["unacked_count"] == 6
+    assert (
+        final_hl["config_summary"]["delivery_mode"] == "direct_folder"  # type: ignore[index]
+    )
+
+    # Part 2: Start a 4-ROM Recalbox job, pause after >=1 item, ACK seq 1 if >=2, then simulate server reboot!
+    composed_titles: List[str] = []
+
+    class _CountingComposer(_InProcessComposer):
+        async def compose_candidate_gif(self, candidate, chapters, encoding, work_dir, job_id="", export_marquee_png=False):  # type: ignore[override]
+            composed_titles.append(candidate.title)
+            return await super().compose_candidate_gif(
+                candidate, chapters, encoding, work_dir, job_id=job_id, export_marquee_png=export_marquee_png
+            )
+
+    svc1._composer = _CountingComposer(artificial_delay_s=0.04)
+    gl_entries = [
+        GamelistGameEntry(system="snes", rom_path=f"./rom_{i}.sfc", rom_stem=f"rom_{i}", title=f"Persistent Quest {i}")
+        for i in range(1, 5)
+    ]
+    cfg_gl = BatchScrapeConfig(
+        mode="recalbox_gamelist",
+        delivery_mode="direct_folder",
+        domain="games",
+        systems=("snes",),
+        max_workers=1,
+        include_marquee_png_companion=False,
+        chapters=ChapterSelectionSpec.from_preset("poster_only"),
+        encoding=GifEncodingSpec(width=64, height=32, fps=10),
+    )
+    snap_gl = await svc1.start_job(cfg_gl, gamelist_entries=gl_entries)
+    gl_id = str(snap_gl["job_id"])
+
+    for _ in range(100):
+        s = svc1.get_job_snapshot(gl_id)
+        assert s is not None
+        if int(s["succeeded_count"]) >= 2:  # type: ignore[arg-type]
+            await svc1.pause_job(gl_id)
+            break
+        await asyncio.sleep(0.02)
+
+    # Wait for in-flight worker to settle while paused
+    for _ in range(50):
+        s = svc1.get_job_snapshot(gl_id)
+        if s and int(s["active_workers"]) == 0:  # type: ignore[arg-type]
+            break
+        await asyncio.sleep(0.02)
+
+    # Client ACKs seq 1 before losing window + server restarting; seq 2 stays staged on disk!
+    await svc1.ack_artifact(gl_id, 1)
+    before_reboot = svc1.get_job_snapshot(gl_id)
+    assert before_reboot is not None
+    done_before = int(before_reboot["succeeded_count"])  # type: ignore[arg-type]
+    assert done_before >= 2
+    # Simulate abrupt process stop of svc1 runner task
+    ctx1 = svc1._jobs[gl_id]
+    if ctx1.runner_task and not ctx1.runner_task.done():
+        ctx1.runner_task.cancel()
+        await asyncio.gather(ctx1.runner_task, return_exceptions=True)
+        # Re-save as if it was running/paused at shutdown
+        ctx1.job.status = "running"
+        svc1._persist_jobs_state()
+
+    # Instantiate brand-new service & queue on same disk paths (simulating Docker container restart!)
+    svc2 = BatchScraperService(
+        chain_service=_ConfigurableCatalogChain({"games": pool}),  # type: ignore[arg-type]
+        composer_port=_CountingComposer(artificial_delay_s=0.01),
+        artifact_queue=EphemeralBatchArtifactQueue(spool_root=spool_dir),
+        job_repository=JsonBatchJobRepository(file_path=jobs_json),
+    )
+    restored_n = await svc2.restore_persisted_jobs()
+    assert restored_n >= 2
+
+    restored_gl = svc2.get_job_snapshot(gl_id)
+    assert restored_gl is not None
+    assert restored_gl["status"] == "paused"
+    assert int(restored_gl["succeeded_count"]) == done_before  # type: ignore[arg-type]
+    assert int(restored_gl["acked_count"]) == 1  # type: ignore[arg-type]
+    # Surviving unacked seq 2 is still physically readable from rehydrated spool!
+    staged_seq2 = svc2.get_staged_artifact(gl_id, 2)
+    assert staged_seq2 is not None and staged_seq2.gif_path.is_file()
+
+    # Resume job -> finishes remaining entries up to 4/4 without re-composing already completed ROMs!
+    composed_titles.clear()
+    await svc2.resume_job(gl_id)
+    for _ in range(100):
+        s2 = svc2.get_job_snapshot(gl_id)
+        assert s2 is not None
+        if s2["status"] == "completed":
+            break
+        await asyncio.sleep(0.03)
+
+    completed_gl = svc2.get_job_snapshot(gl_id)
+    assert completed_gl is not None
+    assert completed_gl["status"] == "completed"
+    assert completed_gl["succeeded_count"] == 4
+    assert len(composed_titles) == 4 - done_before
+
+    # Dismiss both jobs -> 0 records and 0 spool directories left on disk
+    assert await svc2.dismiss_job(gl_id) is True
+    assert await svc2.dismiss_job(hl_id) is True
+    assert svc2.list_active_jobs() == []
+    assert list(spool_dir.iterdir()) == []
+
+
+def test_window_close_and_reopen_recovery_sse_and_playwright_ui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    media_assets_patch: Dict[str, str],
+) -> None:
+    """
+    End-to-end verification of closing/losing the browser window during a scrape and reopening:
+    - Verifies `GET /api/v1/batch-scraper/jobs`, `GET /events?status_only=true`, and `DELETE /jobs/{id}`.
+    - When Playwright + Chrome are installed locally, opens a brand-new browser window on `/` (Tab #1)
+      and verifies `#batch-global-banner`, `#batch-progress-card`, `#batch-reconnect-bar`, and
+      `#btn-batch-dismiss` automatically re-attach to the persistent server job!
+    """
+    from pathlib import Path as _Path
+    import socket
+    import threading
+    import urllib.request
+
+    from app.infrastructure.http.routers import batch_scraper as router_mod
+    from app.infrastructure.persistence.json_batch_job_repository import JsonBatchJobRepository
+    from app.main import app
+    import uvicorn
+
+    pool = [
+        MediaCandidate(
+            id=f"reopen_{i}",
+            domain="games",
+            title=f"Chrono Trigger {i}",
+            year="1995",
+            badge="SNES",
+            badge_color="#FF6D00",
+            subtitle="RPG",
+            rating="9.6",
+            synopsis="Time travel epic.",
+            poster_url=media_assets_patch["poster"],
+            extra_meta={"system": "snes", "genre": "rpg"},
+        )
+        for i in range(1, 4)
+    ]
+    spool_dir = tmp_path / ".spool_ui_reopen"
+    jobs_file = tmp_path / "batch_jobs_ui.json"
+    live_svc = BatchScraperService(
+        chain_service=_ConfigurableCatalogChain({"games": pool}),  # type: ignore[arg-type]
+        composer_port=_InProcessComposer(artificial_delay_s=0.02),
+        artifact_queue=EphemeralBatchArtifactQueue(spool_root=spool_dir),
+        job_repository=JsonBatchJobRepository(file_path=jobs_file),
+    )
+    monkeypatch.setattr(router_mod, "batch_scraper_service", live_svc)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+
+    cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", lifespan="off")
+    uv_server = uvicorn.Server(cfg)
+    srv_thread = threading.Thread(target=uv_server.run, daemon=True)
+    srv_thread.start()
+
+    base_url = f"http://127.0.0.1:{port}"
+    for _ in range(50):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.05)
+
+    try:
+        # 1. User launches a direct_folder job, then immediately closes their window!
+        start_body = json.dumps(
+            {
+                "mode": "random_filter",
+                "delivery_mode": "direct_folder",
+                "domain": "games",
+                "systems": ["snes"],
+                "genres": ["rpg"],
+                "target_count": 2,
+                "preset": "poster_only",
+                "encoding": {"width": 64, "height": 32, "fps": 10},
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/api/v1/batch-scraper/jobs",
+            data=start_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            job_id = json.loads(resp.read().decode("utf-8"))["job"]["job_id"]
+
+        # 2. Status-only SSE stream delivers live/terminal snapshot without draining ready items
+        with urllib.request.urlopen(
+            f"{base_url}/api/v1/batch-scraper/jobs/{job_id}/events?status_only=true",
+            timeout=15,
+        ) as sse_resp:
+            raw_sse = sse_resp.read().decode("utf-8")
+        assert "event: batch_update" in raw_sse
+        last_data = [ln for ln in raw_sse.splitlines() if ln.startswith("data:")][-1]
+        sse_payload = json.loads(last_data.removeprefix("data:").strip())
+        assert sse_payload["ready"] == []
+        assert sse_payload["snapshot"]["status"] == "completed"
+        assert sse_payload["snapshot"]["unacked_count"] == 2
+
+        # 3. If Playwright + Chrome exist in this environment, verify real browser reopen on Tab #1!
+        chrome_bin = _Path("/usr/bin/google-chrome")
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
+            has_pw = chrome_bin.is_file()
+        except Exception:
+            has_pw = False
+
+        if has_pw:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(executable_path=str(chrome_bin), headless=True)
+                page = browser.new_page(viewport={"width": 1180, "height": 900})
+                # Open brand-new window on `/` (Tab #1 Overview — user has NOT clicked Tab #7!)
+                page.goto(base_url, wait_until="domcontentloaded")
+                page.wait_for_function(
+                    "() => { const b = document.getElementById('batch-global-banner'); return b && getComputedStyle(b).display !== 'none'; }",
+                    timeout=5000,
+                )
+                # Switch to Tab #7 via the global banner button -> progress card, reconnect bar & zip button are all live!
+                page.click("#batch-global-banner button")
+                page.wait_for_timeout(200)
+                assert page.is_visible("#batch-progress-card")
+                assert page.is_visible("#batch-reconnect-bar")
+                assert page.is_visible("#btn-batch-download-zip")
+                assert page.is_visible("#btn-batch-dismiss")
+                # Click Dismiss -> calls DELETE /api/v1/batch-scraper/jobs/{job_id} and hides card + banner
+                page.click("#btn-batch-dismiss")
+                page.wait_for_function(
+                    "() => getComputedStyle(document.getElementById('batch-progress-card')).display === 'none'",
+                    timeout=5000,
+                )
+                browser.close()
+        else:
+            del_req = urllib.request.Request(
+                f"{base_url}/api/v1/batch-scraper/jobs/{job_id}",
+                method="DELETE",
+            )
+            with urllib.request.urlopen(del_req, timeout=5) as del_resp:
+                assert json.loads(del_resp.read().decode("utf-8"))["ok"] is True
+
+        with urllib.request.urlopen(f"{base_url}/api/v1/batch-scraper/jobs", timeout=5) as list_resp:
+            assert json.loads(list_resp.read().decode("utf-8"))["jobs"] == []
+    finally:
+        uv_server.should_exit = True
+        srv_thread.join(timeout=5.0)
+
