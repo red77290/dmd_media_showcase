@@ -21,7 +21,7 @@ info:
     \ and preloaded into RAM on `ArcadeMatrix_RPi`,\n  2. **Passive UDP `DMDF` (`:4210`,\
     \ `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full\
     \ AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
-  version: 1.1.5
+  version: 1.2.0
 paths:
   /api/v1/asyncapi.yaml:
     get:
