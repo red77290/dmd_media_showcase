@@ -42,6 +42,7 @@ from app.application.source_chain_service import source_chain_service
 from app.application.update_checker import release_update_checker
 from app.config import settings
 from app.infrastructure.http.routers import (
+    batch_scraper,
     clients_and_queue,
     consume_once,
     discovery,
@@ -134,6 +135,10 @@ OPENAPI_TAGS = [
         "name": "Assets & Streaming",
         "description": "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), panoramas, and video trailers.",
     },
+    {
+        "name": "Batch Scraper & Offline Packs",
+        "description": "Streaming RGB888 `.gif` Batch Scraper (`<system>_<genre>/` Clock playlists & Recalbox `gamelist.xml` Offline Showcase packs up to `120s` video).",
+    },
 ]
 
 
@@ -205,6 +210,7 @@ app.include_router(system_admin.router)
 app.include_router(discovery.router)
 app.include_router(clients_and_queue.router)
 app.include_router(studio.router)
+app.include_router(batch_scraper.router)
 app.include_router(consume_once.router)
 app.include_router(rotation_batch.router)
 e2e_fixtures.install_e2e_routes_and_middleware(app, scraper_registry)

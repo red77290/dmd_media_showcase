@@ -1,4 +1,5 @@
 import { clearField, initApiKeyFromUrl, togglePwd } from './api.js';
+import { clearBatchBubbles, onBatchBubbleSearch, toggleBatchBubble } from './batch_bubbles.js';
 import { I18N, getCurrentUiLang, setCurrentUiLang, t } from './i18n/index.js';
 import {
   jumpToStudioChapter,
@@ -106,6 +107,21 @@ import {
   runPreviewTest,
   skipSelectedDmd
 } from './tabs/tester_queue.js';
+import {
+  controlActiveBatchJob,
+  loadBatchFilterOptions,
+  onBatchChapterToggleManual,
+  onBatchDurationChange,
+  onBatchGamelistFilesSelected,
+  onBatchResolutionPresetChange,
+  onBatchWorkersLiveChange,
+  selectBatchCardLayout,
+  selectBatchOutputFolder,
+  selectBatchPreset,
+  setBatchMode,
+  startBatchScrapeJob,
+  toggleBatchAdvanced
+} from './tabs/batch_scraper.js';
 import { checkSystemUpdate, dismissUpdateBanner, renderUpdateBanner } from './update_banner.js';
 
 export function setUiLang(lang) {
@@ -135,6 +151,7 @@ export function setUiLang(lang) {
   renderUpdateBanner(uiState.lastUpdateInfo);
   loadDomainFilters();
   loadStudioFilters();
+  loadBatchFilterOptions();
   updateStudioSliderLabels();
   updateStudioDomainTabsUi();
   renderStudioActiveDmdBanner();
@@ -147,9 +164,11 @@ export function setUiLang(lang) {
 const WINDOW_HANDLERS = {
   applyTagPickerModal,
   clearAllTagModal,
+  clearBatchBubbles,
   clearField,
   closeProfileEditor,
   closeTagPickerModal,
+  controlActiveBatchJob,
   controlDmd,
   deleteDmdProfile,
   dismissUpdateBanner,
@@ -159,11 +178,18 @@ const WINDOW_HANDLERS = {
   jumpToQueueFromInspector,
   jumpToQueueStudio,
   jumpToStudioChapter,
+  loadBatchFilterOptions,
   loadDomainFilters,
   loadStudioFilters,
   loadTargetDmdQueue,
   markStudioFullDirty,
   moveDomainSource,
+  onBatchBubbleSearch,
+  onBatchChapterToggleManual,
+  onBatchDurationChange,
+  onBatchGamelistFilesSelected,
+  onBatchResolutionPresetChange,
+  onBatchWorkersLiveChange,
   onPlSlotCount,
   onPlSlotToggle,
   onProfileLangChange,
@@ -205,20 +231,27 @@ const WINDOW_HANDLERS = {
   saveSourcePolicies,
   saveStudioStyleToDmdProfile,
   scheduleStudioCardPreview,
+  selectBatchCardLayout,
+  selectBatchOutputFolder,
+  selectBatchPreset,
   selectStudioCandidate,
   selectStudioDomainProfile,
   selectStudioLayout,
   selectVisibleTagModal,
+  setBatchMode,
   setStudioBaseRes,
   setUiLang,
   skipSelectedDmd,
   skipStudioTargetDmd,
+  startBatchScrapeJob,
   studioStepFrame,
   switchTab,
   syncMdnsUi,
   syncMqttModeUi,
   syncReferentials,
   syncStudioResFromActiveDmd,
+  toggleBatchAdvanced,
+  toggleBatchBubble,
   toggleDomainSource,
   togglePwd,
   toggleStudioPlay,

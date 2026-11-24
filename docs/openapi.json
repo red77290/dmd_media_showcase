@@ -1383,6 +1383,426 @@
         }
       }
     },
+    "/api/v1/batch-scraper/gamelist/parse": {
+      "post": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Parse Recalbox or Batocera gamelist.xml files",
+        "operationId": "parse_gamelist_preview_api_v1_batch_scraper_gamelist_parse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GamelistParseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Parse Gamelist Preview Api V1 Batch Scraper Gamelist Parse Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batch-scraper/jobs": {
+      "get": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "List active and recent Batch Scraper jobs",
+        "operationId": "list_batch_scraper_jobs_api_v1_batch_scraper_jobs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Batch Scraper Jobs Api V1 Batch Scraper Jobs Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Start a streaming Batch Scraper job",
+        "operationId": "create_batch_scraper_job_api_v1_batch_scraper_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartBatchJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Batch Scraper Job Api V1 Batch Scraper Jobs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batch-scraper/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Get live status of a Batch Scraper job",
+        "operationId": "get_batch_scraper_job_api_v1_batch_scraper_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Batch Scraper Job Api V1 Batch Scraper Jobs  Job Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batch-scraper/jobs/{job_id}/control": {
+      "post": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Pause, resume, cancel, or resize workers on a Batch job",
+        "operationId": "control_batch_scraper_job_api_v1_batch_scraper_jobs__job_id__control_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchJobControlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Control Batch Scraper Job Api V1 Batch Scraper Jobs  Job Id  Control Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batch-scraper/jobs/{job_id}/events": {
+      "get": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Event-driven SSE stream for background Web Worker delivery",
+        "operationId": "stream_batch_job_events_api_v1_batch_scraper_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "after_seq",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After Seq"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batch-scraper/jobs/{job_id}/artifacts/{seq}": {
+      "get": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Download a staged RGB888 GIF or companion marquee PNG",
+        "operationId": "download_staged_batch_artifact_api_v1_batch_scraper_jobs__job_id__artifacts__seq__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Seq"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "gif",
+                "companion"
+              ],
+              "type": "string",
+              "default": "gif",
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "ack",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Ack"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Acknowledge disk write and immediately unlink server file",
+        "operationId": "ack_staged_batch_artifact_api_v1_batch_scraper_jobs__job_id__artifacts__seq__delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Seq"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Ack Staged Batch Artifact Api V1 Batch Scraper Jobs  Job Id  Artifacts  Seq  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/batch-scraper/jobs/{job_id}/stream.zip": {
+      "get": {
+        "tags": [
+          "Batch Scraper & Offline Packs"
+        ],
+        "summary": "Stream live ZIP_STORED pack with mobile disconnect resilience",
+        "operationId": "stream_batch_job_zip_api_v1_batch_scraper_jobs__job_id__stream_zip_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/{domain}/config": {
       "post": {
         "tags": [
@@ -2690,6 +3110,38 @@
         "type": "object",
         "title": "AdminServerConfigPayload"
       },
+      "BatchJobControlRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "resume",
+              "cancel",
+              "set_workers"
+            ],
+            "title": "Action"
+          },
+          "max_workers": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Workers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "BatchJobControlRequest"
+      },
       "BatchStatusResponse": {
         "properties": {
           "session_id": {
@@ -2838,6 +3290,233 @@
         "type": "object",
         "title": "CardStylePayload",
         "description": "Pixel-perfect server-side Info Card customization settings (Mode 2B & Studio On-Demand)."
+      },
+      "ChapterOverridesPayload": {
+        "properties": {
+          "include_card": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Card"
+          },
+          "include_poster_in_card": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Poster In Card"
+          },
+          "include_description": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Description"
+          },
+          "card_layout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Layout"
+          },
+          "card_theme": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Theme"
+          },
+          "card_font": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Font"
+          },
+          "card_accent_color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Accent Color"
+          },
+          "show_badge": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Badge"
+          },
+          "show_year": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Year"
+          },
+          "show_rating": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Rating"
+          },
+          "text_scroll_speed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Scroll Speed"
+          },
+          "card_hold_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Hold S"
+          },
+          "include_jacket": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Jacket"
+          },
+          "jacket_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "panorama",
+                  "static"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jacket Mode"
+          },
+          "include_marquee": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Marquee"
+          },
+          "marquee_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "panorama",
+                  "static"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marquee Mode"
+          },
+          "snapshot_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 4.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Count"
+          },
+          "panorama_duration_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 15.0,
+                "minimum": 1.5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panorama Duration S"
+          },
+          "include_video": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Video"
+          }
+        },
+        "type": "object",
+        "title": "ChapterOverridesPayload"
       },
       "ClientControlRequest": {
         "properties": {
@@ -3490,6 +4169,190 @@
         "type": "object",
         "title": "DomainStudioStylePayload",
         "description": "Complete per-domain Studio profile (`games`, `movies`, `series`, `anime`) owning both\nPhase 1 Info Card appearance and Phases 2 & 3 Panorama / Video rendering parameters."
+      },
+      "GamelistParseRequest": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/GamelistXmlFilePayload"
+            },
+            "type": "array",
+            "maxItems": 128,
+            "minItems": 1,
+            "title": "Files"
+          },
+          "skip_hidden": {
+            "type": "boolean",
+            "title": "Skip Hidden",
+            "default": true
+          },
+          "skip_bios": {
+            "type": "boolean",
+            "title": "Skip Bios",
+            "default": true
+          },
+          "is_tate": {
+            "type": "boolean",
+            "title": "Is Tate",
+            "default": false
+          },
+          "include_marquee_png_companion": {
+            "type": "boolean",
+            "title": "Include Marquee Png Companion",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "GamelistParseRequest"
+      },
+      "GamelistXmlFilePayload": {
+        "properties": {
+          "relpath": {
+            "type": "string",
+            "maxLength": 260,
+            "title": "Relpath",
+            "default": "gamelist.xml"
+          },
+          "system": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "System",
+            "default": ""
+          },
+          "xml_content": {
+            "type": "string",
+            "minLength": 10,
+            "title": "Xml Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "xml_content"
+        ],
+        "title": "GamelistXmlFilePayload"
+      },
+      "GifEncodingPayload": {
+        "properties": {
+          "width": {
+            "type": "integer",
+            "maximum": 512.0,
+            "minimum": 16.0,
+            "title": "Width",
+            "default": 128
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 512.0,
+            "minimum": 16.0,
+            "title": "Height",
+            "default": 32
+          },
+          "fps": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 6.0,
+            "title": "Fps",
+            "default": 15
+          },
+          "video_max_duration_s": {
+            "type": "number",
+            "maximum": 120.0,
+            "minimum": 2.0,
+            "title": "Video Max Duration S",
+            "description": "Maximum video clip duration in seconds (configurable from 2s up to 120s max).",
+            "default": 8.0
+          },
+          "let_me_handle_it": {
+            "type": "boolean",
+            "title": "Let Me Handle It",
+            "default": true
+          },
+          "video_mode": {
+            "type": "string",
+            "enum": [
+              "auto_action",
+              "panorama",
+              "center_crop"
+            ],
+            "title": "Video Mode",
+            "default": "auto_action"
+          },
+          "content_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "pixel_art",
+              "anime",
+              "cinema",
+              "custom"
+            ],
+            "title": "Content Mode",
+            "default": "auto"
+          },
+          "color_boost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Color Boost",
+            "default": "auto"
+          },
+          "dither": {
+            "type": "string",
+            "enum": [
+              "none",
+              "bayer",
+              "floyd_steinberg"
+            ],
+            "title": "Dither",
+            "default": "none"
+          },
+          "palette_mode": {
+            "type": "string",
+            "enum": [
+              "per_scene_rgb888",
+              "global_rgb888"
+            ],
+            "title": "Palette Mode",
+            "default": "per_scene_rgb888"
+          },
+          "reject_threshold": {
+            "type": "integer",
+            "maximum": 95.0,
+            "minimum": 0.0,
+            "title": "Reject Threshold",
+            "default": 0
+          },
+          "brightness": {
+            "type": "number",
+            "title": "Brightness",
+            "default": -0.02
+          },
+          "contrast": {
+            "type": "number",
+            "title": "Contrast",
+            "default": 1.45
+          },
+          "saturation": {
+            "type": "number",
+            "title": "Saturation",
+            "default": 1.85
+          },
+          "gamma": {
+            "type": "number",
+            "title": "Gamma",
+            "default": 0.9
+          }
+        },
+        "type": "object",
+        "title": "GifEncodingPayload"
       },
       "HTTPValidationError": {
         "properties": {
@@ -5029,6 +5892,175 @@
         "title": "SessionRegisterResponse",
         "description": "Response to `POST /api/v1/{domain}/session`."
       },
+      "StartBatchJobRequest": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "random_filter",
+              "recalbox_gamelist"
+            ],
+            "title": "Mode",
+            "default": "random_filter"
+          },
+          "delivery_mode": {
+            "type": "string",
+            "enum": [
+              "direct_folder",
+              "zip_stream"
+            ],
+            "title": "Delivery Mode",
+            "default": "direct_folder"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "games",
+              "movies",
+              "series",
+              "anime"
+            ],
+            "title": "Domain",
+            "default": "games"
+          },
+          "lang": {
+            "type": "string",
+            "maxLength": 8,
+            "title": "Lang",
+            "default": "fr"
+          },
+          "systems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Systems"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "decades": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Decades"
+          },
+          "min_rating": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Min Rating",
+            "default": 0.0
+          },
+          "target_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Target Count",
+            "default": 100
+          },
+          "max_workers": {
+            "type": "integer",
+            "maximum": 8.0,
+            "minimum": 0.0,
+            "title": "Max Workers",
+            "default": 0
+          },
+          "ffmpeg_threads_per_worker": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Ffmpeg Threads Per Worker",
+            "default": 1
+          },
+          "folder_template": {
+            "type": "string",
+            "enum": [
+              "system_genre",
+              "system",
+              "genre"
+            ],
+            "title": "Folder Template",
+            "default": "system_genre"
+          },
+          "safe_ascii_folders": {
+            "type": "boolean",
+            "title": "Safe Ascii Folders",
+            "default": false
+          },
+          "wrap_orientation_root": {
+            "type": "boolean",
+            "title": "Wrap Orientation Root",
+            "default": false
+          },
+          "include_marquee_png_companion": {
+            "type": "boolean",
+            "title": "Include Marquee Png Companion",
+            "default": true
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "full_showcase",
+              "video_only",
+              "poster_only",
+              "marquee_only",
+              "card_description_only",
+              "description_only",
+              "screenshot_only",
+              "custom"
+            ],
+            "title": "Preset",
+            "default": "full_showcase"
+          },
+          "chapters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChapterOverridesPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/GifEncodingPayload"
+          },
+          "existing_relpaths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50000,
+            "title": "Existing Relpaths"
+          },
+          "gamelist_files": {
+            "items": {
+              "$ref": "#/components/schemas/GamelistXmlFilePayload"
+            },
+            "type": "array",
+            "maxItems": 128,
+            "title": "Gamelist Files"
+          },
+          "skip_hidden": {
+            "type": "boolean",
+            "title": "Skip Hidden",
+            "default": true
+          },
+          "skip_bios": {
+            "type": "boolean",
+            "title": "Skip Bios",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "StartBatchJobRequest"
+      },
       "StudioCardPreviewRequest": {
         "properties": {
           "candidate_id": {
@@ -5652,6 +6684,10 @@
     {
       "name": "Assets & Streaming",
       "description": "Binary asset streaming for mini-jackets (`.rgb565`, `.png`), panoramas, and video trailers."
+    },
+    {
+      "name": "Batch Scraper & Offline Packs",
+      "description": "Streaming RGB888 `.gif` Batch Scraper (`<system>_<genre>/` Clock playlists & Recalbox `gamelist.xml` Offline Showcase packs up to `120s` video)."
     }
   ]
 }

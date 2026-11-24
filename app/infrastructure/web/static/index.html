@@ -48,6 +48,14 @@
       </div>
     </div>
 
+    <div id="batch-global-banner" class="batch-global-banner" role="status" aria-live="polite">
+      <span id="batch-global-banner-text" style="font-size:0.84rem;font-weight:600;color:#fff">⚡ Batch running</span>
+      <div class="batch-global-mini-track">
+        <div id="batch-global-banner-fill" class="batch-progress-fill"></div>
+      </div>
+      <button type="button" class="secondary mini-btn" onclick="switchTab('batch')" data-i18n="batch_banner_open">Open Batch →</button>
+    </div>
+
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('overview')" data-i18n="tab_overview">
         1. Overview &amp; DMD Matrices
@@ -66,6 +74,9 @@
       </button>
       <button class="tab-btn" onclick="switchTab('network')" data-i18n="tab_network">
         6. Network, MQTT &amp; Maintenance
+      </button>
+      <button class="tab-btn" onclick="switchTab('batch')" data-i18n="tab_batch">
+        7. Batch Scraper &amp; Offline Packs
       </button>
     </div>
 
@@ -1147,6 +1158,376 @@
           <button class="secondary" onclick="resetHistory('movies')" data-i18n="btn_reset_movies">Reset Movies</button>
           <button class="secondary" onclick="resetHistory('series')" data-i18n="btn_reset_series">Reset Series</button>
           <button class="secondary" onclick="resetHistory('anime')" data-i18n="btn_reset_anime">Reset Anime</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 7: STREAMING BATCH SCRAPER & OFFLINE PACKS -->
+    <div id="tab-batch" class="tab-pane">
+      <div class="card">
+        <h2 data-i18n="batch_title">⚡ Streaming RGB888 GIF Batch Scraper &amp; Offline Packs</h2>
+        <p class="desc" data-i18n="batch_desc">
+          Generate ready-to-drop RGB888 .gif packs directly onto your PC or ArcadeMatrix SD card with zero server storage saturation — continues seamlessly in background tabs.
+        </p>
+
+        <div class="batch-mode-grid">
+          <div id="batch-mode-card-random" class="batch-mode-card active" onclick="setBatchMode('random_filter')">
+            <div style="font-weight:700;color:#fff;margin-bottom:4px" data-i18n="batch_mode_random_title">
+              🎲 Random Filter Batch (Clock GIF Playlists)
+            </div>
+            <div style="font-size:0.78rem;color:var(--muted)" data-i18n="batch_mode_random_sub">
+              Flat folders (&lt;system&gt;_&lt;genre&gt;, e.g. snes_platformer, megadrive_fighting, neogeo_run&amp;gun) + auto index.txt &amp; playlists.json
+            </div>
+          </div>
+          <div id="batch-mode-card-gamelist" class="batch-mode-card" onclick="setBatchMode('recalbox_gamelist')">
+            <div style="font-weight:700;color:#fff;margin-bottom:4px" data-i18n="batch_mode_gl_title">
+              🕹️ Recalbox / Batocera gamelist.xml (Offline In-Game Sync)
+            </div>
+            <div style="font-size:0.78rem;color:var(--muted)" data-i18n="batch_mode_gl_sub">
+              Exports showcase/&lt;system&gt;/&lt;rom&gt;.gif (+ optional pixelcade/&lt;system&gt;/&lt;rom&gt;.png) for instant 0ms Offline ArcadeMatrix sync
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:10px;background:#0b1018;border:1px solid var(--border);margin-bottom:16px">
+          <button type="button" id="btn-batch-pick-folder" class="secondary" style="margin:0" onclick="selectBatchOutputFolder()" data-i18n="btn_batch_pick_folder">
+            📂 Select Target Folder (PC / SD Card)
+          </button>
+          <span id="batch-dest-mode-hint" style="font-size:0.83rem;color:var(--muted)" data-i18n="batch_dest_direct_ready">
+            Direct-to-folder background Web Worker streaming ready.
+          </span>
+        </div>
+
+        <!-- MODE A: RANDOM FILTER CONTROLS -->
+        <div id="batch-random-filters-box">
+          <div class="form-grid">
+            <div class="field">
+              <label data-i18n="lbl_domain">Domain</label>
+              <select id="batch-domain" onchange="loadBatchFilterOptions()">
+                <option value="games" data-i18n="opt_dom_games">🕹️ Retro &amp; Arcade Games</option>
+                <option value="movies" data-i18n="opt_dom_movies">🎬 Cinema / Movies</option>
+                <option value="series" data-i18n="opt_dom_series">📺 TV Series</option>
+                <option value="anime" data-i18n="opt_dom_anime">⛩️ Japanese Anime</option>
+              </select>
+            </div>
+            <div class="field">
+              <label data-i18n="lbl_default_lang">Content Language</label>
+              <select id="batch-lang" onchange="loadBatchFilterOptions()">
+                <option value="fr">🇫🇷 Français</option>
+                <option value="en">🇬🇧 English</option>
+                <option value="es">🇪🇸 Español</option>
+              </select>
+            </div>
+            <div class="field">
+              <label data-i18n="batch_lbl_count">Number of Titles to Scrape</label>
+              <input type="number" id="batch-target-count" min="1" max="10000" value="100" />
+            </div>
+          </div>
+
+          <div class="batch-bubbles-stack">
+            <div class="field" id="batch-systems-field">
+              <div class="batch-bubble-head">
+                <div class="batch-bubble-title-wrap">
+                  <label style="margin:0" data-i18n="batch_lbl_systems_bubbles">🕹️ Systems (Click bubbles to toggle)</label>
+                  <span id="batch-bubbles-count-systems" class="pill info">3 selected</span>
+                  <span id="batch-bubbles-status-systems" class="batch-bubble-status"></span>
+                </div>
+                <div class="batch-bubble-tools">
+                  <input type="text" id="batch-bubble-search-systems" class="batch-bubble-search" oninput="onBatchBubbleSearch('systems', this.value)" data-i18n-placeholder="ph_bubble_filter" placeholder="🔍 Filter..." />
+                  <button type="button" class="secondary mini-btn batch-clear-btn" onclick="clearBatchBubbles('systems')" data-i18n="btn_tag_clear_all">✨ All (No Filter)</button>
+                </div>
+              </div>
+              <div id="batch-bubbles-systems" class="batch-bubble-box"></div>
+            </div>
+
+            <div class="field" id="batch-genres-field">
+              <div class="batch-bubble-head">
+                <div class="batch-bubble-title-wrap">
+                  <label style="margin:0" data-i18n="batch_lbl_genres_bubbles">🏷️ Genres (Click bubbles to toggle)</label>
+                  <span id="batch-bubbles-count-genres" class="tag-all-pill">All</span>
+                  <span id="batch-bubbles-status-genres" class="batch-bubble-status"></span>
+                </div>
+                <div class="batch-bubble-tools">
+                  <input type="text" id="batch-bubble-search-genres" class="batch-bubble-search" oninput="onBatchBubbleSearch('genres', this.value)" data-i18n-placeholder="ph_bubble_filter" placeholder="🔍 Filter..." />
+                  <button type="button" class="secondary mini-btn batch-clear-btn" onclick="clearBatchBubbles('genres')" data-i18n="btn_tag_clear_all">✨ All (No Filter)</button>
+                </div>
+              </div>
+              <div id="batch-bubbles-genres" class="batch-bubble-box"></div>
+            </div>
+
+            <div class="field" id="batch-decades-field">
+              <div class="batch-bubble-head">
+                <div class="batch-bubble-title-wrap">
+                  <label style="margin:0" data-i18n="batch_lbl_decades_bubbles">📅 Decades (Optional)</label>
+                  <span id="batch-bubbles-count-decades" class="tag-all-pill">All</span>
+                  <span id="batch-bubbles-status-decades" class="batch-bubble-status"></span>
+                </div>
+                <div class="batch-bubble-tools">
+                  <button type="button" class="secondary mini-btn batch-clear-btn" onclick="clearBatchBubbles('decades')" data-i18n="btn_tag_clear_all">✨ All (No Filter)</button>
+                </div>
+              </div>
+              <div id="batch-bubbles-decades" class="batch-bubble-box compact"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MODE B: RECALBOX GAMELIST.XML UPLOADER -->
+        <div id="batch-gamelist-box" style="display:none;margin-bottom:14px">
+          <div class="form-grid">
+            <div class="field">
+              <label data-i18n="batch_gl_upload_lbl">Select one or multiple Recalbox / Batocera gamelist.xml files</label>
+              <input type="file" id="batch-gamelist-input" accept=".xml,text/xml,application/xml" multiple onchange="onBatchGamelistFilesSelected(this)" />
+            </div>
+            <div class="field">
+              <label data-i18n="batch_gl_sys_hint_lbl">Optional System Override</label>
+              <input type="text" id="batch-gamelist-sys-hint" placeholder="snes, megadrive, neogeo, mame..." />
+            </div>
+          </div>
+          <div id="batch-gamelist-summary" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+
+        <!-- 1-CLICK COMPOSITION PRESETS WITH VISUAL DMD RENDERING ICONS -->
+        <div class="field" style="margin-top:12px">
+          <label data-i18n="batch_preset_lbl">1-Click GIF Composition ('À la carte')</label>
+          <div class="batch-preset-grid">
+            <button type="button" class="batch-preset-btn active" data-preset="full_showcase" onclick="selectBatchPreset('full_showcase')">
+              <span class="layout-wire"><span style="width:28%;background:#ff6d00;opacity:0.85"></span><span style="width:36%;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:80%"></span></span><span style="flex:1;background:linear-gradient(135deg,#00e676,#00b0ff);display:flex;align-items:center;justify-content:center;font-size:8px;color:#05070b;font-weight:900">▶</span></span>
+              <span data-i18n="batch_preset_full">✨ Full Showcase</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="video_only" onclick="selectBatchPreset('video_only')">
+              <span class="layout-wire" style="background:linear-gradient(135deg,#0d2538,#00e5ff44);align-items:center;justify-content:center"><span style="font-size:9px;color:#00e5ff;font-weight:900">▶</span></span>
+              <span data-i18n="batch_preset_video">🎬 Video Only</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="poster_only" onclick="selectBatchPreset('poster_only')">
+              <span class="layout-wire" style="justify-content:center;background:#0b1018"><span style="width:52%;height:100%;background:linear-gradient(180deg,#ff6d00,#aa00ff);opacity:0.85"></span></span>
+              <span data-i18n="batch_preset_poster">🖼️ Poster Only</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="marquee_only" onclick="selectBatchPreset('marquee_only')">
+              <span class="layout-wire" style="align-items:center;justify-content:center;background:linear-gradient(90deg,#1a237e,#ff6d00,#ffd600)"><span style="height:4px;width:68%;background:#fff;border-radius:2px"></span></span>
+              <span data-i18n="batch_preset_marquee">🏷️ Marquee Only</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="card_description_only" onclick="selectBatchPreset('card_description_only')">
+              <span class="layout-wire"><span style="width:36%;background:#ff6d00;opacity:0.78"></span><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:85%;margin-bottom:2px"></span><span style="display:block;height:2px;background:#8b949e;width:65%"></span></span></span>
+              <span data-i18n="batch_preset_card_desc">📝 Card + Description</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="description_only" onclick="selectBatchPreset('description_only')">
+              <span class="layout-wire" style="flex-direction:column;justify-content:center;padding:0 4px;gap:2px"><span style="height:3px;background:#ffab00;width:75%"></span><span style="height:2px;background:#00e5ff;width:92%"></span><span style="height:2px;background:#8b949e;width:65%"></span></span>
+              <span data-i18n="batch_preset_desc_only">📜 Description Only</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="screenshot_only" onclick="selectBatchPreset('screenshot_only')">
+              <span class="layout-wire" style="padding:2px;gap:2px;background:#09131c"><span style="flex:1;background:#00c853;opacity:0.7;border-radius:1px"></span><span style="flex:1;background:#2979ff;opacity:0.7;border-radius:1px"></span></span>
+              <span data-i18n="batch_preset_snap">📸 Screenshot Only</span>
+            </button>
+            <button type="button" class="batch-preset-btn" data-preset="custom" onclick="selectBatchPreset('custom')">
+              <span class="layout-wire" style="padding:2px;gap:2px"><span style="width:30%;background:#ff6d00"></span><span style="width:30%;background:#00e5ff"></span><span style="flex:1;background:#00e676"></span></span>
+              <span data-i18n="batch_preset_custom">🧩 Custom À la Carte</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- STUDIO VISUAL CARD LAYOUT PICKER (IDENTICAL WIREFRAME ICONS AS STUDIO TAB) -->
+        <div class="field" id="batch-card-layout-box" style="margin-top:12px">
+          <label data-i18n="studio_lbl_layout">Pixel-Art Card Layout (5 Presets)</label>
+          <div class="layout-cards-grid" id="batch-layout-grid" style="margin-top:6px;margin-bottom:0">
+            <button type="button" class="layout-card-btn active" data-layout="classic_split" onclick="selectBatchCardLayout('classic_split')">
+              <span class="layout-wire"><span style="width:36%;background:#ff6d00;opacity:0.75"></span><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span></span>
+              <span data-i18n="lay_classic_split">Classic Split</span>
+            </button>
+            <button type="button" class="layout-card-btn" data-layout="poster_right" onclick="selectBatchCardLayout('poster_right')">
+              <span class="layout-wire"><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span><span style="width:36%;background:#ff6d00;opacity:0.75"></span></span>
+              <span data-i18n="lay_poster_right">Poster Right</span>
+            </button>
+            <button type="button" class="layout-card-btn" data-layout="badge_header" onclick="selectBatchCardLayout('badge_header')">
+              <span class="layout-wire" style="flex-direction:column"><span style="height:5px;background:#ff6d00"></span><span style="flex:1;display:flex"><span style="width:32%;background:#2c394f"></span><span style="flex:1"></span></span></span>
+              <span data-i18n="lay_badge_header">Badge Header</span>
+            </button>
+            <button type="button" class="layout-card-btn" data-layout="hero_banner" onclick="selectBatchCardLayout('hero_banner')">
+              <span class="layout-wire" style="flex-direction:column;background:linear-gradient(180deg,#2c394f,#06080d)"><span style="flex:1"></span><span style="height:7px;background:rgba(0,0,0,0.8);border-top:1px solid #00e5ff"></span></span>
+              <span data-i18n="lay_hero_banner">Hero Banner</span>
+            </button>
+            <button type="button" class="layout-card-btn" data-layout="minimal_arcade" onclick="selectBatchCardLayout('minimal_arcade')">
+              <span class="layout-wire" style="flex-direction:column;justify-content:center;padding:0 4px;gap:2px"><span style="height:4px;background:#ffab00"></span><span style="height:2px;background:#8b949e;width:80%"></span></span>
+              <span data-i18n="lay_minimal_arcade">Minimal Text</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- SIMPLE RESOLUTION + DURATION (2..120s) + LET ME HANDLE IT -->
+        <div class="form-grid" style="margin-top:14px">
+          <div class="field">
+            <label data-i18n="batch_lbl_res">Target HUB75 Resolution (RGB888 .gif)</label>
+            <select id="batch-res-preset" onchange="onBatchResolutionPresetChange()">
+              <option value="128x32" selected>128 × 32 (YOKO Standard)</option>
+              <option value="128x64">128 × 64 (YOKO Double)</option>
+              <option value="256x64">256 × 64 (YOKO HD)</option>
+              <option value="64x32">64 × 32 (Compact)</option>
+              <option value="64x64">64 × 64 (Square)</option>
+              <option value="64x128">64 × 128 (TATE Vertical)</option>
+              <option value="32x128">32 × 128 (TATE Tall)</option>
+              <option value="custom">Custom W × H</option>
+            </select>
+            <div id="batch-custom-res-wrap" style="display:none;gap:8px;margin-top:6px">
+              <input type="number" id="batch-width" min="16" max="512" value="128" />
+              <input type="number" id="batch-height" min="16" max="512" value="32" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label><span data-i18n="batch_lbl_vid_dur">Max Video Duration (2s – 120s)</span>: <b id="batch-video-dur-lbl">8s</b></label>
+            <input type="range" id="batch-video-dur" min="2" max="120" step="1" value="8" oninput="onBatchDurationChange()" />
+          </div>
+
+          <div class="field" style="justify-content:center">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:#fff;font-weight:600;margin-top:18px">
+              <input type="checkbox" id="batch-let-me-handle" checked style="width:18px;height:18px" />
+              <span data-i18n="batch_lbl_lmh">🚀 Let Me Handle It (Auto-Action AI + Smart LED Color Boost)</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- COLLAPSIBLE ADVANCED ACCORDION -->
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+          <button type="button" class="secondary" style="margin:0;width:100%;justify-content:space-between" onclick="toggleBatchAdvanced()">
+            <span data-i18n="batch_adv_toggle">⚙️ Advanced Options (Chapters, Encodings, Workers &amp; Folder Naming)</span>
+            <span id="batch-adv-chevron">▸</span>
+          </button>
+
+          <div id="batch-advanced-body" style="display:none;margin-top:14px">
+            <div class="form-grid">
+              <div class="field">
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-card" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_card">Include Info Card</span></label>
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-poster" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_poster">Mini-Poster inside Card</span></label>
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-desc" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_desc">Scrolling Synopsis / Description</span></label>
+              </div>
+              <div class="field">
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-jacket" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_jacket">Include Jacket / Poster Phase</span></label>
+                <select id="batch-jacket-mode" onchange="onBatchChapterToggleManual()">
+                  <option value="panorama">Scrolling Panorama (YOKO/TATE)</option>
+                  <option value="static">Static Fitted Poster</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:8px;margin-top:6px"><input type="checkbox" id="batch-chk-marquee" onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_marquee">Include Marquee Phase</span></label>
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-video" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_video">Include Gameplay / Trailer Video</span></label>
+              </div>
+              <div class="field">
+                <label data-i18n="batch_lbl_snaps">Screenshots Count (0–4)</label>
+                <input type="number" id="batch-snap-count" min="0" max="4" value="1" onchange="onBatchChapterToggleManual()" />
+                <label style="margin-top:6px" data-i18n="batch_lbl_pan_dur">Panorama Duration (s)</label>
+                <input type="number" id="batch-pan-dur" min="1.5" max="15" step="0.5" value="4.0" />
+              </div>
+
+              <div class="field">
+                <label data-i18n="studio_lbl_theme">Card Theme</label>
+                <select id="batch-card-theme">
+                  <option value="tinted">Tinted LED</option>
+                  <option value="pure_black">Pure Black</option>
+                  <option value="neon_border">Neon Border</option>
+                  <option value="poster_wash">Poster Wash</option>
+                  <option value="amber_dmd">Amber Pinball</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="batch_lbl_fps">Target GIF FPS (6–30)</label>
+                <input type="number" id="batch-fps" min="6" max="30" value="15" />
+              </div>
+
+              <div class="field">
+                <label data-i18n="lbl_video_mode">Video Framing</label>
+                <select id="batch-video-mode">
+                  <option value="auto_action">Auto-Action AI</option>
+                  <option value="panorama">Vertical / Horizontal Panorama</option>
+                  <option value="center_crop">Center Crop</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="lbl_color_boost">Colorimetry Profile</label>
+                <select id="batch-content-mode">
+                  <option value="auto">Auto Domain</option>
+                  <option value="pixel_art">Pixel Art (Retro)</option>
+                  <option value="anime">Anime</option>
+                  <option value="cinema">Cinema</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="batch_lbl_dither">GIF Dithering</label>
+                <select id="batch-dither">
+                  <option value="none">None (Crisp Scrolling)</option>
+                  <option value="bayer">Bayer Ordered</option>
+                  <option value="floyd_steinberg">Floyd-Steinberg</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label data-i18n="batch_lbl_palette">RGB888 Palette Strategy</label>
+                <select id="batch-palette-mode">
+                  <option value="per_scene_rgb888" data-i18n="batch_opt_pal_scene">Adaptive Per-Scene RGB888</option>
+                  <option value="global_rgb888" data-i18n="batch_opt_pal_global">Global Compact RGB888</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="batch_lbl_reject">Min DMD Visibility Score (0 = Keep All)</label>
+                <input type="number" id="batch-reject-score" min="0" max="95" value="0" />
+              </div>
+              <div class="field">
+                <label><span data-i18n="batch_lbl_workers">Parallel Workers</span>: <b id="batch-workers-lbl">Auto</b></label>
+                <input type="range" id="batch-workers" min="0" max="8" step="1" value="0" oninput="onBatchWorkersLiveChange()" />
+                <label style="margin-top:6px" data-i18n="batch_lbl_ffmpeg_th">FFmpeg Threads per Worker</label>
+                <input type="number" id="batch-ffmpeg-threads" min="1" max="4" value="1" />
+              </div>
+
+              <div class="field">
+                <label data-i18n="batch_lbl_folder_tpl">Clock Playlist Folder Naming</label>
+                <select id="batch-folder-tpl">
+                  <option value="system_genre">&lt;system&gt;_&lt;genre&gt; (snes_platformer, neogeo_run&amp;gun)</option>
+                  <option value="system">&lt;system&gt; (snes, megadrive, neogeo)</option>
+                  <option value="genre">&lt;genre&gt; (platformer, fighting)</option>
+                </select>
+              </div>
+              <div class="field" style="justify-content:center;gap:6px">
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-safe-ascii" /><span data-i18n="batch_chk_safe_ascii">Replace '&amp;' with 'and'</span></label>
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-wrap-orient" /><span data-i18n="batch_chk_wrap_orient">Create gifs/ or gifs_tate/ parent folder</span></label>
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-marquee-png" checked /><span data-i18n="batch_chk_marquee_png">Recalbox: also export pixelcade/&lt;system&gt;/&lt;rom&gt;.png</span></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" onclick="startBatchScrapeJob()" data-i18n="btn_batch_start">🚀 Start Streaming Batch Scrape</button>
+          <span id="batch-status-msg" class="toast"></span>
+        </div>
+      </div>
+
+      <!-- LIVE PROGRESS CONSOLE -->
+      <div class="card" id="batch-progress-card" style="display:none">
+        <h2>
+          <span data-i18n="batch_progress_title">📊 Live Batch Progress</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <a id="btn-batch-download-zip" href="#" class="btn-zip-dl" style="display:none" download data-i18n="btn_batch_dl_zip">📥 Download Pack (.zip)</a>
+            <button type="button" id="btn-batch-pause" class="secondary mini-btn" onclick="controlActiveBatchJob('pause')" data-i18n="btn_batch_pause">⏸ Pause</button>
+            <button type="button" id="btn-batch-resume" class="secondary mini-btn" style="display:none" onclick="controlActiveBatchJob('resume')" data-i18n="btn_batch_resume">▶ Resume</button>
+            <button type="button" class="danger mini-btn" onclick="controlActiveBatchJob('cancel')" data-i18n="btn_batch_cancel">⏹ Stop Job</button>
+          </div>
+        </h2>
+        <div id="batch-progress-stats" style="font-size:0.9rem;font-weight:600;color:#fff">0 / 0 (0.0%)</div>
+        <div class="batch-progress-track">
+          <div id="batch-progress-fill" class="batch-progress-fill"></div>
+        </div>
+        <div id="batch-progress-pills" class="badges" style="margin-bottom:12px"></div>
+
+        <div class="table-wrap">
+          <table class="clients-table">
+            <thead>
+              <tr>
+                <th data-i18n="batch_th_folder">Folder</th>
+                <th data-i18n="batch_th_file">File (.gif RGB888)</th>
+                <th data-i18n="batch_th_dur">Duration</th>
+                <th data-i18n="batch_th_size">Size</th>
+              </tr>
+            </thead>
+            <tbody id="batch-recent-tbody">
+              <tr><td colspan="4" style="color:var(--muted)">—</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

@@ -40,6 +40,24 @@ Every title automatically assembles a complete multi-chapter RGB565 broadcast ta
 | **3. Multi-Catalog Search & On-Demand Priority Queue** | **4. Passive DMD Profiles & Visual Multi-Tag Rotation** |
 | [![Catalog Search & On-Demand Queue](demo/ui_ondemand_search.png)](demo/ui_ondemand_search.png) | [![Passive DMD Rotation & Multi-Tag Picker](demo/ui_passive_rotation.png)](demo/ui_passive_rotation.png) |
 | Search Games (including player shorthands like `sf2x`, `3s`, `kof98`), Movies, TV Series, and Anime in your preferred language and push titles via `Queue Next` (`FIFO`) or immediate `Play Now` preemption. | Configure Mode 2A/2B server-driven playlists with interactive System, Genre & Decade tag pickers and direct links to each domain's Studio profile. |
+| **5. À-la-Carte `RGB888` GIF Batch Scraper & Offline Packs (PC / Docker)** | **6. Mobile Responsive UI (iPhone / Android) & Live Demo** |
+| [![RGB888 GIF Batch Scraper & Offline Packs](demo/ui_batch_scraper.png)](demo/ui_batch_scraper.png) | [![Live Batch Scraper Animated Walkthrough](demo/demo_batch_scraper_live.gif)](demo/ui_batch_scraper_mobile.png) |
+| Random filter scraping (`snes_platformer`, `neogeo_run&gun` + `playlists.json`) or Recalbox/Batocera `gamelist.xml` import (`showcase/<sys>/<rom>.gif`), à-la-carte chapters (`2s–120s`), direct-to-folder/SD streaming that continues in background tabs. | Touch-first mobile layout ([view full Smartphone capture](demo/ui_batch_scraper_mobile.png)) with automatic Screen Wake Lock, non-blocking server build, and 1-tap `.zip` download straight to **Files / Downloads**. |
+
+---
+
+## 🧭 Online Mode vs Offline Mode vs Hybrid Mode — Which One Should I Choose?
+
+Zero technical knowledge needed — **DMD Media Showcase** lets you pick between **live Wi-Fi streaming** and **100% standalone MicroSD packs** (or combine both automatically):
+
+| Your situation | Recommended mode | What to do |
+| :--- | :--- | :--- |
+| 🌐 **"I have Wi-Fi and a PC / Mac / NAS: I want zero SD card file copying"** | **100% ONLINE Mode** *(Live Stream)* | Start Showcase and enable **Showcase Server** on your DMD (`🟢 Communication OK`). Everything streams live with zero repeats. |
+| 🕰️ **"I want 500 or 1,000 GIFs sorted by console/genre for my Clock with my PC turned off"** | **OFFLINE Mode — Clock Playlists** | Open **Tab `7. Batch Scraper`**, pick your filters + à-la-carte preset, and drop the generated folders (`snes_platformer`, `neogeo_run&gun`... + `playlists.json`) into `/gifs/` on your SD card. |
+| 🕹️ **"I have a Recalbox / Batocera cabinet with no PC server or Internet"** | **OFFLINE Mode — In-Game Sync** | Import your `gamelist.xml` file(s) in **Tab `7. Batch Scraper`**, then copy `showcase/` and `pixelcade/` to the root of your SD card: Info Card + Gameplay Video launch in **`0 ms`** every time you start a game! |
+| ⚡ **"I want instant `0 ms` SD packs for my favorites AND endless live discovery when my PC is on"** | **HYBRID Mode** *(Automatic)* | Keep `showcase/` on your SD card **and** leave **Showcase Server** enabled: your DMD always plays local SD GIFs first (`0` network traffic) and queries the server only for games missing from the SD card. |
+
+👉 **[📖 Read the Complete Step-by-Step Beginner Tutorial (PC, Docker/NAS & Smartphone): `docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING.md`](docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING.md)**
 
 ---
 
@@ -72,6 +90,10 @@ Every title automatically assembles a complete multi-chapter RGB565 broadcast ta
 - **Powered by `dmd_gif_converter` (`>= 8.0.13`)**: Orthogonal video framing (`auto_action` Let Me Handle It AI motion saliency, `panorama` scan, `center_crop`), HUB75 LED colorimetry (`auto` Smart Color Boost AI, `pixel_art`, `anime`, `cinema`), Lanczos + unsharp downscaling, and **deterministic uniform zoom-to-cover panoramas** with zero black bars — **YOKO** (`128x32`, `128x64`, `256x64`) scrolling smoothly **top-to-bottom**, and **TATE** (`64x128`, `32x128`) scrolling smoothly **left-to-right**.
 - **3-Tier Credential Vault & Automatic HTTP Log Redaction**: Resolves credentials across `1. WebUI server_config.json` $\to$ `2. .env / docker-compose` $\to$ `3. CI/CD compiled native C vault (_prod_vault)`, while `SecretRedactingLogFilter` (`httpx`/`httpcore` clamped to `WARNING`) guarantees API keys, OAuth secrets, and query-string passwords never leak into container stdout logs.
 - **OS-Aware Release Update Notification**: Built-in non-intrusive release checker (`GET /api/v1/system/update-check`) that notifies you in the Web UI whenever a newer version is published on GitHub for your runtime platform (`macOS .dmg`, `Windows .zip`, `Linux .tar.gz`, or `Docker`).
+- **Streaming `RGB888` GIF Batch Scraper & Offline ArcadeMatrix Packs (Tab #7)**:
+  - **Random Filter Clock Playlists (`random_filter`)**: Scrape `1..10,000` unique titles across `games`, `movies`, `series`, and `anime` using **1-click selectable filter bubbles** (Systems, dynamically filtered Genres & Decades) and **Studio visual DMD wireframe rendering icons** for both **à-la-carte** compositions (`Full Showcase`, `Video Only`, `Poster Only`, `Marquee Only`, `Card + Description`, `Description Only`, `Screenshot Only`, `Custom`) and the 5 pixel-art Card Layouts, configurable video duration (`2s` up to **`120s` max**), and `LetMeHandle` AI framing + LED color boost. Automatically sorts 24-bit `RGB888` `.gif` files into flat folders (`<system>_<genre>`, e.g., `snes_platformer`, `megadrive_fighting`, `neogeo_run&gun`) with ready-to-use `index.txt` and `playlists.json`.
+  - **Recalbox / Batocera Offline In-Game Sync (`recalbox_gamelist`)**: Drop one or multiple `gamelist.xml` files to export `showcase/<system>/<rom>.gif` (`showcase_tate/<system>/<rom>.gif` in TATE) plus optional non-interlaced `pixelcade/<system>/<rom>.png` marquees for `0 ms` zero-server Offline In-Game Showcase synchronization on `ArcadeMatrix` (ESP32/S3) and `ArcadeMatrix_RPi`.
+  - **Direct-to-Folder Background Streaming (`0` Server Storage / `0` Docker `tmpfs` Saturation)**: Streams completed `.gif` files directly into your selected PC / SD card folder via a dedicated background `Web Worker` + `SSE` + sub-audible `AudioContext` keep-alive (continues uninterrupted when switching browser tabs, with automatic `O(1)`-RAM `ZIP_STORED` `stream.zip` fallback) and immediately `unlink()`s staged files on `ACK`.
 
 ---
 
@@ -193,6 +215,7 @@ curl -s "http://localhost:8890/api/v1/games/filters?lang=fr" | jq '.systems[0], 
 
 | Document | 🇬🇧 English | 🇫🇷 Français | 🇪🇸 Español |
 | :--- | :--- | :--- | :--- |
+| **Beginner Tutorial: Online Mode, Offline Mode & Batch Scraper** | [docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING.md](docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING.md) | [docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING_FR.md](docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING_FR.md) | [docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING_ES.md](docs/TUTORIAL_ONLINE_OFFLINE_SCRAPING_ES.md) |
 | **QuickStart & Deployment Guide** | [docs/QUICKSTART.md](docs/QUICKSTART.md) | [docs/QUICKSTART_FR.md](docs/QUICKSTART_FR.md) | [docs/QUICKSTART_ES.md](docs/QUICKSTART_ES.md) |
 | **Media Sources, Vault & Multi-Source Merging** | [docs/SOURCES_AND_AGGREGATION.md](docs/SOURCES_AND_AGGREGATION.md) | [docs/SOURCES_AND_AGGREGATION_FR.md](docs/SOURCES_AND_AGGREGATION_FR.md) | [docs/SOURCES_AND_AGGREGATION_ES.md](docs/SOURCES_AND_AGGREGATION_ES.md) |
 | **ESP32 Integration & Passive Receiver Guide** | [docs/ESP32_INTEGRATION.md](docs/ESP32_INTEGRATION.md) | [docs/ESP32_INTEGRATION_FR.md](docs/ESP32_INTEGRATION_FR.md) | [docs/ESP32_INTEGRATION_ES.md](docs/ESP32_INTEGRATION_ES.md) |

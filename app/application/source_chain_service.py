@@ -175,6 +175,7 @@ class DomainSourceChainService:
         criteria: FilterCriteria,
         working_seen: Set[str],
         count: int,
+        stage_fingerprints: bool = True,
     ) -> List[MediaCandidate]:
         domain = criteria.domain
         collected: List[MediaCandidate] = []
@@ -209,7 +210,8 @@ class DomainSourceChainService:
                     if fp and fp in working_seen:
                         working_seen.add(cand.id)
                         continue
-                    self._stage_candidate_fp(domain, cand)
+                    if stage_fingerprints:
+                        self._stage_candidate_fp(domain, cand)
                     collected.append(cand)
                     working_seen.add(cand.id)
                     if fp:
@@ -320,6 +322,34 @@ class DomainSourceChainService:
         )
         for cand in final_results:
             self.stage_candidate(cand)
+        return final_results
+
+    async def sample_batch_candidates(
+        self,
+        criteria: FilterCriteria,
+        count: int,
+        batch_seen_ids: Set[str],
+    ) -> List[MediaCandidate]:
+        """
+        Sample up to `count` unique candidates for a Batch Scraper job using an isolated
+        `batch_seen_ids` set (never mutating or resetting live DMD `seen_history.json`).
+        """
+        clamped = max(1, min(50, int(count)))
+        chain = self.registry.get_chain(criteria.domain)
+        results = await self._collect_from_chain(
+            chain=chain,
+            criteria=criteria,
+            working_seen=batch_seen_ids,
+            count=clamped,
+            stage_fingerprints=False,
+        )
+        final_results = results[:clamped]
+        await self._maybe_enrich_batch(
+            final_results,
+            chain=chain,
+            criteria=criteria,
+            max_enrich=len(final_results),
+        )
         return final_results
 
     async def search_candidates(

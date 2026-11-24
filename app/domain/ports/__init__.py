@@ -2,6 +2,12 @@
 Domain Ports (Interfaces) for the Hexagonal Architecture (`app/domain/ports`).
 """
 
+from app.domain.ports.batch_scraper_ports import (
+    ComposedGifResult,
+    IBatchGifComposerPort,
+    IEphemeralArtifactQueuePort,
+    StagedBatchFiles,
+)
 from app.domain.ports.card_renderer import ICardPreviewRendererPort
 from app.domain.ports.control_gateway import IMqttControlGatewayPort
 from app.domain.ports.default_ports import PortProviderRegistry, default_port_registry
@@ -16,9 +22,12 @@ from app.domain.ports.seen_repository import ISeenHistoryRepository
 
 __all__ = [
     "CachedOnDemandPackage",
+    "ComposedGifResult",
     "ConversionAbortedError",
+    "IBatchGifComposerPort",
     "ICardPreviewRendererPort",
     "IDmdProfileRepository",
+    "IEphemeralArtifactQueuePort",
     "IFrameStreamerPort",
     "IMediaTranscoderPort",
     "IMqttControlGatewayPort",
@@ -28,5 +37,6 @@ __all__ = [
     "IScraperSource",
     "ISeenHistoryRepository",
     "PortProviderRegistry",
+    "StagedBatchFiles",
     "default_port_registry",
 ]

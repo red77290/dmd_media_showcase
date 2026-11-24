@@ -228,3 +228,15 @@ Servi avec `Content-Length` exact (`GET /api/v1/{domain}/stream/{item_id}.rgb565
 | `7` | `uint8` | `total_chunks` | Nombre total de fragments composant la trame (`1..64`) |
 | `8..9` | `uint16le` | `byte_offset` | Offset en octets (`chunk_idx * 1408`) dans le framebuffer RGB565LE |
 | `10..N` | `uint8[]` | `payload` | Tranche de pixels bruts RGB565LE (`<= 1408` octets, `<= 1418` octets/paquet UDP = `6` chunks en `128x32`) |
+
+---
+
+## Pipeline Batch Scraper GIF `RGB888` en Streaming & Packs Offline
+
+Afin de générer des bibliothèques de centaines ou milliers de fichiers `.gif` (playlists d'horloge `<system>_<genre>/*.gif` et packs Offline In-Game Recalbox `showcase[_tate]/<system>/<rom>.gif`) de façon strictement identique en local et sous Docker sans volume additionnel ni saturation mémoire :
+
+- **Domaine & Ports Hexagonaux** :
+  - [`batch_scraper_specs.py`](../app/domain/batch_scraper_specs.py) (`ChapterSelectionSpec`, `GifEncodingSpec` bornant la vidéo de `2s` à `120s`, `FolderNamingPolicy`), [`gamelist_catalog.py`](../app/domain/gamelist_catalog.py) (parseur `gamelist.xml` Recalbox sécurisé sans entités XML) et [`batch_job.py`](../app/domain/aggregates/batch_job.py) (agrégat racine `BatchScrapeJob` imposant une contre-pression `<= 64 Mo`).
+  - Ports sortants [`IBatchGifComposerPort`](../app/domain/ports/batch_scraper_ports.py) et [`IEphemeralArtifactQueuePort`](../app/domain/ports/batch_scraper_ports.py) câblés dans [`container.py`](../app/container.py).
+- **Composition 100 % `RGB888` 24 bits (`rgb24`) de Bout en Bout** : [`gif_chapter_composer.py`](../app/infrastructure/rendering/gif_chapter_composer.py) assemble les chapitres choisis (`Card`, `Synopsis`, `Poster`, `Marquee`, `Snapshots`, `Video <= 120s`) directement en `rgb24` (zéro quantification `RGB565` intermédiaire) vers un `.gif` `RGB888` autonome (`-gifflags -offsetting-transdiff`), transité sous `<data_dir>/.batch_spool` (hors du `tmpfs` `/tmp` Docker) et supprimé immédiatement (`unlink`) dès l'`ACK` navigateur `DELETE .../artifacts/{seq}` ou l'émission `stream.zip`.
+- **Continuité en Onglet d'Arrière-Plan** : [`batch_worker.js`](../app/infrastructure/web/static/js/batch_worker.js) consomme le flux `SSE` `ReadableStream` dans un `Web Worker` dédié couplé à [`batch_keepalive.js`](../app/infrastructure/web/static/js/batch_keepalive.js) (`navigator.locks` + `AudioContext` sub-audible), écrivant directement via `FileSystemDirectoryHandle` (ou en flux `stream.zip` `ZIP_STORED` en `O(1)` RAM).
