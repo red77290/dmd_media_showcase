@@ -147,3 +147,14 @@ When your DMD (`ArcadeMatrix` ESP32 or `ArcadeMatrix_RPi`) is paired with a retr
    - **Launching & Exiting a Game**: Your DMD displays the classic marquee immediately while Showcase prepares the game's **Animated Info Card + Panoramas + Gameplay Video** on an isolated `{dmd_id}_sync` slot (matching human title first, then ROM slug via `fallback_query`) and smoothly takes over once ready (`Play Once`, `Alternate Marquee & Showcase`, or `Loop`). Exiting a game triggers `DELETE /api/v1/clients/{dmd_id}_sync/queue` to immediately terminate any active `1..N` `dmd_show_converter` / `ffmpeg` / `yt-dlp` worker processes on the server.
    - **Card Style**: Either keep **Inherit DMD Profile from Showcase Studio** (configure your Games card once in Showcase's Card Studio) or select **Custom Override on DMD** directly inside `FrontendSync`.
 4. **Instant Replay Cache**: Turn on **Persistent On-Demand Conversion Cache** in Showcase (`2. Runtime, Workers & Video Limits`) so previously played games launch instantaneously on future sessions, and use **🗑️ Evict Showcase Cache** (in Showcase or on the DMD) anytime you want to refresh cached card styles.
+
+---
+
+## 4. Standalone Offline Mode & Batch Scraper (`7. Batch Scraper & Offline Packs`)
+
+Want to run your ArcadeMatrix Clock or Recalbox / Batocera cabinet **with zero PC/NAS left running and zero Internet**? Open **Tab `7. Batch Scraper & Offline Packs`**:
+- **Clock Playlists (`random_filter`)**: Generates `1..10,000` à-la-carte 24-bit `RGB888` `.gif` files (`Full Showcase`, `Video Only`, `Poster Only`, `Marquee Only`, `Card + Description`, `Screenshot Only`, `2s` up to `120s` max) neatly sorted into flat folders (`snes_platformer`, `megadrive_fighting`, `neogeo_run&gun`) with `index.txt` and `playlists.json` ready to drop into `/gifs/` (or `/gifs_tate/`).
+- **Recalbox / Batocera Offline Sync (`recalbox_gamelist`)**: Imports your `gamelist.xml` file(s) and exports `showcase/<system>/<rom>.gif` (`showcase_tate/` in TATE) + `pixelcade/<system>/<rom>.png` to copy to the root of your SD card for instant `0 ms` in-game sync (and in **Hybrid Mode**, local SD `.gif` files always take instant priority with automatic live server fallback for unscraped games).
+- **Local PC, Docker/NAS & Smartphone Ready**: Direct-to-folder/SD streaming on local Chrome/Edge (continues across background tabs), zero-RAM `.zip` stream on Docker/Firefox/Safari, and dedicated **Mobile Mode** on iPhone/iPad/Android (Screen Wake Lock, non-blocking server build, and 1-tap `.zip` download straight to *Files* / *Downloads*).
+- 👉 **[Complete Beginner Step-by-Step Tutorial: Online Mode, Offline Mode & Batch Scraper](TUTORIAL_ONLINE_OFFLINE_SCRAPING.md)**
+

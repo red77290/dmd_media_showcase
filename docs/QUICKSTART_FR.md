@@ -147,3 +147,14 @@ Lorsque votre DMD (`ArcadeMatrix` ESP32 ou `ArcadeMatrix_RPi`) est relié à une
    - **Lancement & Sortie d'un Jeu** : Le marquee classique s'affiche tout de suite pendant que Showcase prépare sur un slot isolé `{dmd_id}_sync` la **Fiche Info Animée + Panoramas + Vidéo de Gameplay** (recherche par titre humain puis repli sur le slug ROM via `fallback_query`) et prend le relais en douceur dès qu'elle est prête (`Une fois`, `Alterner Marquee & Showcase` ou `Boucle`). Quitter un jeu déclenche automatiquement `DELETE /api/v1/clients/{dmd_id}_sync/queue` afin de tuer immédiatement les `1..N` processus `dmd_show_converter` / `ffmpeg` / `yt-dlp` en cours sur le serveur.
    - **Style de la Carte** : Gardez **Hériter du profil DMD sur Showcase Studio** (réglé visuellement dans le Studio de Showcase) ou choisissez **Personnalisé sur le DMD** directement dans `FrontendSync`.
 4. **Cache Instantané** : Activez **Cache Persistant des Conversions On-Demand** dans Showcase (`2. Runtime, Workers & Limites Vidéo`) pour que les jeux déjà lancés démarrent instantanément lors des sessions suivantes, et utilisez **🗑️ Vider le Cache Showcase** (sur Showcase ou depuis le DMD) à tout moment pour régénérer vos fiches après un changement de style.
+
+---
+
+## 4. Mode Offline Autonome & Batch Scraper (`7. Batch Scraper & Packs Offline`)
+
+Vous souhaitez faire tourner votre horloge ArcadeMatrix ou votre borne Recalbox / Batocera **sans laisser de PC ni de NAS allumé et sans Internet** ? Utilisez l'onglet **`7. Batch Scraper & Packs Offline`** :
+- **Playlists Horloge (`random_filter`)** : Génère `1..10 000` `.gif` `RGB888` 24 bits à la carte (`La Totale`, `Vidéo Seule`, `Affiche Seule`, `Marquee Seul`, `Fiche + Description`, `Screenshot Seul`, `2 s` à `120 s` max) triés dans des dossiers plats (`snes_platformer`, `megadrive_fighting`, `neogeo_run&gun`) avec `index.txt` et `playlists.json` prêts à glisser dans `/gifs/` (ou `/gifs_tate/`).
+- **Synchro Recalbox / Batocera Offline (`recalbox_gamelist`)** : Importe vos fichiers `gamelist.xml` et génère `showcase/<system>/<rom>.gif` (`showcase_tate/` en TATE) + `pixelcade/<system>/<rom>.png` à copier à la racine de votre carte SD pour un affichage instantané `0 ms` en jeu (et en **Mode Hybride**, les `.gif` locaux de la carte SD restent prioritaires avec secours automatique sur le serveur Online pour les nouveaux jeux).
+- **PC, Docker/NAS & Smartphone sans blocage** : Écriture directe dans le dossier/SD sur Chrome/Edge local (continue même en changeant d'onglet), flux `.zip` zéro-RAM sur Docker/Firefox/Safari, et **Mode Mobile dédié** sur iPhone/iPad/Android (maintien d'écran éveillé `Wake Lock`, préparation serveur sans blocage et téléchargement `.zip` en 1 tap dans *Fichiers* / *Téléchargements*).
+- 👉 **[Tutoriel Complet Pas-à-Pas (Sans Jargon) : Mode Online, Mode Offline & Batch Scraper](TUTORIAL_ONLINE_OFFLINE_SCRAPING_FR.md)**
+

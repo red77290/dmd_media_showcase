@@ -42,7 +42,7 @@ from dmd_gif_converter import write_rgb565_stream
 logger = logging.getLogger("dmd_showcase.converter")
 
 
-def build_card_stream_sync(
+def render_card_rgb888_frames_sync(
     item_dir: str,
     width: int = 128,
     height: int = 32,
@@ -67,10 +67,10 @@ def build_card_stream_sync(
     show_year: bool = True,
     show_rating: bool = True,
     card_hold_s: float = 0.9,
-) -> str:
-    """Render Phase 1 Info Card directly into `card_intro_{W}x{H}.rgb565.stream`."""
+) -> Tuple[List[np.ndarray], int]:
+    """Render Phase 1 Info Card directly as pure 24-bit `RGB888` `(H, W, 3)` uint8 frames."""
     if not include_card_intro:
-        return ""
+        return [], max(8, min(60, int(fps)))
 
     out_dir = Path(item_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -360,6 +360,65 @@ def build_card_stream_sync(
             arr = apply_amber_dmd_palette(arr)
         frames_np.append(arr)
 
+    return frames_np, eff_fps
+
+
+def build_card_stream_sync(
+    item_dir: str,
+    width: int = 128,
+    height: int = 32,
+    fps: int = 15,
+    title: str = "",
+    year: str = "",
+    badge: str = "",
+    badge_color: str = "#FF6D00",
+    subtitle: str = "",
+    rating: str = "",
+    synopsis: str = "",
+    poster_png_name: str = "",
+    include_poster: bool = True,
+    include_synopsis: bool = True,
+    text_scroll_speed: str = "normal",
+    include_card_intro: bool = True,
+    card_layout: str = "classic_split",
+    card_theme: str = "tinted",
+    card_font: str = "arcade_pixel",
+    card_accent_color: str = "auto",
+    show_badge: bool = True,
+    show_year: bool = True,
+    show_rating: bool = True,
+    card_hold_s: float = 0.9,
+) -> str:
+    """Render Phase 1 Info Card directly into `card_intro_{W}x{H}.rgb565.stream`."""
+    frames_np, eff_fps = render_card_rgb888_frames_sync(
+        item_dir=item_dir,
+        width=width,
+        height=height,
+        fps=fps,
+        title=title,
+        year=year,
+        badge=badge,
+        badge_color=badge_color,
+        subtitle=subtitle,
+        rating=rating,
+        synopsis=synopsis,
+        poster_png_name=poster_png_name,
+        include_poster=include_poster,
+        include_synopsis=include_synopsis,
+        text_scroll_speed=text_scroll_speed,
+        include_card_intro=include_card_intro,
+        card_layout=card_layout,
+        card_theme=card_theme,
+        card_font=card_font,
+        card_accent_color=card_accent_color,
+        show_badge=show_badge,
+        show_year=show_year,
+        show_rating=show_rating,
+        card_hold_s=card_hold_s,
+    )
+    if not frames_np:
+        return ""
+    out_dir = Path(item_dir)
     out_stream = out_dir / f"card_intro_{width}x{height}.rgb565.stream"
     write_rgb565_stream(frames_np, out_stream, fps=eff_fps)
     logger.info(
@@ -367,8 +426,8 @@ def build_card_stream_sync(
         out_stream.name,
         width,
         height,
-        layout,
-        theme,
+        card_layout,
+        card_theme,
         len(frames_np),
         eff_fps,
     )

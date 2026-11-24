@@ -226,3 +226,15 @@ Servida con `Content-Length` exacto (`GET /api/v1/{domain}/stream/{item_id}.rgb5
 | `7` | `uint8` | `total_chunks` | Total de fragmentos del fotograma (`1..64`) |
 | `8..9` | `uint16le` | `byte_offset` | Desplazamiento en bytes (`chunk_idx * 1408`) dentro del búfer RGB565LE |
 | `10..N` | `uint8[]` | `payload` | Datos de píxeles RGB565LE (`<= 1408` bytes, `<= 1418` bytes/paquete UDP = `6` fragmentos en `128x32`) |
+
+---
+
+## Pipeline Batch Scraper GIF `RGB888` en Streaming y Paquetes Offline
+
+Para generar bibliotecas de cientos o miles de archivos `.gif` (listas de reloj `<system>_<genre>/*.gif` y paquetes Offline In-Game de Recalbox `showcase[_tate]/<system>/<rom>.gif`) de forma idéntica en instalaciones locales y en contenedores Docker sin añadir volúmenes ni saturar la RAM:
+
+- **Dominio y Puertos Hexagonales**:
+  - [`batch_scraper_specs.py`](../app/domain/batch_scraper_specs.py) (`ChapterSelectionSpec`, `GifEncodingSpec` limitando el vídeo entre `2s` y `120s`, `FolderNamingPolicy`), [`gamelist_catalog.py`](../app/domain/gamelist_catalog.py) (parser seguro de `gamelist.xml` de Recalbox) y [`batch_job.py`](../app/domain/aggregates/batch_job.py) (agregado raíz `BatchScrapeJob` con contrapresión `<= 64 MB`).
+  - Puertos de salida [`IBatchGifComposerPort`](../app/domain/ports/batch_scraper_ports.py) e [`IEphemeralArtifactQueuePort`](../app/domain/ports/batch_scraper_ports.py) conectados en [`container.py`](../app/container.py).
+- **Composición 100 % `RGB888` de 24 bits (`rgb24`)**: [`gif_chapter_composer.py`](../app/infrastructure/rendering/gif_chapter_composer.py) genera los capítulos elegidos (`Card`, `Synopsis`, `Poster`, `Marquee`, `Snapshots`, `Video <= 120s`) directamente en `rgb24` (cero cuantización `RGB565` intermedia) hacia un `.gif` `RGB888` autónomo (`-gifflags -offsetting-transdiff`), alojado temporalmente en `<data_dir>/.batch_spool` (fuera del `tmpfs` `/tmp` de Docker) y eliminado (`unlink`) tras el `ACK` `DELETE .../artifacts/{seq}` o `stream.zip`.
+- **Ejecución Continua en Pestañas en Segundo Plano**: [`batch_worker.js`](../app/infrastructure/web/static/js/batch_worker.js) consume el flujo `SSE` `ReadableStream` en un `Web Worker` dedicado junto con [`batch_keepalive.js`](../app/infrastructure/web/static/js/batch_keepalive.js) (`navigator.locks` + `AudioContext` subaudible), escribiendo directamente mediante `FileSystemDirectoryHandle` (o `stream.zip` `ZIP_STORED` en `O(1)` RAM).

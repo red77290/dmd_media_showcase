@@ -1,6 +1,7 @@
 import { apiFetch, esc } from '../api.js';
 import { t } from '../i18n/index.js';
 import { CANONICAL_DOMAINS, uiState } from '../state.js';
+import { initBatchScraperIfNeeded } from './batch_scraper.js';
 import { hydrateStudioDraftStylesFromCache, initStudioIfNeeded } from './studio_controls.js';
 import { loadTargetDmdQueue } from './tester_queue.js';
 import { loadHealthAndConfig } from './runtime_config.js';
@@ -13,11 +14,13 @@ export function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   const targetPane = document.getElementById('tab-' + name);
   if (targetPane) targetPane.classList.add('active');
-  const idx = {overview: 0, runtime: 1, tester: 2, studio: 3, keys: 4, network: 5}[name] || 0;
+  const idx = {overview: 0, runtime: 1, tester: 2, studio: 3, keys: 4, network: 5, batch: 6}[name] || 0;
   const tabBtns = document.querySelectorAll('.tab-btn');
   if (tabBtns[idx]) tabBtns[idx].classList.add('active');
   if (name === 'studio') {
     initStudioIfNeeded();
+  } else if (name === 'batch') {
+    initBatchScraperIfNeeded();
   }
 }
 

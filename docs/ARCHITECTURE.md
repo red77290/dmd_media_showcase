@@ -228,3 +228,15 @@ Served with exact `Content-Length` (`GET /api/v1/{domain}/stream/{item_id}.rgb56
 | `7` | `uint8` | `total_chunks` | Total chunks required to assemble the complete frame (`1..64`) |
 | `8..9` | `uint16le` | `byte_offset` | Byte offset (`chunk_idx * 1408`) inside the target RGB565LE framebuffer |
 | `10..N` | `uint8[]` | `payload` | Raw RGB565LE pixel slice (`<= 1408` bytes, MTU-safe `<= 1418` bytes/UDP packet = `6` chunks for `128x32`) |
+
+---
+
+## Streaming `RGB888` GIF Batch Scraper & Offline Pack Pipeline
+
+To generate multi-hundred or multi-thousand `.gif` libraries (Clock playlists `<system>_<genre>/*.gif` and Recalbox Offline In-Game packs `showcase[_tate]/<system>/<rom>.gif`) equally cleanly on Desktop installs and RAM-constrained Docker containers without adding volumes:
+
+- **Domain & Hexagonal Ports**:
+  - [`batch_scraper_specs.py`](../app/domain/batch_scraper_specs.py) (`ChapterSelectionSpec`, `GifEncodingSpec` clamping video `2s..120s`, `FolderNamingPolicy`), [`gamelist_catalog.py`](../app/domain/gamelist_catalog.py) (entity-safe Recalbox `gamelist.xml` parser), and [`batch_job.py`](../app/domain/aggregates/batch_job.py) (`BatchScrapeJob` aggregate root enforcing `<= 64 MB` spool backpressure).
+  - Outbound ports [`IBatchGifComposerPort`](../app/domain/ports/batch_scraper_ports.py) and [`IEphemeralArtifactQueuePort`](../app/domain/ports/batch_scraper_ports.py) wired in [`container.py`](../app/container.py).
+- **End-to-End 24-bit `RGB888` (`rgb24`) Composition**: [`gif_chapter_composer.py`](../app/infrastructure/rendering/gif_chapter_composer.py) renders selected chapters (`Card`, `Synopsis`, `Poster`, `Marquee`, `Snapshots`, `Video <= 120s`) directly in 24-bit `rgb24` (zero intermediate `RGB565` quantization) and encodes self-contained `RGB888` `.gif` frames (`-gifflags -offsetting-transdiff`), staged under `<data_dir>/.batch_spool` (outside Docker's `/tmp` `tmpfs`) and unlinked immediately upon browser `DELETE .../artifacts/{seq}` `ACK` or `stream.zip` emission.
+- **Background-Tab Browser Delivery**: [`batch_worker.js`](../app/infrastructure/web/static/js/batch_worker.js) runs an event-driven `SSE` `ReadableStream` consumer inside a dedicated `Web Worker` paired with [`batch_keepalive.js`](../app/infrastructure/web/static/js/batch_keepalive.js) (`navigator.locks` + sub-audible `AudioContext`), writing directly via `FileSystemDirectoryHandle` (or `O(1)`-RAM `ZIP_STORED` `stream.zip`).

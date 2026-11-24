@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 1200
     server_master_clip_max_s: float = 12.0
     video_max_duration_limit_s: float = 30.0
+    batch_video_max_duration_limit_s: float = 120.0
     video_max_fps_limit: int = 30
     panorama_duration_s: float = 4.0
     ytdlp_max_filesize_mb: int = 60
