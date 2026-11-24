@@ -108,13 +108,17 @@ import {
   skipSelectedDmd
 } from './tabs/tester_queue.js';
 import {
+  attachNewFolderToActiveBatchJob,
   controlActiveBatchJob,
+  dismissActiveBatchJob,
   loadBatchFilterOptions,
   onBatchChapterToggleManual,
   onBatchDurationChange,
   onBatchGamelistFilesSelected,
   onBatchResolutionPresetChange,
   onBatchWorkersLiveChange,
+  reattachActiveBatchJobOnLoad,
+  reconnectSavedBatchFolder,
   selectBatchCardLayout,
   selectBatchOutputFolder,
   selectBatchPreset,
@@ -163,6 +167,7 @@ export function setUiLang(lang) {
 
 const WINDOW_HANDLERS = {
   applyTagPickerModal,
+  attachNewFolderToActiveBatchJob,
   clearAllTagModal,
   clearBatchBubbles,
   clearField,
@@ -171,6 +176,7 @@ const WINDOW_HANDLERS = {
   controlActiveBatchJob,
   controlDmd,
   deleteDmdProfile,
+  dismissActiveBatchJob,
   dismissUpdateBanner,
   enqueueCandidate,
   enqueueStudioSim,
@@ -210,6 +216,7 @@ const WINDOW_HANDLERS = {
   populateConfigForm,
   previewCandidate,
   purgeDmdClient,
+  reconnectSavedBatchFolder,
   redrawCurrentStudioFrame,
   refreshAll,
   removeQueueItem,
@@ -266,7 +273,9 @@ if (typeof window !== 'undefined') {
   bindTagModalEscapeListener();
   setUiLang(getCurrentUiLang());
   loadHealthAndConfig(true);
+  reattachActiveBatchJobOnLoad();
   checkSystemUpdate(false);
   setInterval(() => loadHealthAndConfig(false), 3000);
+  setInterval(() => reattachActiveBatchJobOnLoad(), 8000);
   setInterval(() => checkSystemUpdate(false), 3600000);
 }

@@ -154,6 +154,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         settings.effective_max_workers,
     )
     batch_manager.start()
+    await batch_scraper.batch_scraper_service.restore_persisted_jobs()
     await udp_clock_streamer.start_listener(host=settings.host, port=settings.udp_stream_port)
     await showcase_mqtt_gateway.start()
     await consume_once_orchestrator.start_server_managed_profiles()

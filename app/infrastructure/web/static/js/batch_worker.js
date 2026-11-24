@@ -123,13 +123,15 @@ async function runContinuousStreamConsumer(cfg) {
     plannedDirs,
     isClockMode,
     isTate,
-    wrapOrientationRoot
+    wrapOrientationRoot,
+    alreadyAckedCount
   } = cfg;
 
   stopRequested = false;
   const headers = buildAuthHeaders(apiKey);
   const touchedClockFolders = new Map();
   const writtenSeqs = new Set();
+  const baseAcked = Math.max(0, Number(alreadyAckedCount || 0));
   let cursorSeq = 0;
   let unindexedCount = 0;
 
@@ -215,7 +217,7 @@ async function runContinuousStreamConsumer(cfg) {
               self.postMessage({
                 type: 'ITEM_WRITTEN',
                 item,
-                writtenTotal: writtenSeqs.size
+                writtenTotal: baseAcked + writtenSeqs.size
               });
             }
           }
@@ -224,7 +226,7 @@ async function runContinuousStreamConsumer(cfg) {
             self.postMessage({
               type: 'SNAPSHOT',
               snapshot: snap,
-              writtenTotal: writtenSeqs.size
+              writtenTotal: baseAcked + writtenSeqs.size
             });
             if (
               ['completed', 'cancelled', 'failed'].includes(snap.status) &&
@@ -252,7 +254,7 @@ async function runContinuousStreamConsumer(cfg) {
     } catch (_) {}
   }
 
-  self.postMessage({ type: 'STREAM_DONE', writtenTotal: writtenSeqs.size });
+  self.postMessage({ type: 'STREAM_DONE', writtenTotal: baseAcked + writtenSeqs.size });
 }
 
 if (IS_DEDICATED_WORKER) {

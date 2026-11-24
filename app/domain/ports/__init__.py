@@ -5,6 +5,7 @@ Domain Ports (Interfaces) for the Hexagonal Architecture (`app/domain/ports`).
 from app.domain.ports.batch_scraper_ports import (
     ComposedGifResult,
     IBatchGifComposerPort,
+    IBatchJobRepositoryPort,
     IEphemeralArtifactQueuePort,
     StagedBatchFiles,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "ComposedGifResult",
     "ConversionAbortedError",
     "IBatchGifComposerPort",
+    "IBatchJobRepositoryPort",
     "ICardPreviewRendererPort",
     "IDmdProfileRepository",
     "IEphemeralArtifactQueuePort",

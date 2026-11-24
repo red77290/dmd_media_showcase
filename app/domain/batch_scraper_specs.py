@@ -6,9 +6,9 @@ Pure Domain Specifications & Folder Naming Policies for the Batch Scraper (`app/
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import re
-from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 from app.domain.entities import DomainType, FilterCriteria, PanelGeometry
 from app.domain.taxonomy.resolver import resolve_canonical_genre, resolve_canonical_system
@@ -291,6 +291,91 @@ class BatchScrapeConfig:
     chapters: ChapterSelectionSpec = field(default_factory=ChapterSelectionSpec)
     encoding: GifEncodingSpec = field(default_factory=GifEncodingSpec)
     existing_relpaths: FrozenSetType = field(default_factory=frozenset)  # type: ignore[assignment]
+    spool_max_items: int = 0
+    spool_max_bytes: int = 0
+
+    def public_summary(self) -> Dict[str, object]:
+        enc = self.encoding.normalized()
+        return {
+            "mode": self.mode,
+            "delivery_mode": self.delivery_mode,
+            "domain": self.domain,
+            "lang": self.lang,
+            "systems": list(self.systems),
+            "genres": list(self.genres),
+            "decades": list(self.decades),
+            "width": enc.width,
+            "height": enc.height,
+            "fps": enc.fps,
+            "is_tate": enc.is_tate,
+            "video_max_duration_s": enc.video_max_duration_s,
+            "wrap_orientation_root": self.wrap_orientation_root,
+            "include_marquee_png_companion": self.include_marquee_png_companion,
+            "preset": self.chapters.preset,
+        }
+
+    def to_persisted_dict(self) -> Dict[str, object]:
+        return {
+            "mode": self.mode,
+            "delivery_mode": self.delivery_mode,
+            "domain": self.domain,
+            "lang": self.lang,
+            "systems": list(self.systems),
+            "genres": list(self.genres),
+            "decades": list(self.decades),
+            "min_rating": self.min_rating,
+            "target_count": self.target_count,
+            "max_workers": self.max_workers,
+            "ffmpeg_threads_per_worker": self.ffmpeg_threads_per_worker,
+            "folder_template": self.folder_template,
+            "safe_ascii_folders": self.safe_ascii_folders,
+            "wrap_orientation_root": self.wrap_orientation_root,
+            "include_marquee_png_companion": self.include_marquee_png_companion,
+            "chapters": asdict(self.chapters),
+            "encoding": asdict(self.encoding),
+            "existing_relpaths": sorted(self.existing_relpaths),
+            "spool_max_items": self.spool_max_items,
+            "spool_max_bytes": self.spool_max_bytes,
+        }
+
+    @classmethod
+    def from_persisted_dict(cls, data: Dict[str, Any]) -> "BatchScrapeConfig":
+        ch_raw = data.get("chapters") if isinstance(data.get("chapters"), dict) else {}
+        ch_fields = set(ChapterSelectionSpec.__dataclass_fields__.keys())
+        chapters = ChapterSelectionSpec(
+            **{k: v for k, v in ch_raw.items() if k in ch_fields}
+        )
+        enc_raw = data.get("encoding") if isinstance(data.get("encoding"), dict) else {}
+        enc_fields = set(GifEncodingSpec.__dataclass_fields__.keys())
+        encoding = GifEncodingSpec(
+            **{k: v for k, v in enc_raw.items() if k in enc_fields}
+        ).normalized()
+        mode_val = str(data.get("mode") or "random_filter")
+        deliv_val = str(data.get("delivery_mode") or "direct_folder")
+        dom_val = str(data.get("domain") or "games")
+        tpl_val = str(data.get("folder_template") or "system_genre")
+        return cls(
+            mode=mode_val if mode_val in ("random_filter", "recalbox_gamelist") else "random_filter",  # type: ignore[arg-type]
+            delivery_mode=deliv_val if deliv_val in ("direct_folder", "zip_stream") else "direct_folder",  # type: ignore[arg-type]
+            domain=dom_val if dom_val in ("games", "movies", "series", "anime") else "games",  # type: ignore[arg-type]
+            lang=str(data.get("lang") or "fr"),
+            systems=tuple(str(x) for x in (data.get("systems") or ())),
+            genres=tuple(str(x) for x in (data.get("genres") or ())),
+            decades=tuple(str(x) for x in (data.get("decades") or ())),
+            min_rating=float(data.get("min_rating") or 0.0),
+            target_count=max(1, int(data.get("target_count") or 100)),
+            max_workers=max(1, min(8, int(data.get("max_workers") or 2))),
+            ffmpeg_threads_per_worker=max(1, min(4, int(data.get("ffmpeg_threads_per_worker") or 1))),
+            folder_template=tpl_val if tpl_val in ("system_genre", "system", "genre") else "system_genre",  # type: ignore[arg-type]
+            safe_ascii_folders=bool(data.get("safe_ascii_folders", False)),
+            wrap_orientation_root=bool(data.get("wrap_orientation_root", False)),
+            include_marquee_png_companion=bool(data.get("include_marquee_png_companion", True)),
+            chapters=chapters,
+            encoding=encoding,
+            existing_relpaths=frozenset(str(x) for x in (data.get("existing_relpaths") or ())),
+            spool_max_items=max(0, int(data.get("spool_max_items") or 0)),
+            spool_max_bytes=max(0, int(data.get("spool_max_bytes") or 0)),
+        )
 
     def to_filter_criteria(self) -> FilterCriteria:
         enc = self.encoding.normalized()

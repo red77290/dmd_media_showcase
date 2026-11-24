@@ -115,6 +115,39 @@ class GamelistGameEntry:
     publisher: str = ""
     hidden: bool = False
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "system": self.system,
+            "rom_path": self.rom_path,
+            "rom_stem": self.rom_stem,
+            "title": self.title,
+            "synopsis": self.synopsis,
+            "year": self.year,
+            "rating": self.rating,
+            "genre": self.genre,
+            "players": self.players,
+            "developer": self.developer,
+            "publisher": self.publisher,
+            "hidden": self.hidden,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "GamelistGameEntry":
+        return cls(
+            system=str(data.get("system") or ""),
+            rom_path=str(data.get("rom_path") or ""),
+            rom_stem=str(data.get("rom_stem") or ""),
+            title=str(data.get("title") or ""),
+            synopsis=str(data.get("synopsis") or ""),
+            year=str(data.get("year") or ""),
+            rating=str(data.get("rating") or ""),
+            genre=str(data.get("genre") or ""),
+            players=str(data.get("players") or ""),
+            developer=str(data.get("developer") or ""),
+            publisher=str(data.get("publisher") or ""),
+            hidden=bool(data.get("hidden", False)),
+        )
+
 
 def extract_rom_stem(raw_path: str) -> str:
     """

@@ -452,5 +452,12 @@ export const I18N_ES = {
     batch_th_size: "Tamaño",
     batch_starting: "⏳ Creando estructura de carpetas e iniciando workers...",
     batch_err_no_xml: "Selecciona al menos un archivo gamelist.xml válido.",
-    batch_err_need_gamelist: "Carga primero al menos un archivo gamelist.xml de Recalbox."
+    batch_err_need_gamelist: "Carga primero al menos un archivo gamelist.xml de Recalbox.",
+    btn_batch_dismiss: "🗑️ Cerrar",
+    btn_batch_reconnect_dir: "📂 Reconectar Carpeta",
+    btn_batch_pick_other_dir: "📂 Elegir Carpeta...",
+    batch_reattach_prompt_fmt: "📂 Tarea persistente recuperada ({n} archivo(s) listos en el servidor): pulsa Reconectar para reanudar la escritura en « {name} », o descarga el .zip.",
+    batch_reattach_no_handle_fmt: "📂 Tarea persistente recuperada ({n} archivo(s) listos en el servidor): elige una carpeta de destino o descarga el .zip.",
+    batch_reattach_streaming_ok: "🔄 Tarea persistente reconectada automáticamente — escribiendo en « {name} ».",
+    batch_banner_ready_fmt: "✅ Paquete Batch listo: {done}/{total} ({unacked} archivo(s) por recoger)"
 };

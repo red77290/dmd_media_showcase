@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Sequence, Set
 
 from app.domain.batch_scraper_specs import ChapterSelectionSpec, GifEncodingSpec
 from app.domain.entities import MediaCandidate
@@ -60,7 +60,7 @@ class IBatchGifComposerPort(ABC):
 
 
 class IEphemeralArtifactQueuePort(ABC):
-    """Outbound port managing bounded ephemeral staging files unlinked immediately upon client ACK."""
+    """Outbound port managing bounded staging files unlinked upon client ACK."""
 
     @abstractmethod
     def create_worker_scratch_dir(self, job_id: str, token: str) -> Path:
@@ -90,3 +90,23 @@ class IEphemeralArtifactQueuePort(ABC):
     @abstractmethod
     def purge_job(self, job_id: str) -> None:
         """Delete all remaining scratch & staged files for `job_id`."""
+
+    @abstractmethod
+    def rehydrate_job_artifacts(self, job_id: str) -> Dict[int, StagedBatchFiles]:
+        """Re-index surviving `ready/seq_*` files for `job_id` on disk after a server restart."""
+
+    @abstractmethod
+    def cleanup_orphan_jobs(self, active_job_ids: Set[str]) -> None:
+        """Remove any spool job directories not belonging to `active_job_ids`."""
+
+
+class IBatchJobRepositoryPort(ABC):
+    """Outbound port persisting Batch Scraper job states across browser disconnects & server restarts."""
+
+    @abstractmethod
+    def save_jobs(self, records: Sequence[Dict[str, object]]) -> None:
+        """Atomically persist all active and recently completed batch job records."""
+
+    @abstractmethod
+    def load_jobs(self) -> List[Dict[str, object]]:
+        """Load persisted batch job records on server startup."""

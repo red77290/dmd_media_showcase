@@ -79,6 +79,12 @@ def _resolve_batch_artifact_queue() -> Any:
     return ephemeral_batch_queue
 
 
+def _resolve_batch_job_repository() -> Any:
+    from app.infrastructure.persistence.json_batch_job_repository import json_batch_job_repository
+
+    return json_batch_job_repository
+
+
 def register_default_ports() -> None:
     """Bind all default Infrastructure singletons into `default_port_registry`."""
     default_port_registry.register("mqtt_gateway", _resolve_mqtt_gateway)
@@ -92,6 +98,7 @@ def register_default_ports() -> None:
     default_port_registry.register("on_demand_cache", _resolve_on_demand_cache)
     default_port_registry.register("batch_gif_composer", _resolve_batch_gif_composer)
     default_port_registry.register("batch_artifact_queue", _resolve_batch_artifact_queue)
+    default_port_registry.register("batch_job_repository", _resolve_batch_job_repository)
 
 
 register_default_ports()

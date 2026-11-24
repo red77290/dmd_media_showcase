@@ -452,5 +452,12 @@ export const I18N_EN = {
     batch_th_size: "Size",
     batch_starting: "⏳ Preparing folder structure and launching batch workers...",
     batch_err_no_xml: "Please select valid gamelist.xml file(s).",
-    batch_err_need_gamelist: "Please load at least one Recalbox gamelist.xml file first."
+    batch_err_need_gamelist: "Please load at least one Recalbox gamelist.xml file first.",
+    btn_batch_dismiss: "🗑️ Dismiss",
+    btn_batch_reconnect_dir: "📂 Reconnect Saved Folder",
+    btn_batch_pick_other_dir: "📂 Choose Target Folder...",
+    batch_reattach_prompt_fmt: "📂 Persistent task recovered ({n} file(s) ready on server): click Reconnect to resume writing into « {name} », or download the .zip pack.",
+    batch_reattach_no_handle_fmt: "📂 Persistent task recovered ({n} file(s) ready on server): choose a target folder to write directly, or download the .zip pack.",
+    batch_reattach_streaming_ok: "🔄 Persistent task reconnected automatically — streaming directly into « {name} ».",
+    batch_banner_ready_fmt: "✅ Batch pack ready: {done}/{total} ({unacked} file(s) to collect)"
 };
