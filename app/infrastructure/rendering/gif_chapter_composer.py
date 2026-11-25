@@ -42,7 +42,6 @@ from app.infrastructure.rendering.panorama_and_static import (
     _enhance_panorama_strip,
     resolve_showcase_panorama_axis,
 )
-from app.infrastructure.rendering.video_pipeline import resolve_domain_scene_type_hint
 from app.infrastructure.scrapers.youtube_resolver import (
     extract_hd_youtube_clip_ytdlp,
     slice_hd_remote_video_ffmpeg,
@@ -376,11 +375,6 @@ def compose_candidate_gif_worker_task(
         and int(chapters.snapshot_count) <= 0
     )
 
-    scene_hint = resolve_domain_scene_type_hint(
-        domain=cand.domain,
-        genre_hint=str((cand.extra_meta or {}).get("canonical_genre") or cand.subtitle or ""),
-    )
-
     # Fast single-pass native `dmd_gif_converter` RGB888 GIF when `video_only` is selected
     if is_video_only:
         src_mp4 = work_dir / "src_clip.mp4"
@@ -408,7 +402,6 @@ def compose_candidate_gif_worker_task(
                 use_auto_action=use_auto_action,
                 use_smart_color_boost=use_smart_color_boost,
                 scroll_enabled=scroll_on_video,
-                scene_type=scene_hint,
                 brightness=encoding.brightness,
                 contrast=encoding.contrast,
                 saturation=encoding.saturation,
@@ -627,7 +620,6 @@ def compose_candidate_gif_worker_task(
                             "auto_action_enabled": use_auto_action,
                             "action_smart_auto_crop": use_auto_action,
                             "action_auto_detector_fallback": True,
-                            **({"action_scene_type": scene_hint} if scene_hint else {}),
                             "auto_color_enabled": use_smart_color_boost,
                             "brightness": encoding.brightness,
                             "contrast": encoding.contrast,

@@ -1364,30 +1364,17 @@ def test_igdb_discovery_excludes_subgames_and_video_pipeline_falls_back_on_dead_
     ]
 
 
-def test_resolve_domain_scene_type_hint_unifies_platformer_and_fighting_and_forwards_to_clip_config(
+def test_video_pipeline_leaves_scene_type_autonomous_for_converter(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
     """
-    Verify Showcase maps 2D platformer, 1v1 fighting, beat 'em up, run & gun, and action genres
-    (both canonical slugs and localized subtitle prefixes) to `scene_type='platformer'`, and
-    forwards `scene_type` into `DmdClipConfig` during video asset transcoding.
+    Verify Showcase never forces `scene_type` from scraped genre metadata, leaving
+    `dmd_gif_converter` 100% autonomous for visual scene and sprite detection across all domains.
     """
     from app.infrastructure.rendering import video_pipeline
-    from app.infrastructure.rendering.video_pipeline import resolve_domain_scene_type_hint
 
-    assert resolve_domain_scene_type_hint("games", "platform") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "fighting") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "beatemup") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "runandgun") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "Plateforme • Mega Drive") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "NES • Plateforme") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "Adventure, Platform") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "Action, Shoot'em up") == "action_horizontal"
-    assert resolve_domain_scene_type_hint("games", "Combat (1v1 / Versus) • CPS-2") == "platformer"
-    assert resolve_domain_scene_type_hint("games", "shootemup") == "action_horizontal"
-    assert resolve_domain_scene_type_hint("games", "maze") == "top_down_isometric"
-    assert resolve_domain_scene_type_hint("movies", "action") == ""
+    assert not hasattr(video_pipeline, "resolve_domain_scene_type_hint")
 
     captured_configs: List[Any] = []
 
@@ -1406,10 +1393,10 @@ def test_resolve_domain_scene_type_hint_unifies_platformer_and_fighting_and_forw
     monkeypatch.setattr(video_pipeline, "DmdMediaProcessor", _CapturingProc)
 
     res = video_pipeline.build_video_assets_worker_task(
-        item_dir=str(tmp_path / "dracula"),
-        title="Bram Stoker's Dracula",
-        badge="MD",
-        palette=(180, 40, 40),
+        item_dir=str(tmp_path / "little_mermaid"),
+        title="Disney's The Little Mermaid",
+        badge="NES",
+        palette=(40, 140, 220),
         video_url=None,
         youtube_url="https://www.youtube.com/watch?v=real_clip",
         width=128,
@@ -1417,12 +1404,11 @@ def test_resolve_domain_scene_type_hint_unifies_platformer_and_fighting_and_forw
         fps=15,
         max_duration_s=8.0,
         domain="games",
-        genre_hint="Plateforme • MD",
     )
     assert res["has_video"] is True
     assert len(captured_configs) == 1
     if "scene_type" in getattr(video_pipeline.DmdClipConfig, "__dataclass_fields__", {}):
-        assert captured_configs[0].scene_type == "platformer"
+        assert captured_configs[0].scene_type == ""
 
 
 

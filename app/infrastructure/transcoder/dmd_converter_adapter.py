@@ -295,7 +295,6 @@ class DmdConverterTranscoderAdapter(IMediaTranscoderPort):
                     settings.ffmpeg_threads_per_job,
                     settings.ytdlp_max_filesize_mb,
                     candidate.domain,
-                    str((candidate.extra_meta or {}).get("canonical_genre") or candidate.subtitle or ""),
                     False,
                 )
                 has_video = bool(vid_res.get("has_video", False))

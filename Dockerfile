@@ -35,7 +35,7 @@ COPY docs/asyncapi.yaml ./docs/asyncapi.yaml
 COPY scripts/compile_prod_vault.py ./scripts/compile_prod_vault.py
 
 # Resolved commit SHA of dmd_gif_converter@latest (injected by CI to invalidate layer cache on new releases)
-ARG DMD_GIF_CONVERTER_REV=5fa05d0f4fdab30a0f9b1c79c15b7b65ef92ff9d
+ARG DMD_GIF_CONVERTER_REV=5111210afbd66f7171ece79cf95a1a36e5255f55
 
 RUN --mount=type=secret,id=VAULT_MASTER_SECRET,required=false \
     --mount=type=secret,id=TMDB_API_KEY,required=false \
