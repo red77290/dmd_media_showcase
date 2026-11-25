@@ -799,3 +799,76 @@ def test_card_banner_scrolls_when_year_and_rating_overflow(tmp_path: Path):
     assert np.array_equal(px2[0, :, 0], px2[12, :, 0])
     assert np.array_equal(px2[0, :, 63], px2[12, :, 63])
     assert not np.array_equal(px2[0, 1:9, 2:62], px2[12, 1:9, 2:62])
+
+
+def test_french_accents_ligatures_html_entities_and_nfd_render_crisp_pixel_glyphs(tmp_path: Path):
+    """
+    Regression test ensuring French accented titles & descriptions never render `.notdef` tofu boxes
+    under `arcade_pixel` (Pillow >= 10.1's `ImageFont.load_default()` is ASCII-only).
+    """
+    from PIL import ImageDraw, ImageFont
+    from app.infrastructure.rendering.arcade_bitmap_font import encode_for_arcade_bitmap_font
+    from app.infrastructure.rendering.card_layout_engine import render_card_rgb888_frames_sync
+    from app.infrastructure.rendering.imaging_primitives import load_card_font, sanitize_card_text
+
+    # 1. HTML entities + NFD decomposed accents + French narrow no-break spaces (`\u202f`)
+    raw_fr = "L&#039;E\u0301pe\u0301e\u202f: &laquo;&nbsp;C\u0153ur &amp; Gar\u00e7on&nbsp;&raquo; \u2014 15\u202f\u20ac"
+    cleaned = sanitize_card_text(raw_fr)
+    assert cleaned == "L'Épée : « Cœur & Garçon » - 15 €"
+
+    font = load_card_font(cleaned, size=9, font_style="arcade_pixel")
+    assert not isinstance(font, ImageFont.FreeTypeFont)
+
+    def _glyph_bitmap(ch: str) -> np.ndarray:
+        im = Image.new("L", (10, 14), 0)
+        d = ImageDraw.Draw(im)
+        d.text((1, 1), encode_for_arcade_bitmap_font(ch), fill=255, font=font)
+        return np.asarray(im, dtype=np.uint8)
+
+    bm_q = _glyph_bitmap("?")
+    bm_e = _glyph_bitmap("e")
+    bm_e_acute = _glyph_bitmap("é")
+    bm_e_grave = _glyph_bitmap("è")
+    bm_e_circ = _glyph_bitmap("ê")
+    bm_E = _glyph_bitmap("E")
+    bm_E_acute = _glyph_bitmap("É")
+    bm_c = _glyph_bitmap("c")
+    bm_c_ced = _glyph_bitmap("ç")
+    bm_oe = _glyph_bitmap("œ")
+    bm_euro = _glyph_bitmap("€")
+
+    # Every French glyph is distinct from '?' (.notdef/fallback) AND distinct from its unaccented base
+    for accented, base in (
+        (bm_e_acute, bm_e),
+        (bm_e_grave, bm_e),
+        (bm_e_circ, bm_e),
+        (bm_E_acute, bm_E),
+        (bm_c_ced, bm_c),
+    ):
+        assert not np.array_equal(accented, bm_q)
+        assert not np.array_equal(accented, base)
+    assert not np.array_equal(bm_e_acute, bm_e_grave)
+    assert not np.array_equal(bm_e_acute, bm_e_circ)
+    assert not np.array_equal(bm_oe, bm_q)
+    assert not np.array_equal(bm_euro, bm_q)
+
+    # 2. Full 128x32 card render preserves top diacritics and bottom cedillas without clipping
+    frames, _ = render_card_rgb888_frames_sync(
+        item_dir=str(tmp_path),
+        width=128,
+        height=32,
+        fps=15,
+        title="Épée : À l'été",
+        year="1994",
+        badge="MÉGA",
+        synopsis="Garçon, cœur & château",
+        include_poster=False,
+        card_layout="classic_split",
+        card_theme="pure_black",
+        card_font="arcade_pixel",
+    )
+    f0 = frames[0]
+    # Title upper accent rows (`y = 11..13`) and synopsis cedilla rows (`y = 30..31`) contain lit pixels
+    assert int(f0[11:14, :, :].max()) > 200
+    assert int(f0[30:32, :, :].max()) > 180
+
