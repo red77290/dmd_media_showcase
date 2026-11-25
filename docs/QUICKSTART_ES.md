@@ -120,12 +120,13 @@ Abra `http://dmdmediashowcase.local:8890/` (o `http://<ip-servidor>:8890/`) en s
 ### 3.1 DMDs Multimotores Controlados por el Cliente (`ArcadeMatrix` ESP32 y `ArcadeMatrix_RPi`)
 
 1. Abra la WebUI de su DMD (`http://arcadematrix.local/` en ESP32 o `http://arcadematrix.local:8080/` en Raspberry Pi).
-2. Vaya a **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`):
-   - El campo **Showcase Server URL** ya viene pre-rellenado como `http://dmdmediashowcase.local:8890` y **desactivado por defecto** (`⚪ Desactivado`) para evitar peticiones de red innecesarias si `dmd_media_showcase` no está instalado.
-   - Active el interruptor **Enable DMD Media Showcase Server** y haga clic en **Save Showcase Server** (o **Test Connection**).
-   - Verifique que el indicador visual se ponga en verde: **`🟢 Comunicación OK`**.
-3. Añada cualquiera de los 4 motores Showcase (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`) a su rotación.
-4. La WebUI del DMD consulta automáticamente `GET /api/v1/{domain}/filters?lang={ui_lang}` para poblar dinámicamente las listas de **Sistemas** (`55+` plataformas), **Géneros** y **Décadas**.
+2. Vaya a **`Sistema -> 🔄 MQTT & API -> 🎬 DMD Media Showcase`** (`#mqtt-subtab-showcase` — *ubicado en las subpestañas de red por tratarse de una función complementaria opcional*):
+   - En el servidor Showcase (`http://localhost:8890/`), **no hay nada que configurar** ni es necesario añadir su matriz manualmente: el Dashboard sirve únicamente para monitorización (su DMD aparecerá allí automáticamente) y personalización opcional.
+   - El campo **Showcase Server URL** viene prerrellenado con `http://dmdmediashowcase.local:8890` y **desactivado por defecto** (`⚪ Desactivado`) para evitar peticiones de red innecesarias si `dmd_media_showcase` no está instalado.
+   - Pase **Activar DMD Media Showcase** a **Activado** y pulse **🔄 Test** (si su router filtra `.local` entre bandas Wi-Fi 2,4 / 5 GHz, introduzca directamente la IP local de su PC `http://192.168.1.XX:8890`).
+   - Verifique **`🟢 Comunicación OK`** y pulse abajo en **Guardar ajustes Showcase** *(mientras no se guarde, la matriz muestra « Configurar URL servidor »)*.
+3. En la pestaña **`Pantalla`**, pulse **➕ Añadir al bucle** en cualquiera de los 4 motores Showcase (**Vitrina Juegos Retro** `retro_games`, **Movie Showcase** `movie_showcase`, **Series Showcase** `series_showcase`, **Anime Showcase** `anime_showcase`) y después **Guardar lista de rotación**.
+4. Dentro de **⚙️ Configurar**, pulse **🔄 Sync** para actualizar las listas de **Sistemas** (`55+` plataformas), **Géneros** y **Décadas** desde `GET /api/v1/{domain}/filters?lang={ui_lang}` (déjelas vacías para explorar todo al azar).
 5. Ajuste la **Velocidad de desplazamiento de la sinopsis** (`1 = Lento` a `10 = Turbo`, hasta `160 px/s`) y guarde los cambios — el DMD transmite automáticamente mediante **`MQTT+TCP`** (MQTT `:1883` + HTTP `1.1` `Content-Length` `DMDZ` v2 sin pérdidas en `:8890`: caché SD `25 MHz` autolimpiable en `esp32dev`, `100 % PSRAM` precargada / anillo SPSC PSRAM de `1 MB` con `0` SD en `ESP32-S3`, y precarga RAM con respaldo `DMDS` puro en `ArcadeMatrix_RPi`; `HTTP` y `MQTT+UDP` opcional también están soportados).
 
 ### 3.2 Receptores ESP32 Híbridos (Modelo 2A) y Pasivos UDP (Modelo 2B) Gestionados en el Servidor (`config_source: "server"`)

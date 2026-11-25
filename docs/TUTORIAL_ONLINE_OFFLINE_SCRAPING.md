@@ -26,10 +26,10 @@ Think of your **ArcadeMatrix** LED display (ESP32, ESP32-S3, or Raspberry Pi) li
 ## 2. What Should I Do for My Setup? (4 Step-by-Step Recipes)
 
 ### 🟢 Case #1 — "I have Wi-Fi at home and a PC / Mac / NAS: I don't want to touch the SD card" *(Online Mode)*
-1. Launch **DMD Media Showcase** on your PC, Mac, or Docker NAS (`http://localhost:8890/`). **Nothing to configure**: encrypted keys and keyless sources are already built in.
-2. Open your ArcadeMatrix Web page (`http://arcadematrix.local` or its IP) $\to$ **`Settings -> Showcase Server`**.
-3. Turn on **Enable DMD Media Showcase Server** and click **Save**: the status badge turns green (**`🟢 Communication OK`**).
-4. In **Screens / Rotation**, add **Retro Games**, **Movies**, **TV Series**, or **Anime**. Done — it streams automatically!
+1. Simply launch **DMD Media Showcase** on your PC (`Start_Showcase_Windows.bat` / `.exe`), Mac, or Docker NAS. **Nothing else to configure on the server**: the Web UI at `http://localhost:8890/` is purely for **live monitoring** (your DMD will register and appear there on its own — no need to create a matrix manually) and optional customization.
+2. Open your ArcadeMatrix Web page (`http://arcadematrix.local` or its IP) $\to$ **`System -> 🔄 MQTT & API -> 🎬 DMD Media Showcase`** *(tucked inside `MQTT & API` because Showcase is an optional companion feature)*.
+3. Set **Enable DMD Media Showcase** to **Enabled**, click **🔄 Test** (if `http://dmdmediashowcase.local:8890` reports `🔴 Unreachable` over Wi-Fi on your router, enter your PC's LAN IP `http://192.168.1.XX:8890` shown in the server console), verify **`🟢 Communication OK`**, and click **Save Showcase Settings** at the bottom.
+4. Open the **`Display`** tab, click **➕ Add to Loop** on **Retro Games Showcase**, **Movie Showcase**, **Series Showcase**, or **Anime Showcase** (use **⚙️ Configure -> 🔄 Sync** if you want to filter by console/genre), and click **Save Rotation Playlist** (or **👁️ Preview Live**). Allow 10–20 s for the very first item — it streams automatically!
 
 ---
 

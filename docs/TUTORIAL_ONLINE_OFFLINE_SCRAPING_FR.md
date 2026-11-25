@@ -26,10 +26,10 @@ Imaginez votre écran LED **ArcadeMatrix** (ESP32, ESP32-S3 ou Raspberry Pi) com
 ## 2. Quoi faire exactement selon votre cas ? (4 Recettes Pas-à-Pas)
 
 ### 🟢 Cas n°1 — « J'ai le Wi-Fi chez moi et un PC / Mac / NAS : je veux zéro manipulation de carte SD » *(Mode Online)*
-1. Lancez **DMD Media Showcase** sur votre PC, Mac ou NAS Docker (`http://localhost:8890/`). **Rien à configurer** : les sources et clés chiffrées sont déjà intégrées.
-2. Ouvrez la page Web de votre écran ArcadeMatrix (`http://arcadematrix.local` ou son IP) $\to$ **`Système -> Showcase Server`**.
-3. Activez **Enable DMD Media Showcase Server** et cliquez sur **Sauvegarder** : le voyant passe à **`🟢 Communication OK`**.
-4. Dans **Écrans / Rotation**, ajoutez **Retro Games**, **Movies**, **TV Series** ou **Anime**. C'est fini, ça diffuse tout seul !
+1. Lancez simplement **DMD Media Showcase** sur votre PC (`Start_Showcase_Windows.bat` / `.exe`), Mac ou NAS Docker. **Il n'y a rien d'autre à faire côté serveur** : l'interface Web sur `http://localhost:8890/` sert uniquement au **monitoring** (votre matrice s'y affichera toute seule, n'y créez pas de matrice manuellement) et à la personnalisation optionnelle.
+2. Ouvrez la page Web de votre écran ArcadeMatrix (`http://arcadematrix.local` ou son IP) $\to$ **`Système -> 🔄 MQTT & API -> 🎬 DMD Media Showcase`** *(rangé ici car il s'agit d'une option compagnon annexe)*.
+3. Passez **Activer DMD Media Showcase** sur **Activé**, cliquez sur **🔄 Tester** (si `http://dmdmediashowcase.local:8890` affiche `🔴 Injoignable` en Wi-Fi sur votre box, mettez directement l'IP locale de votre PC `http://192.168.1.XX:8890` visible dans la console du `.bat`), vérifiez **`🟢 Communication OK`**, puis cliquez tout en bas sur **Enregistrer les paramètres Showcase**.
+4. Allez dans l'onglet **`Affichage`**, cliquez sur **➕ Ajouter à la boucle** sur **Vitrine Jeux Rétro**, **Vitrine Cinéma & Films**, **Vitrine Séries TV** ou **Vitrine Anime & OAV** (bouton **⚙️ Configurer -> 🔄 Sync** si vous souhaitez filtrer par console/genre), puis cliquez sur **Enregistrer la playlist** (ou **👁️ Afficher en direct (Live)**). Laissez 10 à 20 s au 1er média : ça diffuse tout seul !
 
 ---
 

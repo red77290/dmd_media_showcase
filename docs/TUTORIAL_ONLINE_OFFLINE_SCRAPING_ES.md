@@ -26,10 +26,10 @@ Imagina tu pantalla LED **ArcadeMatrix** (ESP32, ESP32-S3 o Raspberry Pi) como u
 ## 2. ¿Qué hacer exactamente según tu instalación? (4 Recetas Paso a Paso)
 
 ### 🟢 Caso n.º 1 — « Tengo Wi-Fi en casa y un PC / Mac / NAS: no quiero tocar la tarjeta SD » *(Modo Online)*
-1. Inicia **DMD Media Showcase** en tu PC, Mac o NAS Docker (`http://localhost:8890/`). **Nada que configurar**: las fuentes y claves cifradas ya vienen incluidas.
-2. Abre la web de tu pantalla ArcadeMatrix (`http://arcadematrix.local` o su IP) $\to$ **`Sistema -> Showcase Server`**.
-3. Activa **Enable DMD Media Showcase Server** y pulsa **Guardar**: el indicador pasa a **`🟢 Communication OK`**.
-4. En **Pantallas / Rotación**, añade **Retro Games**, **Movies**, **TV Series** o **Anime**. ¡Listo, transmite solo!
+1. Inicia simplemente **DMD Media Showcase** en tu PC (`Start_Showcase_Windows.bat` / `.exe`), Mac o NAS Docker. **No hay nada más que configurar en el servidor**: la interfaz Web en `http://localhost:8890/` sirve únicamente para **monitorización en vivo** (tu DMD se registrará y aparecerá allí solo, sin necesidad de crear una matriz a mano) y personalización opcional.
+2. Abre la web de tu pantalla ArcadeMatrix (`http://arcadematrix.local` o su IP) $\to$ **`Sistema -> 🔄 MQTT & API -> 🎬 DMD Media Showcase`** *(ubicado ahí por tratarse de una función complementaria opcional)*.
+3. Pasa **Activar DMD Media Showcase** a **Activado**, pulsa **🔄 Test** (si `http://dmdmediashowcase.local:8890` indica `🔴 Inalcanzable` por Wi-Fi en tu router, introduce directamente la IP local de tu PC `http://192.168.1.XX:8890` mostrada en la consola), verifica **`🟢 Comunicación OK`** y pulsa abajo en **Guardar ajustes Showcase**.
+4. Entra en la pestaña **`Pantalla`**, pulsa **➕ Añadir al bucle** en **Vitrina Juegos Retro**, **Movie Showcase**, **Series Showcase** o **Anime Showcase** (usa **⚙️ Configurar -> 🔄 Sync** si quieres filtrar por consola/género) y pulsa **Guardar lista de rotación**. Espera de 10 a 20 s en el primer medio: ¡transmite solo!
 
 ---
 

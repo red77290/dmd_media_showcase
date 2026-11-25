@@ -123,13 +123,14 @@ Open `http://dmdmediashowcase.local:8890/` (or `http://<server-ip>:8890/`) in yo
 ### 3.1 Client-Driven Multi-Engine DMDs (`ArcadeMatrix` ESP32 & `ArcadeMatrix_RPi`)
 
 1. Open your DMD WebUI (`http://arcadematrix.local/` on ESP32 or `http://arcadematrix.local:8080/` on Raspberry Pi).
-2. Navigate to **`Settings -> Showcase Server`** (`#mqtt-subtab-showcase`):
-   - The **Showcase Server URL** is already pre-filled as `http://dmdmediashowcase.local:8890` and **disabled by default** (`⚪ Disabled`) so the DMD makes zero network requests if `dmd_media_showcase` is not installed.
-   - Toggle **Enable DMD Media Showcase Server** ON and click **Save Showcase Server** (or **Test Connection**).
-   - Verify that the live connection status indicator turns green: **`🟢 Communication OK`**.
-3. Go to the **Screens / Rotation** tab, add any of the 4 Showcase engines (`retro_games`, `movie_showcase`, `series_showcase`, `anime_showcase`), and set the number of **Media** items per rotation turn.
-4. The DMD WebUI automatically queries `GET /api/v1/{domain}/filters?lang={ui_lang}` from the Showcase server to populate the **Systems** (`55+` platforms), **Genres**, and **Decades** dropdowns dynamically (filtering available genres/decades when you select a system such as `NES`, `CPS-2`, or `Neo-Geo`).
-5. Adjust **Synopsis Scroll Speed** (`1 = Slow` to `10 = Turbo`, up to `160 px/s`) and click **Save** — the DMD automatically streams via **`MQTT+TCP`** (MQTT `:1883` + plain-HTTP `1.1` `Content-Length` lossless `DMDZ` v2 on `:8890`: `25 MHz` self-cleaning SD staging on `esp32dev`, `100% PSRAM` preload / `1 MB` PSRAM SPSC ring with `0` SD on `ESP32-S3`, and RAM preload with raw `DMDS` fallback on `ArcadeMatrix_RPi`; stateless `HTTP` polling and optional `MQTT+UDP` are also supported).
+2. Navigate to **`System -> 🔄 MQTT & API -> 🎬 DMD Media Showcase`** (`#mqtt-subtab-showcase` — *tucked inside network sub-tabs because Showcase is an optional companion feature*):
+   - On the Showcase server side (`http://localhost:8890/`), **nothing needs to be configured** and you do not need to manually add your matrix: the Dashboard is strictly for live monitoring (your DMD registers there automatically) and optional customization.
+   - The **Showcase Server URL** is pre-filled as `http://dmdmediashowcase.local:8890` and **disabled by default** (`⚪ Disabled`) so the DMD makes zero network requests if `dmd_media_showcase` is not installed.
+   - Set **Enable DMD Media Showcase** to **Enabled** and click **🔄 Test** (if your Wi-Fi router filters `.local` multicast across 2.4 / 5 GHz bands, enter your PC's LAN IP directly as `http://192.168.1.XX:8890`).
+   - Verify **`🟢 Communication OK`**, then click **Save Showcase Settings** at the bottom *(until saved, Showcase engines display "Configure Server URL" on the matrix)*.
+3. Open the **`Display`** tab, click **➕ Add to Loop** on any of the 4 Showcase engines (**Retro Games Showcase** `retro_games`, **Movie Showcase** `movie_showcase`, **Series Showcase** `series_showcase`, **Anime Showcase** `anime_showcase`), set the number of **Media** items per turn, and click **Save Rotation Playlist** (or **👁️ Preview Live** to launch immediately).
+4. Inside **⚙️ Configure** on a Showcase screen, click **🔄 Sync** to refresh the **Systems** (`55+` platforms), **Genres**, and **Decades** lists from `GET /api/v1/{domain}/filters?lang={ui_lang}` (leave empty to browse everything at random).
+5. Adjust **Synopsis Scroll Speed** (`1 = Slow` to `10 = Turbo`, up to `160 px/s`) and click **💾 Save Screen Configuration** — the DMD automatically streams via **`MQTT+TCP`** (MQTT `:1883` + plain-HTTP `1.1` `Content-Length` lossless `DMDZ` v2 on `:8890`: `25 MHz` self-cleaning SD staging on `esp32dev`, `100% PSRAM` preload / `1 MB` PSRAM SPSC ring with `0` SD on `ESP32-S3`, and RAM preload with raw `DMDS` fallback on `ArcadeMatrix_RPi`; stateless `HTTP` polling and optional `MQTT+UDP` are also supported).
 
 ### 3.2 Server-Managed Hybrid (Model 2A) & Passive UDP (Model 2B) ESP32 Receivers (`config_source: "server"`)
 
