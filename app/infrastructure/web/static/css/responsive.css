@@ -4,8 +4,12 @@
   .studio-search-bar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .studio-grid .form-grid-3 {
+  .studio-grid .form-grid-3,
+  .batch-card-studio-panel .form-grid-3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .batch-card-studio-panel .layout-cards-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .slot-pill {
     max-width: 145px;
@@ -13,7 +17,8 @@
 }
 
 @media (max-width: 1024px) {
-  .studio-grid {
+  .studio-grid,
+  .batch-card-studio-panel {
     grid-template-columns: 1fr;
   }
 }
@@ -37,7 +42,8 @@
   .cand-grid {
     grid-template-columns: 1fr;
   }
-  .studio-grid {
+  .studio-grid,
+  .batch-card-studio-panel {
     grid-template-columns: 1fr;
   }
   .studio-search-bar {
@@ -46,7 +52,8 @@
   .layout-cards-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .studio-dom-tabs {
+  .studio-dom-tabs,
+  .batch-preset-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -78,6 +85,8 @@
   .form-grid-2,
   .form-grid-3,
   .studio-grid .form-grid-3,
+  .batch-card-studio-panel .form-grid-3,
+  #tab-batch .form-grid,
   .kpi-grid,
   .providers-grid,
   .provider-selects-grid,
@@ -121,6 +130,7 @@
   }
   .batch-card-studio-panel {
     grid-template-columns: 1fr;
+    padding: 12px;
   }
 }
 
@@ -128,8 +138,12 @@
   .tabs {
     grid-template-columns: 1fr;
   }
-  .layout-cards-grid {
+  .layout-cards-grid,
+  .batch-card-studio-panel .layout-cards-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .batch-preset-grid {
+    grid-template-columns: 1fr;
   }
   .form-actions button,
   .btn-zip-dl {

@@ -1474,7 +1474,7 @@
           <div class="batch-card-sim-box">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
               <b style="font-size:0.82rem;color:var(--cyan)" data-i18n="batch_sim_preview_title">💡 Live Card Preview (&lt;100ms)</b>
-              <select id="batch-led-mode" onchange="redrawBatchCardPreviewFrame()" style="width:auto;height:30px;line-height:28px;font-size:0.76rem;padding:0 24px 0 8px">
+              <select id="batch-led-mode" onchange="redrawBatchCardPreviewFrame()" style="width:auto;max-width:100%;min-width:0;height:30px;line-height:28px;font-size:0.76rem;padding:0 26px 0 8px">
                 <option value="smd_round" data-i18n="sim_mode_smd">💡 SMD Round LEDs</option>
                 <option value="pixel_grid" data-i18n="sim_mode_grid">🟦 Square LED Grid</option>
                 <option value="raw" data-i18n="sim_mode_raw">🖼️ Raw 1:1 Pixels</option>
@@ -1519,7 +1519,7 @@
 
           <div class="field" style="justify-content:center">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:#fff;font-weight:600;margin-top:18px">
-              <input type="checkbox" id="batch-let-me-handle" checked style="width:18px;height:18px" />
+              <input type="checkbox" id="batch-let-me-handle" checked style="width:18px;height:18px;flex:0 0 18px" />
               <span data-i18n="batch_lbl_lmh">🚀 Let Me Handle It (Auto-Action AI + Smart LED Color Boost)</span>
             </label>
           </div>
@@ -1527,13 +1527,13 @@
 
         <!-- COLLAPSIBLE ADVANCED ACCORDION -->
         <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
-          <button type="button" class="secondary" style="margin:0;width:100%;justify-content:space-between" onclick="toggleBatchAdvanced()">
+          <button type="button" class="secondary batch-adv-toggle-btn" onclick="toggleBatchAdvanced()">
             <span data-i18n="batch_adv_toggle">⚙️ Advanced Options (Chapters, Encodings, Workers &amp; Folder Naming)</span>
             <span id="batch-adv-chevron">▸</span>
           </button>
 
           <div id="batch-advanced-body" style="display:none;margin-top:14px">
-            <div class="form-grid">
+            <div class="form-grid" style="align-items:start">
               <div class="field">
                 <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-card" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_card">Include Info Card</span></label>
                 <label style="display:flex;align-items:center;gap:8px;margin-top:6px"><input type="checkbox" id="batch-chk-jacket" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_jacket">Include Jacket / Poster Phase</span></label>
