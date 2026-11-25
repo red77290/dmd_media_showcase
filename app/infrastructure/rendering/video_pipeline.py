@@ -25,23 +25,38 @@ from app.infrastructure.scrapers.youtube_resolver import (
 logger = logging.getLogger("dmd_showcase.converter")
 
 
+_SCENE_HINT_MAP = {
+    "platform": "platformer",
+    "fighting": "platformer",
+    "beatemup": "platformer",
+    "runandgun": "platformer",
+    "shootemup": "action_horizontal",
+    "maze": "top_down_isometric",
+}
+
+
 def resolve_domain_scene_type_hint(domain: str = "", genre_hint: str = "") -> str:
     """
     Map known Showcase domain + game genre metadata to a deterministic `dmd_gif_converter`
     `scene_type` so 2D platformers, VS fighters, beat 'em ups, and run & gun games always
     use the unified floor/tall-sprite framing model instead of cinema dialogue profiles.
     """
-    if (domain or "").strip().lower() != "games":
+    if (domain or "").strip().lower() != "games" or not (genre_hint or "").strip():
         return ""
-    raw_g = (genre_hint or "").split("•")[0].strip()
-    canon_g = resolve_canonical_genre("games", raw_g) if raw_g else ""
-    if canon_g in ("platform", "fighting", "beatemup", "runandgun", "action"):
-        return "platformer"
-    if canon_g == "shootemup":
-        return "action_horizontal"
-    if canon_g == "maze":
-        return "top_down_isometric"
-    return ""
+    fallback_action = ""
+    bullet_parts = [p.strip() for p in genre_hint.split("•") if p.strip()]
+    candidates = list(bullet_parts)
+    for part in bullet_parts:
+        for sep in (",", "|", ";", "/"):
+            if sep in part:
+                candidates.extend(sub.strip() for sub in part.split(sep) if sub.strip())
+    for raw_g in candidates:
+        canon_g = resolve_canonical_genre("games", raw_g)
+        if canon_g in _SCENE_HINT_MAP:
+            return _SCENE_HINT_MAP[canon_g]
+        if canon_g == "action":
+            fallback_action = "platformer"
+    return fallback_action
 
 
 def build_video_assets_worker_task(
