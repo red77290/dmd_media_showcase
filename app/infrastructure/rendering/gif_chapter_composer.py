@@ -558,8 +558,8 @@ def compose_candidate_gif_worker_task(
                     total_frames += n_m
                     chapter_segments_written += 1
 
-            # 4. In-Game Screenshots / Backdrops (`0..4`)
-            snap_limit = max(0, min(4, int(chapters.snapshot_count)))
+            # 4. In-Game Screenshots / Backdrops (`0..5`)
+            snap_limit = max(0, min(5, int(chapters.snapshot_count)))
             if snap_limit > 0:
                 snap_candidates = list(cand.snapshot_urls or [])
                 if not snap_candidates and cand.backdrop_url:

@@ -35,8 +35,10 @@ from app.infrastructure.scrapers.http_utils import clean_synopsis_text
 
 logger = logging.getLogger("dmd_showcase.scrapers.translation")
 
-_WORD_RE = re.compile(r"[a-zàâäáãåçéèêëíìîïñóòôöõúùûüýÿœæß]+", re.I)
+_WORD_RE = re.compile(r"[a-zàâäáãåçéèêëíìîïñóòôöõúùûüýÿœæßąćęłńśźż]+", re.I)
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+_HANGUL_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff]")
+_CYRILLIC_RE = re.compile(r"[\u0400-\u04ff]")
 
 _EN_STOPWORDS: Set[str] = {
     "the", "and", "with", "from", "into", "that", "this", "their", "his", "her",
@@ -72,6 +74,14 @@ _TARGET_STOPWORDS: Dict[str, Set[str]] = {
         "com", "uma", "dos", "das", "para", "pelo", "pela", "seus", "entre",
         "jogo", "mundo", "história", "contra", "quando", "onde", "está",
     },
+    "nl": {
+        "een", "het", "van", "voor", "met", "niet", "zijn", "ook", "door", "maar",
+        "spel", "wereld", "tegen", "wordt", "deze", "hun", "over",
+    },
+    "pl": {
+        "jest", "nie", "się", "dla", "oraz", "przez", "jako", "jego", "jej", "ich",
+        "świat", "świata", "gra", "gry", "przeciwko", "który", "która",
+    },
 }
 
 _CATALOG_BY_DOMAIN: Dict[str, Dict[str, Dict[str, Any]]] = {
@@ -95,8 +105,12 @@ def is_likely_english_synopsis(text: str, target_lang: str) -> bool:
     short_lang = normalize_short_lang(target_lang)
     if short_lang == "en" or not text or len(text.strip()) < 12:
         return False
-    if short_lang == "ja":
+    if short_lang in ("ja", "zh"):
         return len(_CJK_RE.findall(text)) < 2
+    if short_lang == "ko":
+        return len(_HANGUL_RE.findall(text)) < 2
+    if short_lang == "ru":
+        return len(_CYRILLIC_RE.findall(text)) < 2
 
     words = [w.lower() for w in _WORD_RE.findall(text)]
     if len(words) < 4:

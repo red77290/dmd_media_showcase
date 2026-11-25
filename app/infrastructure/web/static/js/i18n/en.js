@@ -426,7 +426,7 @@ export const I18N_EN = {
     batch_chk_jacket: "Include Jacket / Poster Phase",
     batch_chk_marquee: "Include Marquee Phase",
     batch_chk_video: "Include Gameplay / Trailer Video",
-    batch_lbl_snaps: "Screenshots Count (0–4)",
+    batch_lbl_snaps: "Screenshots Count (0–5)",
     batch_lbl_pan_dur: "Panorama Duration (s)",
     batch_lbl_fps: "Target GIF FPS (6–30)",
     batch_lbl_dither: "GIF Dithering",
@@ -459,5 +459,13 @@ export const I18N_EN = {
     batch_reattach_prompt_fmt: "📂 Persistent task recovered ({n} file(s) ready on server): click Reconnect to resume writing into « {name} », or download the .zip pack.",
     batch_reattach_no_handle_fmt: "📂 Persistent task recovered ({n} file(s) ready on server): choose a target folder to write directly, or download the .zip pack.",
     batch_reattach_streaming_ok: "🔄 Persistent task reconnected automatically — streaming directly into « {name} ».",
-    batch_banner_ready_fmt: "✅ Batch pack ready: {done}/{total} ({unacked} file(s) to collect)"
+    batch_banner_ready_fmt: "✅ Batch pack ready: {done}/{total} ({unacked} file(s) to collect)",
+    batch_lbl_import_dmd: "📋 Import Studio Style & Resolution from DMD Profile",
+    batch_opt_import_dmd_none: "— Manual / Custom Batch Settings —",
+    batch_msg_dmd_imported: "✅ Imported Studio style & resolution from « {name} ».",
+    batch_sim_preview_title: "💡 Live HUB75 Card Preview (<100ms)",
+    batch_ph_sample_search: "Test any title in selected language (Metal Slug, Akira...)",
+    batch_lbl_min_rating: "Min ★ Rating (0 = All)",
+    batch_opt_pan_scroll: "Scrolling Panorama (YOKO/TATE)",
+    batch_opt_pan_static: "Static Fitted Artwork"
 };

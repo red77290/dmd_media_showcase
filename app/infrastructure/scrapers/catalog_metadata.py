@@ -15,7 +15,12 @@ TMDB_LANG_MAP: Dict[str, str] = {
     "de": "de-DE",
     "it": "it-IT",
     "pt": "pt-BR",
+    "nl": "nl-NL",
+    "pl": "pl-PL",
+    "ru": "ru-RU",
     "ja": "ja-JP",
+    "ko": "ko-KR",
+    "zh": "zh-CN",
 }
 
 SYSTEM_METADATA: Dict[str, Dict[str, Any]] = {

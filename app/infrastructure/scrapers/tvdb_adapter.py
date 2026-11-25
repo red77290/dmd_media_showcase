@@ -36,7 +36,12 @@ TVDB_LANG_MAP = {
     "it": "ita",
     "en": "eng",
     "pt": "por",
+    "nl": "nld",
+    "pl": "pol",
+    "ru": "rus",
     "ja": "jpn",
+    "ko": "kor",
+    "zh": "zho",
 }
 
 _tvdb_token_cache: Dict[str, Any] = {

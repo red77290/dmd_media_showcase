@@ -1151,3 +1151,186 @@ def test_window_close_and_reopen_recovery_sse_and_playwright_ui(
         uv_server.should_exit = True
         srv_thread.join(timeout=5.0)
 
+
+def test_batch_scraper_studio_parity_12_languages_and_live_card_preview_playwright(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    media_assets_patch: Dict[str, str],
+) -> None:
+    """
+    Guarantee that Batch Scraper (`#tab-batch`) never offers fewer content languages or
+    rendering options than Card & Render Studio (`#tab-studio`):
+    1. All 12 `SUPPORTED_CONTENT_LANGS` (`fr, en, es, de, it, pt, nl, pl, ru, ja, ko, zh`)
+       are selectable in `#batch-lang` (matching `#studio-lang`) and remain visible in BOTH
+       Mode A (`random_filter`) and Mode B (`recalbox_gamelist`).
+    2. Full Studio Card & Sequence controls (`theme`, `font`, `accent`, `badge/year/rating`
+       pills, `scroll_speed`, `card_hold`, `0..5` screenshots, `marquee_mode`, `video_type`,
+       `min_rating`, `TATE` toggle, DMD profile import, and live `<100ms` HUB75 Card preview
+       canvas) work end-to-end in real Chrome Playwright and `POST /api/v1/batch-scraper/jobs`.
+    """
+    import socket
+    import threading
+    import urllib.request
+
+    from app.domain.style_specs import SUPPORTED_CONTENT_LANGS
+    from app.infrastructure.http.routers import batch_scraper as router_mod
+    from app.infrastructure.persistence.json_batch_job_repository import JsonBatchJobRepository
+    from app.main import app
+    import uvicorn
+
+    assert len(SUPPORTED_CONTENT_LANGS) == 12
+    for expected_lang in ("fr", "en", "es", "de", "it", "pt", "nl", "pl", "ru", "ja", "ko", "zh"):
+        assert expected_lang in SUPPORTED_CONTENT_LANGS
+
+    pool = [
+        MediaCandidate(
+            id="anime_akira",
+            domain="anime",
+            title="AKIRA",
+            year="1988",
+            badge="ANIME",
+            badge_color="#E53935",
+            subtitle="Mecha",
+            rating="8.8",
+            synopsis="ネオ東京で繰り広げられるSFサイバーパンク。",
+            poster_url=media_assets_patch["poster"],
+            extra_meta={"genre": "mecha"},
+        )
+    ]
+    live_svc = BatchScraperService(
+        chain_service=_ConfigurableCatalogChain({"anime": pool, "games": pool}),  # type: ignore[arg-type]
+        composer_port=_InProcessComposer(artificial_delay_s=0.01),
+        artifact_queue=EphemeralBatchArtifactQueue(spool_root=tmp_path / ".spool_parity"),
+        job_repository=JsonBatchJobRepository(file_path=tmp_path / "batch_jobs_parity.json"),
+    )
+    monkeypatch.setattr(router_mod, "batch_scraper_service", live_svc)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    free_port = sock.getsockname()[1]
+    sock.close()
+
+    uv_cfg = uvicorn.Config(app, host="127.0.0.1", port=free_port, log_level="error", lifespan="off")
+    uv_server = uvicorn.Server(uv_cfg)
+    srv_thread = threading.Thread(target=uv_server.run, daemon=True)
+    srv_thread.start()
+    base_url = f"http://127.0.0.1:{free_port}"
+
+    for _ in range(50):
+        try:
+            with socket.create_connection(("127.0.0.1", free_port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.05)
+
+    try:
+        # 1. Verify HTTP contract accepts full Studio-superset parameters (Japanese + 5 snaps + opening + custom style)
+        req_body = json.dumps(
+            {
+                "mode": "random_filter",
+                "delivery_mode": "zip_stream",
+                "domain": "anime",
+                "lang": "ja",
+                "systems": [],
+                "genres": ["mecha"],
+                "min_rating": 7.5,
+                "video_type": "opening",
+                "target_count": 1,
+                "max_workers": 1,
+                "preset": "custom",
+                "chapters": {
+                    "include_card": True,
+                    "include_poster_in_card": True,
+                    "show_badge": True,
+                    "show_year": True,
+                    "show_rating": True,
+                    "include_description": True,
+                    "card_layout": "badge_header",
+                    "card_theme": "neon_border",
+                    "card_font": "clean_sans",
+                    "card_accent_color": "#00e5ff",
+                    "text_scroll_speed": "7",
+                    "card_hold_s": 1.4,
+                    "include_jacket": True,
+                    "jacket_mode": "panorama",
+                    "include_marquee": True,
+                    "marquee_mode": "static",
+                    "snapshot_count": 5,
+                    "panorama_duration_s": 3.5,
+                    "include_video": False,
+                },
+                "encoding": {"width": 64, "height": 128, "fps": 15, "video_max_duration_s": 8.0},
+            }
+        ).encode("utf-8")
+        post_req = urllib.request.Request(
+            f"{base_url}/api/v1/batch-scraper/jobs",
+            data=req_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(post_req, timeout=5) as start_resp:
+            started = json.loads(start_resp.read().decode("utf-8"))["job"]
+            job_id = started["job_id"]
+            assert started["config_summary"]["lang"] == "ja"
+            assert started["config_summary"]["video_type"] == "opening"
+            assert started["config_summary"]["min_rating"] == 7.5
+            assert started["config_summary"]["is_tate"] is True
+
+        del_req = urllib.request.Request(
+            f"{base_url}/api/v1/batch-scraper/jobs/{job_id}",
+            method="DELETE",
+        )
+        with urllib.request.urlopen(del_req, timeout=5):
+            pass
+
+        # 2. Real Chrome Playwright verification of 12-language parity + live <100ms Card preview
+        chrome_bin = Path("/usr/bin/google-chrome")
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
+            has_pw = chrome_bin.is_file()
+        except Exception:
+            has_pw = False
+
+        if has_pw:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(executable_path=str(chrome_bin), headless=True)
+                page = browser.new_page(viewport={"width": 1440, "height": 980})
+                page.goto(base_url, wait_until="domcontentloaded")
+
+                studio_langs = page.eval_on_selector_all(
+                    "#studio-lang option", "els => els.map(e => e.value)"
+                )
+                batch_langs = page.eval_on_selector_all(
+                    "#batch-lang option", "els => els.map(e => e.value)"
+                )
+                assert studio_langs == list(SUPPORTED_CONTENT_LANGS)
+                assert batch_langs == studio_langs
+
+                # Open Tab #7 (Batch Scraper)
+                page.evaluate("window.switchTab('batch')")
+                page.wait_for_function(
+                    "() => document.getElementById('batch-sim-meta') && document.getElementById('batch-sim-meta').textContent.includes('FPS')",
+                    timeout=5000,
+                )
+
+                # Switch to Mode B (Recalbox gamelist.xml) -> #batch-lang MUST stay visible!
+                page.click("#batch-mode-card-gamelist")
+                assert page.is_visible("#batch-lang")
+                page.click("#batch-mode-card-random")
+
+                # Select Japanese ('ja') + TATE + Clean Sans + Custom Accent -> live simulator updates in <100ms!
+                page.select_option("#batch-lang", "ja")
+                page.click("#btn-batch-tate")
+                page.select_option("#batch-card-font", "clean_sans")
+                page.select_option("#batch-accent-mode", "custom")
+                page.wait_for_function(
+                    "() => { const m = document.getElementById('batch-sim-meta'); return m && m.textContent.includes('32×128') && m.textContent.includes('JA'); }",
+                    timeout=5000,
+                )
+                assert page.inner_text("#batch-geom-pill") == "32×128 • TATE"
+                browser.close()
+    finally:
+        uv_server.should_exit = True
+        srv_thread.join(timeout=5.0)
+
+

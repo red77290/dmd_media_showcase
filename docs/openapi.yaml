@@ -21,7 +21,7 @@ info:
     \ and preloaded into RAM on `ArcadeMatrix_RPi`,\n  2. **Passive UDP `DMDF` (`:4210`,\
     \ `10`-byte Little-Endian `<4sHBBH` header + `<= 1408B` RGB565LE chunks)** — full\
     \ AsyncAPI 2.6 spec at [`/asyncapi.yaml`](/asyncapi.yaml)."
-  version: 1.2.1
+  version: 1.2.2
 paths:
   /api/v1/asyncapi.yaml:
     get:
@@ -2430,7 +2430,7 @@ components:
         snapshot_count:
           anyOf:
           - type: integer
-            maximum: 4.0
+            maximum: 5.0
             minimum: 0.0
           - type: 'null'
           title: Snapshot Count
@@ -4243,6 +4243,16 @@ components:
           minimum: 0.0
           title: Min Rating
           default: 0.0
+        video_type:
+          type: string
+          enum:
+          - any
+          - opening
+          - ending
+          - pv
+          - trailer
+          title: Video Type
+          default: any
         target_count:
           type: integer
           maximum: 10000.0

@@ -426,7 +426,7 @@ export const I18N_ES = {
     batch_chk_jacket: "Incluir Fase Carátula / Póster",
     batch_chk_marquee: "Incluir Fase Marquee",
     batch_chk_video: "Incluir Vídeo Gameplay / Tráiler",
-    batch_lbl_snaps: "Número de Capturas (0–4)",
+    batch_lbl_snaps: "Número de Capturas (0–5)",
     batch_lbl_pan_dur: "Duración Panorama (s)",
     batch_lbl_fps: "FPS Objetivo del GIF (6–30)",
     batch_lbl_dither: "Tramado (Dithering GIF)",
@@ -459,5 +459,13 @@ export const I18N_ES = {
     batch_reattach_prompt_fmt: "📂 Tarea persistente recuperada ({n} archivo(s) listos en el servidor): pulsa Reconectar para reanudar la escritura en « {name} », o descarga el .zip.",
     batch_reattach_no_handle_fmt: "📂 Tarea persistente recuperada ({n} archivo(s) listos en el servidor): elige una carpeta de destino o descarga el .zip.",
     batch_reattach_streaming_ok: "🔄 Tarea persistente reconectada automáticamente — escribiendo en « {name} ».",
-    batch_banner_ready_fmt: "✅ Paquete Batch listo: {done}/{total} ({unacked} archivo(s) por recoger)"
+    batch_banner_ready_fmt: "✅ Paquete Batch listo: {done}/{total} ({unacked} archivo(s) por recoger)",
+    batch_lbl_import_dmd: "📋 Importar Estilo Studio y Resolución desde Perfil DMD",
+    batch_opt_import_dmd_none: "— Ajustes Batch Manuales / Personalizados —",
+    batch_msg_dmd_imported: "✅ Estilo Studio y resolución importados desde « {name} ».",
+    batch_sim_preview_title: "💡 Vista Previa Ficha HUB75 (<100ms)",
+    batch_ph_sample_search: "Probar un título en el idioma elegido (Metal Slug, Akira...)",
+    batch_lbl_min_rating: "Nota ★ Mín. (0 = Todos)",
+    batch_opt_pan_scroll: "Panorama Deslizante (YOKO/TATE)",
+    batch_opt_pan_static: "Arte Estático Ajustado"
 };
