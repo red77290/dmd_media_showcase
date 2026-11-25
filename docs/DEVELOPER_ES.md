@@ -74,7 +74,7 @@ dmd_media_showcase/
 │   │   │   ├── series/                   # tmdb_series_adapter, tvmaze_adapter (+ tvdb_adapter)
 │   │   │   └── anime/                    # jikan_animethemes_adapter, anilist_adapter
 │   │   ├── streaming/                    # FfmpegUdpClockStreamer (Modo 2B Pasivo :4210 y MQTT+UDP DMDF opcional)
-│   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.18)
+│   │   └── transcoder/                   # DmdConverterAdapter (dmd_gif_converter >= 8.0.19)
 │   ├── security/                         # Bóveda nativa de 3 niveles y redacción de logs
 │   │   ├── vault.py                      # Cargador en tiempo de ejecución de _prod_vault*.so
 │   │   └── log_redactor.py               # SecretRedactingLogFilter + httpx/httpcore en WARNING
