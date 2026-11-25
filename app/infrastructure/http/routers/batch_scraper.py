@@ -66,7 +66,7 @@ class ChapterOverridesPayload(BaseModel):
     jacket_mode: Optional[Literal["panorama", "static"]] = None
     include_marquee: Optional[bool] = None
     marquee_mode: Optional[Literal["panorama", "static"]] = None
-    snapshot_count: Optional[int] = Field(default=None, ge=0, le=4)
+    snapshot_count: Optional[int] = Field(default=None, ge=0, le=5)
     panorama_duration_s: Optional[float] = Field(default=None, ge=1.5, le=15.0)
     include_video: Optional[bool] = None
 
@@ -103,6 +103,7 @@ class StartBatchJobRequest(BaseModel):
     genres: List[str] = Field(default_factory=list)
     decades: List[str] = Field(default_factory=list)
     min_rating: float = Field(default=0.0, ge=0.0, le=10.0)
+    video_type: Literal["any", "opening", "ending", "pv", "trailer"] = "any"
     target_count: int = Field(default=100, ge=1, le=10000)
     max_workers: int = Field(default=0, ge=0, le=8)
     ffmpeg_threads_per_worker: int = Field(default=1, ge=1, le=4)
@@ -202,6 +203,7 @@ async def create_batch_scraper_job(req: StartBatchJobRequest) -> Dict[str, Any]:
         genres=tuple(req.genres),
         decades=tuple(req.decades),
         min_rating=req.min_rating,
+        video_type=req.video_type,
         target_count=req.target_count,
         max_workers=eff_workers,
         ffmpeg_threads_per_worker=req.ffmpeg_threads_per_worker,

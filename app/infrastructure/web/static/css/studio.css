@@ -506,3 +506,25 @@ input[type="color"].studio-color {
   font-size: 0.82rem;
   color: #e0fbff;
 }
+.batch-card-studio-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.95fr);
+  gap: 16px;
+  align-items: start;
+  padding: 14px;
+  border-radius: 11px;
+  background: #0b1018;
+  border: 1px solid var(--border);
+}
+.batch-card-sim-box {
+  padding: 12px;
+  border-radius: 10px;
+  background: #080c13;
+  border: 1px solid #1e293b;
+}
+#tab-batch .form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px 18px;
+  align-items: end;
+}

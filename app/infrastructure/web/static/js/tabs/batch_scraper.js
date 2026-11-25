@@ -29,8 +29,19 @@ import {
   requestDirectoryReadWritePermission,
   startStatusOnlySseObserver
 } from '../batch_session_recovery.js';
+import {
+  applyBatchPresetControls,
+  getBatchAccentColorValue,
+  importBatchStyleFromDmd,
+  populateBatchDmdProfileSelector,
+  requestBatchCardPreviewNow,
+  scheduleBatchCardPreview,
+  syncBatchCardLayoutBoxVisibility,
+  syncBatchGeometryUi,
+  updateBatchCardSliderLabels
+} from '../batch_studio_parity.js';
 import { getCurrentUiLang, t } from '../i18n/index.js';
-import { ensureDomainFilterCatalog } from '../state.js';
+import { ensureDomainFilterCatalog, uiState } from '../state.js';
 
 const batchRuntime = {
   initialized: false,
@@ -157,13 +168,37 @@ export function isMobileOrTabletBrowser() {
 }
 
 export async function initBatchScraperIfNeeded() {
+  populateBatchDmdProfileSelector();
   if (!batchRuntime.initialized) {
     batchRuntime.initialized = true;
+    const langEl = document.getElementById('batch-lang');
+    if (langEl && uiState.lastServerConfig && uiState.lastServerConfig.default_lang) {
+      langEl.value = uiState.lastServerConfig.default_lang;
+    }
     updateDestinationCapabilitiesUi();
+    updateBatchCardSliderLabels();
+    syncBatchGeometryUi();
+    applyBatchPresetControls(batchRuntime.preset);
+    requestBatchCardPreviewNow(batchRuntime.cardLayout);
     await loadBatchFilterOptions();
-    syncBatchPresetUi(batchRuntime.preset);
+  } else {
+    requestBatchCardPreviewNow(batchRuntime.cardLayout);
   }
   await reattachActiveBatchJobOnLoad();
+}
+
+export async function onBatchImportDmdProfileChange() {
+  const prof = await importBatchStyleFromDmd(layoutId => {
+    batchRuntime.cardLayout = layoutId || 'classic_split';
+    document.querySelectorAll('#batch-layout-grid .layout-card-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.layout === batchRuntime.cardLayout);
+    });
+  });
+  if (prof) {
+    onBatchChapterToggleManual();
+    await loadBatchFilterOptions();
+    setBatchStatusMsg(t('batch_msg_dmd_imported', { name: prof.display_name || prof.dmd_id }), false);
+  }
 }
 
 export async function reattachActiveBatchJobOnLoad() {
@@ -323,6 +358,7 @@ export async function loadBatchFilterOptions() {
   const lang = langEl ? langEl.value : getCurrentUiLang();
   const cat = await ensureDomainFilterCatalog(dom, lang);
   setBatchFilterCatalog(dom, cat);
+  scheduleBatchCardPreview();
 }
 
 export function selectBatchCardLayout(layoutId) {
@@ -330,46 +366,13 @@ export function selectBatchCardLayout(layoutId) {
   document.querySelectorAll('#batch-layout-grid .layout-card-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.layout === batchRuntime.cardLayout);
   });
-}
-
-function syncBatchCardLayoutBoxVisibility() {
-  const cardBox = document.getElementById('batch-card-layout-box');
-  if (!cardBox) return;
-  const hasCard = Boolean(document.getElementById('batch-chk-card')?.checked);
-  cardBox.style.display = hasCard ? '' : 'none';
+  scheduleBatchCardPreview();
 }
 
 export function selectBatchPreset(presetId) {
   batchRuntime.preset = presetId || 'full_showcase';
-  syncBatchPresetUi(batchRuntime.preset);
-}
-
-function syncBatchPresetUi(presetId) {
-  document.querySelectorAll('.batch-preset-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.preset === presetId);
-  });
-  const presetsMap = {
-    full_showcase: { card: true, poster: true, desc: true, jacket: true, marquee: false, snaps: 1, video: true },
-    video_only: { card: false, poster: false, desc: false, jacket: false, marquee: false, snaps: 0, video: true },
-    poster_only: { card: false, poster: false, desc: false, jacket: true, marquee: false, snaps: 0, video: false },
-    marquee_only: { card: false, poster: false, desc: false, jacket: false, marquee: true, snaps: 0, video: false },
-    card_description_only: { card: true, poster: true, desc: true, jacket: false, marquee: false, snaps: 0, video: false },
-    description_only: { card: true, poster: false, desc: true, jacket: false, marquee: false, snaps: 0, video: false },
-    screenshot_only: { card: false, poster: false, desc: false, jacket: false, marquee: false, snaps: 1, video: false }
-  };
-  const cfg = presetsMap[presetId];
-  if (cfg) {
-    const setChk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = Boolean(val); };
-    setChk('batch-chk-card', cfg.card);
-    setChk('batch-chk-poster', cfg.poster);
-    setChk('batch-chk-desc', cfg.desc);
-    setChk('batch-chk-jacket', cfg.jacket);
-    setChk('batch-chk-marquee', cfg.marquee);
-    setChk('batch-chk-video', cfg.video);
-    const snapsEl = document.getElementById('batch-snap-count');
-    if (snapsEl) snapsEl.value = String(cfg.snaps);
-  }
-  syncBatchCardLayoutBoxVisibility();
+  applyBatchPresetControls(batchRuntime.preset);
+  scheduleBatchCardPreview();
 }
 
 export function onBatchChapterToggleManual() {
@@ -378,6 +381,7 @@ export function onBatchChapterToggleManual() {
     btn.classList.toggle('active', btn.dataset.preset === 'custom');
   });
   syncBatchCardLayoutBoxVisibility();
+  scheduleBatchCardPreview();
 }
 
 export function onBatchResolutionPresetChange() {
@@ -386,6 +390,8 @@ export function onBatchResolutionPresetChange() {
   const val = sel ? sel.value : '128x32';
   if (val === 'custom') {
     if (customWrap) customWrap.style.display = 'flex';
+    syncBatchGeometryUi();
+    scheduleBatchCardPreview();
     return;
   }
   if (customWrap) customWrap.style.display = 'none';
@@ -394,6 +400,8 @@ export function onBatchResolutionPresetChange() {
   const hEl = document.getElementById('batch-height');
   if (wEl) wEl.value = String(dims[0]);
   if (hEl) hEl.value = String(dims[1]);
+  syncBatchGeometryUi();
+  scheduleBatchCardPreview();
 }
 
 export function onBatchDurationChange() {
@@ -465,7 +473,8 @@ export async function startBatchScrapeJob() {
   acquireBatchBackgroundKeepAlive();
   const payload = buildBatchJobRequestPayload(
     batchRuntime,
-    Boolean(supportsDirectFolderStream() && batchRuntime.dirHandle)
+    Boolean(supportsDirectFolderStream() && batchRuntime.dirHandle),
+    getBatchAccentColorValue()
   );
   setBatchStatusMsg(t('batch_starting'), false);
 

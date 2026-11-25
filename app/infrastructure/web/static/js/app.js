@@ -115,6 +115,7 @@ import {
   onBatchChapterToggleManual,
   onBatchDurationChange,
   onBatchGamelistFilesSelected,
+  onBatchImportDmdProfileChange,
   onBatchResolutionPresetChange,
   onBatchWorkersLiveChange,
   reattachActiveBatchJobOnLoad,
@@ -126,6 +127,18 @@ import {
   startBatchScrapeJob,
   toggleBatchAdvanced
 } from './tabs/batch_scraper.js';
+import {
+  onBatchAccentModeChange,
+  populateBatchDmdProfileSelector,
+  redrawBatchCardPreviewFrame,
+  requestBatchCardPreviewNow,
+  runBatchSampleSearch,
+  scheduleBatchCardPreview,
+  setBatchBaseRes,
+  syncBatchGeometryUi,
+  toggleBatchTate,
+  updateBatchCardSliderLabels
+} from './batch_studio_parity.js';
 import { checkSystemUpdate, dismissUpdateBanner, renderUpdateBanner } from './update_banner.js';
 
 export function setUiLang(lang) {
@@ -156,7 +169,9 @@ export function setUiLang(lang) {
   loadDomainFilters();
   loadStudioFilters();
   loadBatchFilterOptions();
+  populateBatchDmdProfileSelector();
   updateStudioSliderLabels();
+  updateBatchCardSliderLabels();
   updateStudioDomainTabsUi();
   renderStudioActiveDmdBanner();
   const profCard = document.getElementById('dmd-profile-editor-card');
@@ -190,10 +205,12 @@ const WINDOW_HANDLERS = {
   loadTargetDmdQueue,
   markStudioFullDirty,
   moveDomainSource,
+  onBatchAccentModeChange,
   onBatchBubbleSearch,
   onBatchChapterToggleManual,
   onBatchDurationChange,
   onBatchGamelistFilesSelected,
+  onBatchImportDmdProfileChange,
   onBatchResolutionPresetChange,
   onBatchWorkersLiveChange,
   onPlSlotCount,
@@ -217,15 +234,18 @@ const WINDOW_HANDLERS = {
   previewCandidate,
   purgeDmdClient,
   reconnectSavedBatchFolder,
+  redrawBatchCardPreviewFrame,
   redrawCurrentStudioFrame,
   refreshAll,
   removeQueueItem,
   removeSlotTag,
   renderSourceBadge,
   renderTagPickerOptions,
+  requestBatchCardPreviewNow,
   requestStudioCardPreviewNow,
   resetHistory,
   returnToDmdRotationEditor,
+  runBatchSampleSearch,
   runCandidateSearch,
   runLiveTest,
   runPreviewTest,
@@ -237,6 +257,7 @@ const WINDOW_HANDLERS = {
   saveServerConfig,
   saveSourcePolicies,
   saveStudioStyleToDmdProfile,
+  scheduleBatchCardPreview,
   scheduleStudioCardPreview,
   selectBatchCardLayout,
   selectBatchOutputFolder,
@@ -245,6 +266,7 @@ const WINDOW_HANDLERS = {
   selectStudioDomainProfile,
   selectStudioLayout,
   selectVisibleTagModal,
+  setBatchBaseRes,
   setBatchMode,
   setStudioBaseRes,
   setUiLang,
@@ -253,17 +275,20 @@ const WINDOW_HANDLERS = {
   startBatchScrapeJob,
   studioStepFrame,
   switchTab,
+  syncBatchGeometryUi,
   syncMdnsUi,
   syncMqttModeUi,
   syncReferentials,
   syncStudioResFromActiveDmd,
   toggleBatchAdvanced,
   toggleBatchBubble,
+  toggleBatchTate,
   toggleDomainSource,
   togglePwd,
   toggleStudioPlay,
   toggleStudioTate,
   toggleTagModalItem,
+  updateBatchCardSliderLabels,
   updateStudioSliderLabels
 };
 

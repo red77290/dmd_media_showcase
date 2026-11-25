@@ -11,7 +11,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.domain.entities import DomainType
 
-SUPPORTED_CONTENT_LANGS: Tuple[str, ...] = ("fr", "en", "es", "de", "it", "pt", "ja")
+SUPPORTED_CONTENT_LANGS: Tuple[str, ...] = (
+    "fr",
+    "en",
+    "es",
+    "de",
+    "it",
+    "pt",
+    "nl",
+    "pl",
+    "ru",
+    "ja",
+    "ko",
+    "zh",
+)
 VALID_DOMAINS: Tuple[DomainType, ...] = ("games", "movies", "series", "anime")
 VALID_CARD_LAYOUTS: Tuple[str, ...] = (
     "classic_split",

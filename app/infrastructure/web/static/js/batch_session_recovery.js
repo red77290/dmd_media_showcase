@@ -374,7 +374,7 @@ export function renderBatchProgressCardAndBanner(snap, opts = {}) {
   }
 }
 
-export function buildBatchJobRequestPayload(runtime, useDirectFolder) {
+export function buildBatchJobRequestPayload(runtime, useDirectFolder, accentColor = 'auto') {
   const w = clampIntInput('batch-width', 16, 512, 128);
   const h = clampIntInput('batch-height', 16, 512, 32);
   const fps = clampIntInput('batch-fps', 6, 30, 15);
@@ -383,6 +383,9 @@ export function buildBatchJobRequestPayload(runtime, useDirectFolder) {
   const dom = document.getElementById('batch-domain')?.value || 'games';
   const lang = document.getElementById('batch-lang')?.value || getCurrentUiLang();
   const { systems, genres, decades } = getSelectedBatchFilters();
+  const badgeEl = document.getElementById('batch-chk-badge');
+  const yearEl = document.getElementById('batch-chk-year');
+  const ratingEl = document.getElementById('batch-chk-rating');
 
   return {
     mode: runtime.mode,
@@ -392,6 +395,8 @@ export function buildBatchJobRequestPayload(runtime, useDirectFolder) {
     systems,
     genres,
     decades,
+    min_rating: clampFloatInput('batch-min-rating', 0.0, 9.5, 0.0),
+    video_type: document.getElementById('batch-video-type')?.value || 'any',
     target_count: clampIntInput('batch-target-count', 1, 10000, 100),
     max_workers: clampIntInput('batch-workers', 0, 8, 0),
     ffmpeg_threads_per_worker: clampIntInput('batch-ffmpeg-threads', 1, 4, 1),
@@ -403,13 +408,21 @@ export function buildBatchJobRequestPayload(runtime, useDirectFolder) {
     chapters: {
       include_card: Boolean(document.getElementById('batch-chk-card')?.checked),
       include_poster_in_card: Boolean(document.getElementById('batch-chk-poster')?.checked),
+      show_badge: badgeEl ? Boolean(badgeEl.checked) : true,
+      show_year: yearEl ? Boolean(yearEl.checked) : true,
+      show_rating: ratingEl ? Boolean(ratingEl.checked) : true,
       include_description: Boolean(document.getElementById('batch-chk-desc')?.checked),
       card_layout: runtime.cardLayout || 'classic_split',
       card_theme: document.getElementById('batch-card-theme')?.value || 'tinted',
+      card_font: document.getElementById('batch-card-font')?.value || 'arcade_pixel',
+      card_accent_color: accentColor || 'auto',
+      text_scroll_speed: String(clampIntInput('batch-scroll-speed', 1, 10, 4)),
+      card_hold_s: clampFloatInput('batch-card-hold', 0.2, 4.0, 0.9),
       include_jacket: Boolean(document.getElementById('batch-chk-jacket')?.checked),
       jacket_mode: document.getElementById('batch-jacket-mode')?.value || 'panorama',
       include_marquee: Boolean(document.getElementById('batch-chk-marquee')?.checked),
-      snapshot_count: clampIntInput('batch-snap-count', 0, 4, 1),
+      marquee_mode: document.getElementById('batch-marquee-mode')?.value || 'panorama',
+      snapshot_count: clampIntInput('batch-snap-count', 0, 5, 1),
       panorama_duration_s: clampFloatInput('batch-pan-dur', 1.5, 15.0, 4.0),
       include_video: Boolean(document.getElementById('batch-chk-video')?.checked)
     },

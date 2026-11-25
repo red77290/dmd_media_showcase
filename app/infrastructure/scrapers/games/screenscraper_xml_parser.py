@@ -49,10 +49,14 @@ def extract_node_text(node: Any) -> str:
 
 
 def region_priority_order(short_lang: str) -> List[str]:
-    """Return ordered region preference list for `short_lang` (`fr`, `en`, `es`, `de`, `it`, `pt`, `ja`)."""
+    """Return ordered region preference list for `short_lang` across all 12 content languages."""
     lang_code = (short_lang or "fr").strip().lower()
     if lang_code == "ja":
         base = ["jp", "ja", "wor", "ss", "us", "eu", "kr", "br", "au"]
+    elif lang_code == "ko":
+        base = ["kr", "ko", "asi", "jp", "wor", "ss", "us", "eu", "au"]
+    elif lang_code == "zh":
+        base = ["cn", "zh", "tw", "asi", "jp", "wor", "ss", "us", "eu"]
     elif lang_code == "pt":
         base = ["pt", "br", "eu", "wor", "ss", "us", "jp", "au", "kr"]
     elif lang_code == "es":

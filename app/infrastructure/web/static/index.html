@@ -189,7 +189,12 @@
               <option value="de">🇩🇪 Deutsch (de)</option>
               <option value="it">🇮🇹 Italiano (it)</option>
               <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="nl">🇳🇱 Nederlands (nl)</option>
+              <option value="pl">🇵🇱 Polski (pl)</option>
+              <option value="ru">🇷🇺 Русский (ru)</option>
               <option value="ja">🇯🇵 日本語 (ja)</option>
+              <option value="ko">🇰🇷 한국어 (ko)</option>
+              <option value="zh">🇨🇳 中文 (zh)</option>
             </select>
           </div>
           <div class="field">
@@ -436,7 +441,12 @@
               <option value="de">🇩🇪 Deutsch (de)</option>
               <option value="it">🇮🇹 Italiano (it)</option>
               <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="nl">🇳🇱 Nederlands (nl)</option>
+              <option value="pl">🇵🇱 Polski (pl)</option>
+              <option value="ru">🇷🇺 Русский (ru)</option>
               <option value="ja">🇯🇵 日本語 (ja)</option>
+              <option value="ko">🇰🇷 한국어 (ko)</option>
+              <option value="zh">🇨🇳 中文 (zh)</option>
             </select>
           </div>
           <div class="field">
@@ -618,7 +628,12 @@
               <option value="de">🇩🇪 Deutsch (de)</option>
               <option value="it">🇮🇹 Italiano (it)</option>
               <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="nl">🇳🇱 Nederlands (nl)</option>
+              <option value="pl">🇵🇱 Polski (pl)</option>
+              <option value="ru">🇷🇺 Русский (ru)</option>
               <option value="ja">🇯🇵 日本語 (ja)</option>
+              <option value="ko">🇰🇷 한국어 (ko)</option>
+              <option value="zh">🇨🇳 中文 (zh)</option>
             </select>
           </div>
           <div class="field">
@@ -1075,13 +1090,18 @@
           <div class="field">
             <label data-i18n="lbl_default_lang">Default Metadata &amp; Synopsis Language</label>
             <select id="default_lang">
-              <option value="fr">Français (fr)</option>
-              <option value="en">English (en)</option>
-              <option value="es">Español (es)</option>
-              <option value="de">Deutsch (de)</option>
-              <option value="it">Italiano (it)</option>
-              <option value="pt">Português (pt)</option>
-              <option value="ja">日本語 (ja)</option>
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="nl">🇳🇱 Nederlands (nl)</option>
+              <option value="pl">🇵🇱 Polski (pl)</option>
+              <option value="ru">🇷🇺 Русский (ru)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+              <option value="ko">🇰🇷 한국어 (ko)</option>
+              <option value="zh">🇨🇳 中文 (zh)</option>
             </select>
           </div>
           <div class="field">
@@ -1165,7 +1185,10 @@
     <!-- TAB 7: STREAMING BATCH SCRAPER & OFFLINE PACKS -->
     <div id="tab-batch" class="tab-pane">
       <div class="card">
-        <h2 data-i18n="batch_title">⚡ Streaming RGB888 GIF Batch Scraper &amp; Offline Packs</h2>
+        <h2>
+          <span data-i18n="batch_title">⚡ Streaming RGB888 GIF Batch Scraper &amp; Offline Packs</span>
+          <span id="batch-geom-pill" class="pill info">128×32 • YOKO</span>
+        </h2>
         <p class="desc" data-i18n="batch_desc">
           Generate ready-to-drop RGB888 .gif packs directly onto your PC or ArcadeMatrix SD card with zero server storage saturation — continues seamlessly in background tabs.
         </p>
@@ -1189,13 +1212,40 @@
           </div>
         </div>
 
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:10px;background:#0b1018;border:1px solid var(--border);margin-bottom:16px">
+        <!-- DESTINATION + SHARED CONTENT BROADCAST LANGUAGE (12 LANGS) + 1-CLICK DMD STUDIO IMPORT -->
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:10px;background:#0b1018;border:1px solid var(--border);margin-bottom:14px">
           <button type="button" id="btn-batch-pick-folder" class="secondary" style="margin:0" onclick="selectBatchOutputFolder()" data-i18n="btn_batch_pick_folder">
             📂 Select Target Folder (PC / SD Card)
           </button>
-          <span id="batch-dest-mode-hint" style="font-size:0.83rem;color:var(--muted)" data-i18n="batch_dest_direct_ready">
+          <span id="batch-dest-mode-hint" style="font-size:0.83rem;color:var(--muted);flex:1;min-width:200px" data-i18n="batch_dest_direct_ready">
             Direct-to-folder background Web Worker streaming ready.
           </span>
+        </div>
+
+        <div class="form-grid-2" style="margin-bottom:14px">
+          <div class="field">
+            <label data-i18n="lbl_content_lang">Content Broadcast Language (lang)</label>
+            <select id="batch-lang" onchange="loadBatchFilterOptions()">
+              <option value="fr">🇫🇷 Français (fr)</option>
+              <option value="en">🇬🇧 English (en)</option>
+              <option value="es">🇪🇸 Español (es)</option>
+              <option value="de">🇩🇪 Deutsch (de)</option>
+              <option value="it">🇮🇹 Italiano (it)</option>
+              <option value="pt">🇵🇹 Português (pt)</option>
+              <option value="nl">🇳🇱 Nederlands (nl)</option>
+              <option value="pl">🇵🇱 Polski (pl)</option>
+              <option value="ru">🇷🇺 Русский (ru)</option>
+              <option value="ja">🇯🇵 日本語 (ja)</option>
+              <option value="ko">🇰🇷 한국어 (ko)</option>
+              <option value="zh">🇨🇳 中文 (zh)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label data-i18n="batch_lbl_import_dmd">Import Studio Style &amp; Resolution from DMD Profile</label>
+            <select id="batch-import-dmd" onchange="onBatchImportDmdProfileChange()">
+              <option value="" data-i18n="batch_opt_import_dmd_none">— Manual / Custom Batch Settings —</option>
+            </select>
+          </div>
         </div>
 
         <!-- MODE A: RANDOM FILTER CONTROLS -->
@@ -1211,16 +1261,22 @@
               </select>
             </div>
             <div class="field">
-              <label data-i18n="lbl_default_lang">Content Language</label>
-              <select id="batch-lang" onchange="loadBatchFilterOptions()">
-                <option value="fr">🇫🇷 Français</option>
-                <option value="en">🇬🇧 English</option>
-                <option value="es">🇪🇸 Español</option>
-              </select>
-            </div>
-            <div class="field">
               <label data-i18n="batch_lbl_count">Number of Titles to Scrape</label>
               <input type="number" id="batch-target-count" min="1" max="10000" value="100" />
+            </div>
+            <div class="field">
+              <label data-i18n="batch_lbl_min_rating">Min ★ Rating (0 = All)</label>
+              <input type="number" id="batch-min-rating" min="0" max="9.5" step="0.5" value="0" />
+            </div>
+            <div class="field">
+              <label data-i18n="studio_lbl_vid_type">Preferred Clip Type (video_type)</label>
+              <select id="batch-video-type">
+                <option value="any" data-i18n="opt_vtype_any">Any (Gameplay / Trailer / Clip)</option>
+                <option value="trailer" data-i18n="opt_vtype_trailer">Official Trailer (Movies / Series)</option>
+                <option value="opening" data-i18n="opt_vtype_opening">Opening Theme OP (Anime)</option>
+                <option value="ending" data-i18n="opt_vtype_ending">Ending Theme ED (Anime)</option>
+                <option value="pv" data-i18n="opt_vtype_pv">Promotional Video PV</option>
+              </select>
             </div>
           </div>
 
@@ -1286,6 +1342,19 @@
           <div id="batch-gamelist-summary" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"></div>
         </div>
 
+        <!-- STUDIO RESOLUTION CHIPS + 1-CLICK TATE TOGGLE -->
+        <div class="studio-res-bar" id="batch-res-chips" style="margin-top:14px">
+          <span style="font-size:0.8rem;font-weight:600;color:var(--muted)" data-i18n="studio_lbl_res_presets">HUB75 Presets:</span>
+          <button type="button" class="res-chip" data-res="64x32" onclick="setBatchBaseRes(64, 32)">64×32</button>
+          <button type="button" class="res-chip active" data-res="128x32" onclick="setBatchBaseRes(128, 32)">128×32</button>
+          <button type="button" class="res-chip" data-res="64x64" onclick="setBatchBaseRes(64, 64)">64×64</button>
+          <button type="button" class="res-chip" data-res="128x64" onclick="setBatchBaseRes(128, 64)">128×64</button>
+          <button type="button" class="res-chip" data-res="256x64" onclick="setBatchBaseRes(256, 64)">256×64</button>
+          <button type="button" id="btn-batch-tate" class="tate-btn" onclick="toggleBatchTate()" data-i18n="studio_btn_tate">
+            ⇄ Mode TATE (Vertical)
+          </button>
+        </div>
+
         <!-- 1-CLICK COMPOSITION PRESETS WITH VISUAL DMD RENDERING ICONS -->
         <div class="field" style="margin-top:12px">
           <label data-i18n="batch_preset_lbl">1-Click GIF Composition ('À la carte')</label>
@@ -1325,30 +1394,101 @@
           </div>
         </div>
 
-        <!-- STUDIO VISUAL CARD LAYOUT PICKER (IDENTICAL WIREFRAME ICONS AS STUDIO TAB) -->
-        <div class="field" id="batch-card-layout-box" style="margin-top:12px">
-          <label data-i18n="studio_lbl_layout">Pixel-Art Card Layout (5 Presets)</label>
-          <div class="layout-cards-grid" id="batch-layout-grid" style="margin-top:6px;margin-bottom:0">
-            <button type="button" class="layout-card-btn active" data-layout="classic_split" onclick="selectBatchCardLayout('classic_split')">
-              <span class="layout-wire"><span style="width:36%;background:#ff6d00;opacity:0.75"></span><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span></span>
-              <span data-i18n="lay_classic_split">Classic Split</span>
-            </button>
-            <button type="button" class="layout-card-btn" data-layout="poster_right" onclick="selectBatchCardLayout('poster_right')">
-              <span class="layout-wire"><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span><span style="width:36%;background:#ff6d00;opacity:0.75"></span></span>
-              <span data-i18n="lay_poster_right">Poster Right</span>
-            </button>
-            <button type="button" class="layout-card-btn" data-layout="badge_header" onclick="selectBatchCardLayout('badge_header')">
-              <span class="layout-wire" style="flex-direction:column"><span style="height:5px;background:#ff6d00"></span><span style="flex:1;display:flex"><span style="width:32%;background:#2c394f"></span><span style="flex:1"></span></span></span>
-              <span data-i18n="lay_badge_header">Badge Header</span>
-            </button>
-            <button type="button" class="layout-card-btn" data-layout="hero_banner" onclick="selectBatchCardLayout('hero_banner')">
-              <span class="layout-wire" style="flex-direction:column;background:linear-gradient(180deg,#2c394f,#06080d)"><span style="flex:1"></span><span style="height:7px;background:rgba(0,0,0,0.8);border-top:1px solid #00e5ff"></span></span>
-              <span data-i18n="lay_hero_banner">Hero Banner</span>
-            </button>
-            <button type="button" class="layout-card-btn" data-layout="minimal_arcade" onclick="selectBatchCardLayout('minimal_arcade')">
-              <span class="layout-wire" style="flex-direction:column;justify-content:center;padding:0 4px;gap:2px"><span style="height:4px;background:#ffab00"></span><span style="height:2px;background:#8b949e;width:80%"></span></span>
-              <span data-i18n="lay_minimal_arcade">Minimal Text</span>
-            </button>
+        <!-- FULL STUDIO CARD CUSTOMIZER + EMBEDDED <100MS LIVE HUB75 SIMULATOR -->
+        <div id="batch-card-layout-box" class="batch-card-studio-panel" style="margin-top:14px">
+          <div>
+            <label data-i18n="studio_lbl_layout">Pixel-Art Card Layout (5 Presets)</label>
+            <div class="layout-cards-grid" id="batch-layout-grid" style="margin-top:6px">
+              <button type="button" class="layout-card-btn active" data-layout="classic_split" onclick="selectBatchCardLayout('classic_split')">
+                <span class="layout-wire"><span style="width:36%;background:#ff6d00;opacity:0.75"></span><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span></span>
+                <span data-i18n="lay_classic_split">Classic Split</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="poster_right" onclick="selectBatchCardLayout('poster_right')">
+                <span class="layout-wire"><span style="flex:1;padding:2px"><span style="display:block;height:3px;background:#e6edf3;margin-bottom:2px"></span><span style="display:block;height:2px;background:#00e5ff;width:70%"></span></span><span style="width:36%;background:#ff6d00;opacity:0.75"></span></span>
+                <span data-i18n="lay_poster_right">Poster Right</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="badge_header" onclick="selectBatchCardLayout('badge_header')">
+                <span class="layout-wire" style="flex-direction:column"><span style="height:5px;background:#ff6d00"></span><span style="flex:1;display:flex"><span style="width:32%;background:#2c394f"></span><span style="flex:1"></span></span></span>
+                <span data-i18n="lay_badge_header">Badge Header</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="hero_banner" onclick="selectBatchCardLayout('hero_banner')">
+                <span class="layout-wire" style="flex-direction:column;background:linear-gradient(180deg,#2c394f,#06080d)"><span style="flex:1"></span><span style="height:7px;background:rgba(0,0,0,0.8);border-top:1px solid #00e5ff"></span></span>
+                <span data-i18n="lay_hero_banner">Hero Banner</span>
+              </button>
+              <button type="button" class="layout-card-btn" data-layout="minimal_arcade" onclick="selectBatchCardLayout('minimal_arcade')">
+                <span class="layout-wire" style="flex-direction:column;justify-content:center;padding:0 4px;gap:2px"><span style="height:4px;background:#ffab00"></span><span style="height:2px;background:#8b949e;width:80%"></span></span>
+                <span data-i18n="lay_minimal_arcade">Minimal Text</span>
+              </button>
+            </div>
+
+            <div class="form-grid-3">
+              <div class="field">
+                <label data-i18n="studio_lbl_theme">Visual Theme (card_theme)</label>
+                <select id="batch-card-theme" onchange="scheduleBatchCardPreview()">
+                  <option value="tinted" data-i18n="thm_tinted">Tinted Dark (Badge Glow)</option>
+                  <option value="pure_black" data-i18n="thm_pure_black">Pure Black HUB75 (Zero Glow)</option>
+                  <option value="neon_border" data-i18n="thm_neon_border">Neon Arcade Frame (1px)</option>
+                  <option value="poster_wash" data-i18n="thm_poster_wash">Poster Color Wash</option>
+                  <option value="amber_dmd" data-i18n="thm_amber_dmd">Amber Pinball DMD (#FF7300)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_font">Pixel Typography (card_font)</label>
+                <select id="batch-card-font" onchange="scheduleBatchCardPreview()">
+                  <option value="arcade_pixel" data-i18n="fnt_arcade_pixel">Arcade Pixel (1-bit Crisp)</option>
+                  <option value="clean_sans" data-i18n="fnt_clean_sans">Clean Sans (Smooth)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label data-i18n="studio_lbl_accent">Accent Color</label>
+                <div class="input-row">
+                  <select id="batch-accent-mode" onchange="onBatchAccentModeChange()" style="flex:1">
+                    <option value="auto" data-i18n="opt_accent_auto">Auto (Badge)</option>
+                    <option value="custom" data-i18n="opt_accent_custom">Custom #Hex</option>
+                  </select>
+                  <input type="color" id="batch-accent-picker" class="studio-color" value="#ff6d00" onchange="scheduleBatchCardPreview()" disabled />
+                </div>
+              </div>
+            </div>
+
+            <div class="studio-toggles">
+              <label class="chk-pill"><input type="checkbox" id="batch-chk-poster" class="studio-chk" checked onchange="onBatchChapterToggleManual()" /> <span data-i18n="st_tog_poster">Poster / Boxart</span></label>
+              <label class="chk-pill"><input type="checkbox" id="batch-chk-badge" class="studio-chk" checked onchange="scheduleBatchCardPreview()" /> <span data-i18n="st_tog_badge">System / Genre Badge</span></label>
+              <label class="chk-pill"><input type="checkbox" id="batch-chk-year" class="studio-chk" checked onchange="scheduleBatchCardPreview()" /> <span data-i18n="st_tog_year">Year</span></label>
+              <label class="chk-pill"><input type="checkbox" id="batch-chk-rating" class="studio-chk" checked onchange="scheduleBatchCardPreview()" /> <span data-i18n="st_tog_rating">★ Rating</span></label>
+              <label class="chk-pill"><input type="checkbox" id="batch-chk-desc" class="studio-chk" checked onchange="onBatchChapterToggleManual()" /> <span data-i18n="st_tog_synopsis">Synopsis Ticker</span></label>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="field">
+                <label><span data-i18n="studio_lbl_scroll_speed">Scroll Speed (1..10)</span>: <b id="batch-val-scroll" style="color:var(--cyan)">4 (Normal)</b></label>
+                <input type="range" id="batch-scroll-speed" class="studio-range" min="1" max="10" step="1" value="4" oninput="updateBatchCardSliderLabels(); scheduleBatchCardPreview();" />
+              </div>
+              <div class="field">
+                <label><span data-i18n="studio_lbl_card_hold">Intro Static Hold (s)</span>: <b id="batch-val-hold" style="color:var(--cyan)">0.9s</b></label>
+                <input type="range" id="batch-card-hold" class="studio-range" min="0.2" max="4.0" step="0.1" value="0.9" oninput="updateBatchCardSliderLabels(); scheduleBatchCardPreview();" />
+              </div>
+            </div>
+          </div>
+
+          <div class="batch-card-sim-box">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+              <b style="font-size:0.82rem;color:var(--cyan)" data-i18n="batch_sim_preview_title">💡 Live Card Preview (&lt;100ms)</b>
+              <select id="batch-led-mode" onchange="redrawBatchCardPreviewFrame()" style="width:auto;height:30px;line-height:28px;font-size:0.76rem;padding:0 24px 0 8px">
+                <option value="smd_round" data-i18n="sim_mode_smd">💡 SMD Round LEDs</option>
+                <option value="pixel_grid" data-i18n="sim_mode_grid">🟦 Square LED Grid</option>
+                <option value="raw" data-i18n="sim_mode_raw">🖼️ Raw 1:1 Pixels</option>
+              </select>
+            </div>
+            <div class="sim-stage-wrap" style="padding:10px;min-height:92px">
+              <canvas id="batch-card-preview-canvas" width="384" height="96"></canvas>
+              <div id="batch-sim-meta" style="margin-top:6px;font-size:0.73rem;color:var(--muted)">128×32 • FR • 15 FPS</div>
+            </div>
+            <div class="input-row" style="margin-top:8px">
+              <input type="text" id="batch-sample-query" onkeydown="if(event.key==='Enter') runBatchSampleSearch()" data-i18n-placeholder="batch_ph_sample_search" placeholder="Test any title (Metal Slug, Akira...)" style="height:34px;font-size:0.8rem" />
+              <button type="button" class="secondary mini-btn" onclick="runBatchSampleSearch()" style="height:34px;margin:0">🔍</button>
+              <button type="button" class="secondary mini-btn" onclick="requestBatchCardPreviewNow()" style="height:34px;margin:0">⚡</button>
+            </div>
           </div>
         </div>
 
@@ -1367,8 +1507,8 @@
               <option value="custom">Custom W × H</option>
             </select>
             <div id="batch-custom-res-wrap" style="display:none;gap:8px;margin-top:6px">
-              <input type="number" id="batch-width" min="16" max="512" value="128" />
-              <input type="number" id="batch-height" min="16" max="512" value="32" />
+              <input type="number" id="batch-width" min="16" max="512" value="128" oninput="syncBatchGeometryUi(); scheduleBatchCardPreview();" />
+              <input type="number" id="batch-height" min="16" max="512" value="32" oninput="syncBatchGeometryUi(); scheduleBatchCardPreview();" />
             </div>
           </div>
 
@@ -1396,55 +1536,46 @@
             <div class="form-grid">
               <div class="field">
                 <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-card" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_card">Include Info Card</span></label>
-                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-poster" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_poster">Mini-Poster inside Card</span></label>
-                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-desc" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_desc">Scrolling Synopsis / Description</span></label>
-              </div>
-              <div class="field">
-                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-jacket" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_jacket">Include Jacket / Poster Phase</span></label>
+                <label style="display:flex;align-items:center;gap:8px;margin-top:6px"><input type="checkbox" id="batch-chk-jacket" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_jacket">Include Jacket / Poster Phase</span></label>
                 <select id="batch-jacket-mode" onchange="onBatchChapterToggleManual()">
-                  <option value="panorama">Scrolling Panorama (YOKO/TATE)</option>
-                  <option value="static">Static Fitted Poster</option>
+                  <option value="panorama" data-i18n="batch_opt_pan_scroll">Scrolling Panorama (YOKO/TATE)</option>
+                  <option value="static" data-i18n="batch_opt_pan_static">Static Fitted Artwork</option>
                 </select>
-                <label style="display:flex;align-items:center;gap:8px;margin-top:6px"><input type="checkbox" id="batch-chk-marquee" onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_marquee">Include Marquee Phase</span></label>
-                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-video" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_video">Include Gameplay / Trailer Video</span></label>
               </div>
               <div class="field">
-                <label data-i18n="batch_lbl_snaps">Screenshots Count (0–4)</label>
-                <input type="number" id="batch-snap-count" min="0" max="4" value="1" onchange="onBatchChapterToggleManual()" />
+                <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="batch-chk-marquee" onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_marquee">Include Marquee Phase</span></label>
+                <select id="batch-marquee-mode" onchange="onBatchChapterToggleManual()">
+                  <option value="panorama" data-i18n="batch_opt_pan_scroll">Scrolling Panorama (YOKO/TATE)</option>
+                  <option value="static" data-i18n="batch_opt_pan_static">Static Fitted Artwork</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="batch-chk-video" checked onchange="onBatchChapterToggleManual()" /><span data-i18n="batch_chk_video">Include Gameplay / Trailer Video</span></label>
+              </div>
+              <div class="field">
+                <label data-i18n="batch_lbl_snaps">Screenshots Count (0–5)</label>
+                <input type="number" id="batch-snap-count" min="0" max="5" value="1" onchange="onBatchChapterToggleManual()" />
                 <label style="margin-top:6px" data-i18n="batch_lbl_pan_dur">Panorama Duration (s)</label>
                 <input type="number" id="batch-pan-dur" min="1.5" max="15" step="0.5" value="4.0" />
               </div>
 
               <div class="field">
-                <label data-i18n="studio_lbl_theme">Card Theme</label>
-                <select id="batch-card-theme">
-                  <option value="tinted">Tinted LED</option>
-                  <option value="pure_black">Pure Black</option>
-                  <option value="neon_border">Neon Border</option>
-                  <option value="poster_wash">Poster Wash</option>
-                  <option value="amber_dmd">Amber Pinball</option>
-                </select>
-              </div>
-              <div class="field">
                 <label data-i18n="batch_lbl_fps">Target GIF FPS (6–30)</label>
-                <input type="number" id="batch-fps" min="6" max="30" value="15" />
+                <input type="number" id="batch-fps" min="6" max="30" value="15" onchange="scheduleBatchCardPreview()" />
               </div>
-
               <div class="field">
-                <label data-i18n="lbl_video_mode">Video Framing</label>
+                <label data-i18n="lbl_video_mode">Video Framing Mode (video_mode)</label>
                 <select id="batch-video-mode">
-                  <option value="auto_action">Auto-Action AI</option>
-                  <option value="panorama">Vertical / Horizontal Panorama</option>
-                  <option value="center_crop">Center Crop</option>
+                  <option value="auto_action" data-i18n="opt_vmode_auto">Auto (Let Me Handle It AI)</option>
+                  <option value="panorama" data-i18n="opt_vmode_panorama">Panorama (Top-Bottom Scan)</option>
+                  <option value="center_crop" data-i18n="opt_vmode_crop">Static Center Crop</option>
                 </select>
               </div>
               <div class="field">
-                <label data-i18n="lbl_color_boost">Colorimetry Profile</label>
-                <select id="batch-content-mode">
-                  <option value="auto">Auto Domain</option>
-                  <option value="pixel_art">Pixel Art (Retro)</option>
-                  <option value="anime">Anime</option>
-                  <option value="cinema">Cinema</option>
+                <label data-i18n="lbl_color_boost">LED Color Boost (color_boost)</label>
+                <select id="batch-content-mode" onchange="scheduleBatchCardPreview()">
+                  <option value="auto" data-i18n="opt_cboost_auto">Auto (Let Me Handle It AI)</option>
+                  <option value="pixel_art" data-i18n="opt_cboost_pixel">Pixel Art (Crisp Retro)</option>
+                  <option value="anime" data-i18n="opt_cboost_anime">Anime (Vibrant Cel-Shaded)</option>
+                  <option value="cinema" data-i18n="opt_cboost_cinema">Cinema (Balanced Contrast &amp; Shadows)</option>
                 </select>
               </div>
               <div class="field">

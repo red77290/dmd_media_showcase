@@ -119,6 +119,9 @@
     max-width: 100%;
     min-width: 120px;
   }
+  .batch-card-studio-panel {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 520px) {

@@ -281,6 +281,7 @@ class BatchScrapeConfig:
     genres: Tuple[str, ...] = ()
     decades: Tuple[str, ...] = ()
     min_rating: float = 0.0
+    video_type: str = "any"
     target_count: int = 100
     max_workers: int = 2
     ffmpeg_threads_per_worker: int = 1
@@ -304,6 +305,8 @@ class BatchScrapeConfig:
             "systems": list(self.systems),
             "genres": list(self.genres),
             "decades": list(self.decades),
+            "min_rating": self.min_rating,
+            "video_type": self.video_type,
             "width": enc.width,
             "height": enc.height,
             "fps": enc.fps,
@@ -324,6 +327,7 @@ class BatchScrapeConfig:
             "genres": list(self.genres),
             "decades": list(self.decades),
             "min_rating": self.min_rating,
+            "video_type": self.video_type,
             "target_count": self.target_count,
             "max_workers": self.max_workers,
             "ffmpeg_threads_per_worker": self.ffmpeg_threads_per_worker,
@@ -354,6 +358,9 @@ class BatchScrapeConfig:
         deliv_val = str(data.get("delivery_mode") or "direct_folder")
         dom_val = str(data.get("domain") or "games")
         tpl_val = str(data.get("folder_template") or "system_genre")
+        vtype_val = str(data.get("video_type") or "any").strip().lower()
+        if vtype_val not in ("any", "opening", "ending", "pv", "trailer"):
+            vtype_val = "any"
         return cls(
             mode=mode_val if mode_val in ("random_filter", "recalbox_gamelist") else "random_filter",  # type: ignore[arg-type]
             delivery_mode=deliv_val if deliv_val in ("direct_folder", "zip_stream") else "direct_folder",  # type: ignore[arg-type]
@@ -363,6 +370,7 @@ class BatchScrapeConfig:
             genres=tuple(str(x) for x in (data.get("genres") or ())),
             decades=tuple(str(x) for x in (data.get("decades") or ())),
             min_rating=float(data.get("min_rating") or 0.0),
+            video_type=vtype_val,
             target_count=max(1, int(data.get("target_count") or 100)),
             max_workers=max(1, min(8, int(data.get("max_workers") or 2))),
             ffmpeg_threads_per_worker=max(1, min(4, int(data.get("ffmpeg_threads_per_worker") or 1))),
@@ -382,6 +390,9 @@ class BatchScrapeConfig:
         ch = self.chapters
         clean_sys = [s for s in self.systems if s and s.strip().lower() != "all"]
         eff_systems = clean_sys if self.systems else ["snes", "megadrive", "neogeo"]
+        vtype = str(self.video_type or "any").strip().lower()
+        if vtype not in ("any", "opening", "ending", "pv", "trailer"):
+            vtype = "any"
         return FilterCriteria(
             domain=self.domain,
             lang=self.lang or "fr",
@@ -389,6 +400,7 @@ class BatchScrapeConfig:
             genres=list(self.genres),
             decades=list(self.decades),
             min_rating=max(0.0, min(10.0, float(self.min_rating or 0.0))),
+            video_type=vtype,  # type: ignore[arg-type]
             include_poster=ch.include_poster_in_card,
             include_synopsis=ch.include_description,
             text_scroll_speed=ch.text_scroll_speed,
@@ -403,7 +415,7 @@ class BatchScrapeConfig:
             card_hold_s=ch.card_hold_s,
             jacket_panorama=ch.include_jacket,
             marquee_panorama=ch.include_marquee,
-            snapshot_panorama_count=max(0, min(4, int(ch.snapshot_count))),
+            snapshot_panorama_count=max(0, min(5, int(ch.snapshot_count))),
             panorama_duration_s=max(1.5, min(15.0, float(ch.panorama_duration_s))),
             include_video=ch.include_video,
             video_max_duration_s=enc.video_max_duration_s,
