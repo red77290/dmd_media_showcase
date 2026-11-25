@@ -28,6 +28,7 @@ from app.infrastructure.rendering.card_geometry import (
     CardLayoutGeometry,
     compute_card_layout_geometry,
 )
+from app.infrastructure.rendering.arcade_bitmap_font import encode_for_arcade_bitmap_font
 from app.infrastructure.rendering.imaging_primitives import (
     apply_amber_dmd_palette,
     fit_poster_preserving_cover,
@@ -112,11 +113,11 @@ def render_card_rgb888_frames_sync(
     font_px_size = 9 if height < 48 else (11 if height >= 64 else 10)
     font = load_card_font(f"{clean_title} {clean_body}", size=font_px_size, font_style=font_style)
     if not isinstance(font, ImageFont.FreeTypeFont):
-        clean_title = clean_title.encode("latin-1", "replace").decode("latin-1")
-        clean_badge = clean_badge.encode("latin-1", "replace").decode("latin-1")
-        clean_year = clean_year.encode("latin-1", "replace").decode("latin-1")
-        clean_rating = clean_rating.encode("latin-1", "replace").decode("latin-1")
-        clean_body = clean_body.encode("latin-1", "replace").decode("latin-1")
+        clean_title = encode_for_arcade_bitmap_font(clean_title)
+        clean_badge = encode_for_arcade_bitmap_font(clean_badge)
+        clean_year = encode_for_arcade_bitmap_font(clean_year)
+        clean_rating = encode_for_arcade_bitmap_font(clean_rating)
+        clean_body = encode_for_arcade_bitmap_font(clean_body)
 
     raw_poster_img: Optional[Image.Image] = None
     if poster_png_name:

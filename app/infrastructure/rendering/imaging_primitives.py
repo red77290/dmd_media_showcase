@@ -4,12 +4,14 @@ Reusable Imaging, Typography, Palette & Framing Primitives (`app/infrastructure/
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 from pathlib import Path
 import ssl
 import threading
 from typing import Callable, Literal, Optional, Set, Tuple, Union
+import unicodedata
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -19,6 +21,11 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
 
 from app.domain.style_specs import parse_hex_rgb
+from app.infrastructure.rendering.arcade_bitmap_font import (
+    can_encode_cp1252,
+    encode_for_arcade_bitmap_font,
+    load_arcade_pixel_font,
+)
 from app.infrastructure.scrapers.http_utils import install_ipv4_preference
 from src.engine.conversion.core import DEFAULT_PARAMS
 
@@ -187,8 +194,16 @@ def generate_fallback_artwork(
     img = Image.fromarray(arr, mode="RGB")
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, width - 1, height - 1], outline=(255, 255, 255), width=1)
-    short_label = (badge[:6] if width <= 40 else f"{badge}: {title[:16]}").upper()
-    draw.text((3, max(2, height // 2 - 5)), short_label, fill=(255, 255, 255))
+    clean_b = sanitize_card_text(badge)
+    clean_t = sanitize_card_text(title)
+    short_label = (clean_b[:6] if width <= 40 else f"{clean_b}: {clean_t[:16]}").upper()
+    fb_font = load_arcade_pixel_font()
+    draw.text(
+        (3, max(2, height // 2 - 5)),
+        encode_for_arcade_bitmap_font(short_label),
+        fill=(255, 255, 255),
+        font=fb_font,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path, format="PNG")
     return path
@@ -266,26 +281,38 @@ def resolve_framing_and_color_params(
 
 
 def sanitize_card_text(text: str) -> str:
-    """Normalize typographic punctuation into crisp single-line DMD text."""
+    """Normalize HTML entities, NFD accents, and typographic punctuation into crisp single-line DMD text."""
     if not text:
         return ""
+    cleaned = unicodedata.normalize("NFC", html.unescape(str(text)))
     replacements = {
         "\u2018": "'",
         "\u2019": "'",
+        "\u02bc": "'",
+        "\u00b4": "'",
         "\u201c": '"',
         "\u201d": '"',
+        "\u201e": '"',
         "\u2013": "-",
         "\u2014": "-",
+        "\u2212": "-",
         "\u2026": "...",
-        "\u0153": "oe",
-        "\u0152": "OE",
         "\u00a0": " ",
+        "\u202f": " ",
+        "\u2009": " ",
+        "\u2007": " ",
+        "\u2008": " ",
+        "\u200b": "",
+        "\u200c": "",
+        "\u200d": "",
+        "\ufeff": "",
+        "\u00ad": "",
         "\n": " ",
         "\r": " ",
     }
-    cleaned = str(text)
     for k, v in replacements.items():
         cleaned = cleaned.replace(k, v)
+    cleaned = "".join(ch for ch in cleaned if unicodedata.combining(ch) == 0)
     return " ".join(cleaned.split())
 
 
@@ -294,8 +321,8 @@ def load_card_font(
     size: int = 10,
     font_style: str = "arcade_pixel",
 ) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
-    """Load an arcade bitmap font or Unicode/CJK TrueType font matching `font_style`."""
-    needs_unicode = any(ord(ch) > 255 for ch in text_sample)
+    """Load our `cp1252` arcade pixel bitmap font or a Unicode/CJK TrueType font matching `font_style`."""
+    needs_unicode = not can_encode_cp1252(text_sample)
     style = str(font_style or "arcade_pixel").strip().lower()
     win_fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
     if needs_unicode:
@@ -326,7 +353,7 @@ def load_card_font(
             os.path.join(win_fonts, "arial.ttf"),
         )
     else:
-        return ImageFont.load_default()
+        return load_arcade_pixel_font()
 
     for fp in candidates:
         if os.path.exists(fp):
@@ -334,7 +361,7 @@ def load_card_font(
                 return ImageFont.truetype(fp, size=size)
             except Exception:
                 continue
-    return ImageFont.load_default()
+    return load_arcade_pixel_font()
 
 
 def resolve_scroll_px_per_sec(speed: str) -> float:
